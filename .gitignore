@@ -7,7 +7,7 @@ __pycache__/
 .env
 .env.*.local
 .secrets/
-data/
+/data/
 *.pem
 *.key
 *.db
