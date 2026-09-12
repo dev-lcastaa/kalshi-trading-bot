@@ -1,0 +1,220 @@
+import time
+
+from kalshi_bot.data.store import Store
+
+
+def _make_store(tmp_path) -> Store:
+    return Store(str(tmp_path / "test.db"))
+
+
+def test_latest_index_prices_returns_most_recent_tick_per_index(tmp_path):
+    store = _make_store(tmp_path)
+    store.insert_index_tick("BRTI", 1_000, 100.0)
+    store.insert_index_tick("BRTI", 2_000, 101.0)
+    store.insert_index_tick("SOLUSD_RTI", 1_500, 50.0)
+
+    prices = store.latest_index_prices()
+
+    assert prices == {
+        "BRTI": {"ts_ms": 2_000, "value": 101.0},
+        "SOLUSD_RTI": {"ts_ms": 1_500, "value": 50.0},
+    }
+
+
+def test_latest_index_prices_empty_when_no_ticks(tmp_path):
+    store = _make_store(tmp_path)
+    assert store.latest_index_prices() == {}
+
+
+def test_upsert_active_market_then_appears_in_active_tickers(tmp_path):
+    store = _make_store(tmp_path)
+    store.upsert_active_market("KXBTC15M-A", "BRTI", 100000.0, close_ts_ms=1_000_000, now_ms=1_000)
+    assert store.get_active_tickers() == ["KXBTC15M-A"]
+
+
+def test_mark_closed_removes_from_active_tickers(tmp_path):
+    store = _make_store(tmp_path)
+    store.upsert_active_market("KXBTC15M-A", "BRTI", 100000.0, close_ts_ms=1_000_000, now_ms=1_000)
+    store.mark_closed("KXBTC15M-A", closed_at_ms=2_000)
+    assert store.get_active_tickers() == []
+
+
+def test_dashboard_markets_includes_active_and_recently_closed(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+    store.upsert_active_market("ACTIVE-1", "BRTI", 100.0, close_ts_ms=now_ms + 60_000, now_ms=now_ms)
+    store.upsert_active_market("RECENTLY-CLOSED", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("RECENTLY-CLOSED", closed_at_ms=now_ms - 10_000)  # closed 10s ago
+    store.upsert_active_market("LONG-CLOSED", "BRTI", 100.0, close_ts_ms=now_ms - 600_000, now_ms=now_ms)
+    store.mark_closed("LONG-CLOSED", closed_at_ms=now_ms - 600_000)  # closed 10 minutes ago
+
+    rows = store.dashboard_markets(grace_period_sec=300)  # 5 minute grace window
+    tickers = {r["ticker"] for r in rows}
+
+    assert tickers == {"ACTIVE-1", "RECENTLY-CLOSED"}
+
+
+def test_closed_markets_history_only_includes_closed(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+    store.upsert_active_market("ACTIVE-1", "BRTI", 100.0, close_ts_ms=now_ms + 60_000, now_ms=now_ms)
+    store.upsert_active_market("CLOSED-1", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("CLOSED-1", closed_at_ms=now_ms)
+
+    rows = store.closed_markets_history()
+
+    assert [r["ticker"] for r in rows] == ["CLOSED-1"]
+
+
+def test_reupserting_a_closed_ticker_reactivates_it(tmp_path):
+    store = _make_store(tmp_path)
+    store.upsert_active_market("KXBTC15M-A", "BRTI", 100.0, close_ts_ms=1_000, now_ms=500)
+    store.mark_closed("KXBTC15M-A", closed_at_ms=1_500)
+    assert store.get_active_tickers() == []
+
+    # A new 15-min window reuses the same series/ticker pattern in principle,
+    # but if the same ticker reappears as open it should go active again.
+    store.upsert_active_market("KXBTC15M-A", "BRTI", 100.0, close_ts_ms=2_000, now_ms=1_600)
+    assert store.get_active_tickers() == ["KXBTC15M-A"]
+
+
+def test_markets_pending_outcome_excludes_active_and_already_recorded(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+    store.upsert_active_market("ACTIVE-1", "BRTI", 100.0, close_ts_ms=now_ms + 60_000, now_ms=now_ms)
+    store.upsert_active_market("CLOSED-PENDING", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("CLOSED-PENDING", closed_at_ms=now_ms)
+    store.upsert_active_market("CLOSED-RESOLVED", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("CLOSED-RESOLVED", closed_at_ms=now_ms)
+    store.record_outcome("CLOSED-RESOLVED", "yes", checked_at_ms=now_ms)
+
+    pending = store.markets_pending_outcome(max_age_ms=24 * 3600 * 1000, now_ms=now_ms)
+
+    assert pending == ["CLOSED-PENDING"]
+
+
+def test_markets_pending_outcome_excludes_stale_closures(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+    store.upsert_active_market("OLD-CLOSED", "BRTI", 100.0, close_ts_ms=now_ms - 1000, now_ms=now_ms)
+    store.mark_closed("OLD-CLOSED", closed_at_ms=now_ms - 48 * 3600 * 1000)  # closed 2 days ago
+
+    pending = store.markets_pending_outcome(max_age_ms=24 * 3600 * 1000, now_ms=now_ms)
+
+    assert pending == []
+
+
+def test_calibration_stats_empty_when_no_resolved_markets(tmp_path):
+    store = _make_store(tmp_path)
+    stats = store.calibration_stats()
+    assert stats["n"] == 0
+    assert stats["model_brier"] is None
+
+
+def test_calibration_stats_scores_the_locked_decision_not_the_last_signal(tmp_path):
+    from kalshi_bot.kalshi_client.models import Signal
+
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+
+    # Market settled YES. Decision (locked ~6.5 min out) was confident and correct;
+    # a later live signal (closer to close) is intentionally different to prove
+    # calibration scores the decision, not whatever the last signal happened to be.
+    store.upsert_active_market("CASE-1", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("CASE-1", closed_at_ms=now_ms)
+    store.record_outcome("CASE-1", "yes", checked_at_ms=now_ms)
+    store.record_decision(
+        ticker="CASE-1", ts_ms=now_ms - 400_000, seconds_to_expiry=390.0, index_price=101.0,
+        strike=100.0, model_p_yes=0.9, market_p_yes=0.55, edge=0.35, recommendation="BUY_YES", confidence=0.35,
+    )
+    store.insert_signal(
+        Signal(
+            ticker="CASE-1", ts_ms=now_ms, index_id="BRTI", index_price=99.0, strike=100.0,
+            seconds_to_expiry=5.0, model_p_yes=0.1, market_p_yes=0.2, edge=-0.1,
+            recommendation="BUY_NO", confidence=0.1,
+        )
+    )
+
+    stats = store.calibration_stats()
+
+    assert stats["n"] == 1
+    assert stats["model_brier"] == (0.9 - 1.0) ** 2  # from the decision, not the later 0.1 signal
+    assert stats["market_brier"] == (0.55 - 1.0) ** 2
+    assert stats["baseline_brier"] == (0.5 - 1.0) ** 2
+    assert stats["model_brier"] < stats["market_brier"]  # model was more accurate here
+
+
+def test_calibration_stats_filters_by_coin(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+
+    store.upsert_active_market("BTC-1", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("BTC-1", closed_at_ms=now_ms)
+    store.record_outcome("BTC-1", "yes", checked_at_ms=now_ms)
+    store.record_decision(
+        ticker="BTC-1", ts_ms=now_ms - 400_000, seconds_to_expiry=390.0, index_price=101.0,
+        strike=100.0, model_p_yes=0.9, market_p_yes=0.55, edge=0.35, recommendation="BUY_YES", confidence=0.4,
+    )
+
+    store.upsert_active_market("SOL-1", "SOLUSD_RTI", 50.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("SOL-1", closed_at_ms=now_ms)
+    store.record_outcome("SOL-1", "no", checked_at_ms=now_ms)
+    store.record_decision(
+        ticker="SOL-1", ts_ms=now_ms - 400_000, seconds_to_expiry=390.0, index_price=49.0,
+        strike=50.0, model_p_yes=0.2, market_p_yes=0.3, edge=-0.1, recommendation="BUY_NO", confidence=0.3,
+    )
+
+    btc_stats = store.calibration_stats(index_id="BRTI")
+    sol_stats = store.calibration_stats(index_id="SOLUSD_RTI")
+    overall_stats = store.calibration_stats()
+
+    assert btc_stats["n"] == 1
+    assert btc_stats["model_brier"] == (0.9 - 1.0) ** 2
+    assert sol_stats["n"] == 1
+    assert sol_stats["model_brier"] == (0.2 - 0.0) ** 2
+    assert overall_stats["n"] == 2
+
+
+def test_has_decision_false_until_recorded(tmp_path):
+    store = _make_store(tmp_path)
+    assert store.has_decision("KXBTC15M-A") is False
+    store.record_decision(
+        ticker="KXBTC15M-A", ts_ms=1_000, seconds_to_expiry=390.0, index_price=100.0,
+        strike=99.0, model_p_yes=0.7, market_p_yes=0.6, edge=0.1, recommendation="BUY_YES", confidence=0.1,
+    )
+
+    assert store.has_decision("KXBTC15M-A") is True
+
+
+def test_record_decision_stores_confirmation_votes(tmp_path):
+    store = _make_store(tmp_path)
+    store.upsert_active_market("KXBTC15M-A", "BRTI", 99.0, close_ts_ms=10_000, now_ms=500)
+    store.record_decision(
+        ticker="KXBTC15M-A", ts_ms=1_000, seconds_to_expiry=390.0, index_price=100.0,
+        strike=99.0, model_p_yes=0.7, market_p_yes=0.6, edge=0.1, recommendation="BUY_YES", confidence=0.1,
+        confirmation_agree=2, confirmation_total=3,
+    )
+
+    rows = store.dashboard_markets(grace_period_sec=0)
+
+    assert rows[0]["decision_confirmation_agree"] == 2
+    assert rows[0]["decision_confirmation_total"] == 3
+
+
+def test_record_decision_is_one_shot(tmp_path):
+    store = _make_store(tmp_path)
+    store.record_decision(
+        ticker="KXBTC15M-A", ts_ms=1_000, seconds_to_expiry=390.0, index_price=100.0,
+        strike=99.0, model_p_yes=0.7, market_p_yes=0.6, edge=0.1, recommendation="BUY_YES", confidence=0.1,
+    )
+    # A second call for the same ticker must not overwrite the first decision.
+    store.record_decision(
+        ticker="KXBTC15M-A", ts_ms=2_000, seconds_to_expiry=300.0, index_price=105.0,
+        strike=99.0, model_p_yes=0.95, market_p_yes=0.9, edge=0.05, recommendation="BUY_YES", confidence=0.05,
+    )
+
+    rows = store.dashboard_markets(grace_period_sec=0)
+    store.upsert_active_market("KXBTC15M-A", "BRTI", 99.0, close_ts_ms=10_000, now_ms=500)
+    rows = store.dashboard_markets(grace_period_sec=0)
+    assert rows[0]["decision_ts_ms"] == 1_000
+    assert rows[0]["decision_model_p_yes"] == 0.7

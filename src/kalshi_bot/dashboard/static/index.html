@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AQLabs — Kalshi 15-Minute Crypto Signal</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="title-row">
+      <div class="brand">
+        <span class="brand-mark">AQ</span>
+        <div class="brand-text">
+          <span class="brand-name">AQLabs</span>
+          <h1>Kalshi 15-Minute Crypto Signal</h1>
+        </div>
+      </div>
+      <span id="conn-status" class="status status--pending">connecting…</span>
+    </div>
+    <p class="disclaimer">Monitor-only &mdash; this tool never places, amends, or cancels orders.</p>
+    <div id="calibration" class="calibration-group">
+      <div class="calibration">Track record: waiting for the first settled market&hellip;</div>
+    </div>
+    <nav class="tabs">
+      <button class="tab-button active" data-tab="active">Active Markets</button>
+      <button class="tab-button" data-tab="closed">Closed Markets</button>
+    </nav>
+  </header>
+
+  <main id="cards" class="cards">
+    <p class="empty-state">Waiting for market data…</p>
+  </main>
+
+  <footer>
+    <span id="last-updated"></span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+

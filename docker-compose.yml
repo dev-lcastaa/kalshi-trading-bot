@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kalshi
+      POSTGRES_USER: kalshi
+      POSTGRES_PASSWORD: kalshi
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kalshi -d kalshi"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Overrides whatever DATABASE_URL is set to in .env - the bot always
+      # talks to the postgres service by name inside the compose network.
+      DATABASE_URL: postgresql://kalshi:kalshi@postgres:5432/kalshi
+      KALSHI_DASHBOARD_HOST: 0.0.0.0
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the RSA private key read-only; never bake secrets into the image.
+      - ./.secrets:/app/.secrets:ro
+
+volumes:
+  postgres-data:
