@@ -5,7 +5,7 @@ __pycache__/
 *.egg-info/
 .git/
 .gitignore
-data/
+/data/
 .secrets/
 .env
 README.md
