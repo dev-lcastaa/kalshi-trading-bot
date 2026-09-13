@@ -232,6 +232,44 @@ class Store:
         columns = [column[0] for column in cur.description]
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
+    def external_feed_status(self, max_age_ms: int = 5_000) -> dict:
+        """Return browser-safe health data for the external shadow feed."""
+        now_ms = int(time.time() * 1000)
+        cur = self._query("""
+            SELECT source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h
+            FROM external_ticks latest
+            WHERE received_at_ms = (
+                SELECT MAX(received_at_ms) FROM external_ticks newer
+                WHERE newer.source = latest.source AND newer.symbol = latest.symbol
+            )
+            ORDER BY source, symbol
+        """)
+        columns = [column[0] for column in cur.description]
+        sources = []
+        for row in cur.fetchall():
+            item = dict(zip(columns, row))
+            item["age_ms"] = max(0, now_ms - item["received_at_ms"])
+            item["healthy"] = item["age_ms"] <= max_age_ms
+            sources.append(item)
+        snapshot = self._query("""
+            SELECT ticker, ts_ms, snapshot_json FROM decision_snapshots
+            ORDER BY ts_ms DESC LIMIT 1
+        """).fetchone()
+        latest_snapshot = None
+        if snapshot:
+            payload = json.loads(snapshot[2])
+            latest_snapshot = {
+                "ticker": snapshot[0],
+                "ts_ms": snapshot[1],
+                "external_prices": payload.get("external_prices"),
+            }
+        return {
+            "now_ms": now_ms,
+            "healthy": bool(sources) and all(item["healthy"] for item in sources),
+            "sources": sources,
+            "latest_decision_snapshot": latest_snapshot,
+        }
+
     def insert_market_tick(
         self,
         market_ticker: str,

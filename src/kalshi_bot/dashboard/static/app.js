@@ -898,6 +898,28 @@ function updateClock() {
   clockEl.textContent = utcStr;
 }
 
+async function refreshExternalStatus() {
+  const element = document.getElementById("external-status");
+  if (!element) return;
+  try {
+    const response = await fetch("/api/external-status");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const status = await response.json();
+    const healthy = status.healthy;
+    const count = status.sources?.length ?? 0;
+    const label = healthy ? `EXT FEED: LIVE (${count})` : count ? "EXT FEED: STALE" : "EXT FEED: WAITING";
+    element.textContent = label;
+    element.className = `external-status external-status--${healthy ? "live" : count ? "stale" : "waiting"}`;
+    const sourceDetail = (status.sources || [])
+      .map((source) => `${source.symbol}: ${Math.round(source.age_ms)}ms`)
+      .join(" | ");
+    element.title = sourceDetail || "No external price ticks received yet";
+  } catch {
+    element.textContent = "EXT FEED: UNAVAILABLE";
+    element.className = "external-status external-status--stale";
+  }
+}
+
 function setStatus(state, label) {
   const el = document.getElementById("conn-status");
   if (!el) return;
@@ -1177,11 +1199,13 @@ function initApp() {
   refresh();
   refreshCalibration();
   updateClock();
+  refreshExternalStatus();
 
   setInterval(refresh, 5000);
   setInterval(tickCountdowns, 1000);
   setInterval(refreshCalibration, 15000);
   setInterval(updateClock, 1000);
+  setInterval(refreshExternalStatus, 5000);
 }
 
 // Ensure execution happens even if DOM is already parsed

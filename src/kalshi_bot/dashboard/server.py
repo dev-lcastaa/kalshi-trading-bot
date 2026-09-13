@@ -55,6 +55,11 @@ def create_app(
         """Latest raw index tick per coin, updated far more often than signals are recomputed."""
         return store.latest_index_prices()
 
+    @app.get("/api/external-status")
+    def get_external_status() -> dict:
+        """Health and latest snapshot data for the external shadow feed."""
+        return store.external_feed_status()
+
     @app.get("/api/calibration")
     def get_calibration(limit: int = 200, index_id: str | None = None) -> dict:
         return store.calibration_stats(limit=limit, index_id=index_id)

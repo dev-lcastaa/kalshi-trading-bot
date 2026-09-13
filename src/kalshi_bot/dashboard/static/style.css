@@ -228,6 +228,20 @@ body {
   border-radius: 8px;
 }
 
+.external-status {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.external-status--live { color: var(--green); background: var(--green-bg); }
+.external-status--stale { color: var(--red); background: var(--red-bg); }
+.external-status--waiting { color: var(--amber); background: var(--amber-bg); }
+
 .mode-pill {
   display: flex;
   align-items: center;
