@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -59,11 +59,27 @@ def create_app(
     def get_calibration(limit: int = 200, index_id: str | None = None) -> dict:
         return store.calibration_stats(limit=limit, index_id=index_id)
 
+    @app.get("/api/shadow-decisions")
+    def get_shadow_decisions(
+        limit: int = Query(default=200, ge=1, le=10000), index_id: str | None = None,
+    ) -> list[dict]:
+        return store.shadow_decisions(limit=limit, index_id=index_id)
+
+    @app.get("/api/shadow-comparison")
+    def get_shadow_comparison(
+        limit: int = Query(default=10000, ge=1, le=10000), index_id: str | None = None,
+    ) -> dict:
+        return store.shadow_comparison(limit=limit, index_id=index_id)
+
     @app.get("/api/whale-trades")
-    def get_whale_trades(ticker: str, limit: int = 20) -> list[dict]:
+    def get_whale_trades(
+        ticker: str,
+        limit: int = Query(default=20, ge=1, le=200),
+        min_usd: float = Query(default=0, ge=0, le=1_000_000_000),
+    ) -> list[dict]:
         """Recent large fills for one market. Anonymous - Kalshi's public trade
         feed does not expose who made a trade, only the fill's side/size/price."""
-        return store.recent_whale_trades(ticker, limit=limit)
+        return store.recent_whale_trades(ticker, limit=limit, min_usd=min_usd)
 
     @app.websocket("/ws/live")
     async def ws_live(websocket: WebSocket) -> None:

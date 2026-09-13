@@ -1,10 +1,64 @@
 import time
 
+import pytest
+
 from kalshi_bot.data.store import Store
 
 
 def _make_store(tmp_path) -> Store:
     return Store(str(tmp_path / "test.db"))
+
+
+def test_shadow_decision_is_immutable_and_survives_restart(tmp_path):
+    store = _make_store(tmp_path)
+    decision = dict(
+        ticker="BTC-SHADOW", ts_ms=1000, seconds_to_expiry=390, index_price=101,
+        strike=100, model_p_yes=0.9, market_p_yes=0.6, edge=0.3,
+        recommendation="BUY_YES", confidence=0.9,
+    )
+    snapshot = {"index_id": "BRTI", "experiment_id": "test-v1", "features": {"index_price": 101}}
+    store.record_decision(**decision, shadow_snapshot=snapshot)
+    store.record_decision(**decision, shadow_snapshot={**snapshot, "experiment_id": "changed"})
+    store.close()
+    store = _make_store(tmp_path)
+    rows = store.shadow_decisions()
+    assert len(rows) == 1
+    assert rows[0]["snapshot"] == snapshot
+    assert rows[0]["result"] is None
+    assert store.shadow_decisions(index_id="SOLUSD_RTI") == []
+    store.upsert_active_market("BTC-SHADOW", "BRTI", 100, 391000, 1000)
+    store.record_outcome("BTC-SHADOW", "yes")
+    assert store.shadow_decisions()[0]["result"] == "yes"
+    store.close()
+
+
+def test_shadow_does_not_backfill_existing_decision(tmp_path):
+    store = _make_store(tmp_path)
+    decision = dict(
+        ticker="OLD", ts_ms=1000, seconds_to_expiry=390, index_price=101,
+        strike=100, model_p_yes=0.9, market_p_yes=0.6, edge=0.3,
+        recommendation="BUY_YES", confidence=0.9,
+    )
+    store.record_decision(**decision)
+    store.record_decision(**decision, shadow_snapshot={"index_id": "BRTI", "experiment_id": "test"})
+    assert store.shadow_decisions() == []
+    store.close()
+
+
+def test_shadow_failure_rolls_back_both_records(tmp_path):
+    store = _make_store(tmp_path)
+    decision = dict(
+        ticker="FAILED", ts_ms=1000, seconds_to_expiry=390, index_price=101,
+        strike=100, model_p_yes=0.9, market_p_yes=0.6, edge=0.3,
+        recommendation="BUY_YES", confidence=0.9,
+    )
+    with pytest.raises(KeyError):
+        store.record_decision(**decision, shadow_snapshot={"index_id": "BRTI"})
+    assert not store.has_decision("FAILED")
+    assert store.shadow_decisions() == []
+    store.record_decision(**decision)
+    assert store.has_decision("FAILED")
+    store.close()
 
 
 def test_latest_index_prices_returns_most_recent_tick_per_index(tmp_path):

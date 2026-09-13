@@ -20,6 +20,10 @@ const EMPTY_MESSAGES = {
 
 let currentTab = "active";
 let decisionLeadSec = 390; // overwritten by /api/config on load
+const storedWhaleMinUsd = Number(localStorage.getItem("whaleMinUsd"));
+let whaleMinUsd = Number.isFinite(storedWhaleMinUsd) && storedWhaleMinUsd >= 0
+  ? storedWhaleMinUsd
+  : 100;
 
 // Populated by refreshCalibration(); used to render the per-coin section headers.
 const calibrationByCoin = {}; // index_id -> stats from /api/calibration
@@ -187,6 +191,15 @@ function whaleFaceHtml() {
   return `
     <p class="whale-caption">Recent large trades on this market. Anonymous —
       Kalshi doesn't reveal who made a trade, only its size.</p>
+    <form class="whale-filter" data-role="whale-filter">
+      <label>Minimum trade</label>
+      <div class="whale-filter__control">
+        <span aria-hidden="true">$</span>
+        <input type="number" data-role="whale-min" min="0" step="1"
+               value="${whaleMinUsd}" aria-label="Minimum trade amount in dollars" />
+        <button type="submit">Filter</button>
+      </div>
+    </form>
     <div class="whale-empty" data-role="whale-list">Loading big bets…</div>
   `;
 }
@@ -288,13 +301,16 @@ async function loadWhaleTrades(card) {
   const ticker = card.dataset.ticker;
   const listEl = card.querySelector('[data-role="whale-list"]');
   if (!listEl) return;
+  listEl.className = "whale-empty";
+  listEl.textContent = "Loading big bets…";
   try {
-    const res = await fetch(`/api/whale-trades?ticker=${encodeURIComponent(ticker)}&limit=20`);
+    const query = new URLSearchParams({ ticker, limit: "20", min_usd: String(whaleMinUsd) });
+    const res = await fetch(`/api/whale-trades?${query}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const trades = await res.json();
     listEl.outerHTML = trades.length
       ? `<div data-role="whale-list">${trades.map(whaleTradeRowHtml).join("")}</div>`
-      : '<div class="whale-empty" data-role="whale-list">No big bets on this market yet.</div>';
+      : `<div class="whale-empty" data-role="whale-list">No trades at or above $${whaleMinUsd.toLocaleString()}.</div>`;
   } catch {
     listEl.outerHTML = '<div class="whale-empty" data-role="whale-list">Couldn\'t load big bets right now.</div>';
   }
@@ -624,6 +640,27 @@ document.getElementById("cards").addEventListener("click", (event) => {
   const card = toggle.closest(".card");
   if (!card) return;
   setCardView(card, card.dataset.view === "whales" ? "prediction" : "whales");
+});
+
+document.getElementById("cards").addEventListener("submit", (event) => {
+  const form = event.target.closest('[data-role="whale-filter"]');
+  if (!form) return;
+  event.preventDefault();
+  const input = form.querySelector('[data-role="whale-min"]');
+  const value = Number(input?.value);
+  if (!Number.isFinite(value) || value < 0) {
+    input?.setCustomValidity("Enter zero or a positive dollar amount.");
+    input?.reportValidity();
+    return;
+  }
+  input.setCustomValidity("");
+  whaleMinUsd = value;
+  localStorage.setItem("whaleMinUsd", String(value));
+  document.querySelectorAll('[data-role="whale-min"]').forEach((field) => {
+    field.value = String(value);
+  });
+  const card = form.closest(".card");
+  if (card) loadWhaleTrades(card);
 });
 
 fetch("/api/config")

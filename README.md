@@ -9,14 +9,52 @@ Every trade decision is 100% yours.
 
 ## 📍 Where we are right now
 
-We just finished setting the bot up and it's running 24/7, collecting real
-results. **We are not fine-tuning the prediction model yet** — we're
-letting it run first so we have enough real, settled markets to know what
-actually needs improving, instead of guessing.
+The live model remains unchanged. With `v2` selected, new locked decisions
+also record a shadow model with its order-book drift weight set to zero.
+The shadow model never changes the live recommendation or places an order.
+We are collecting prospective comparisons before deciding whether to
+replace the model; no sample count guarantees accuracy or profitability.
 
-Check back on the dashboard's track record panel over the next few days.
-Once we have 100+ settled markets per coin, we'll come back and tune the
-model using real evidence instead of assumptions.
+### Shadow comparison
+
+After deploying this version, each new decision records both models on
+the same inputs and timestamp, including abstentions. The momentum weight,
+settlement formula, decision timing, edge threshold, and confirmation rules
+stay the same. Book imbalance remains part of the confirmation gate for
+both models; only the challenger's probability-model tilt is removed.
+
+The new `shadow_decisions` table is created automatically in SQLite or
+Postgres. Existing decisions are never backfilled or overwritten. Restarting
+does not replace snapshots. Shadow collection requires the `v2` live model;
+selecting `v1` preserves legacy behavior without creating shadow snapshots.
+
+Read-only endpoints (use your dashboard host and port):
+
+- `/api/shadow-comparison`: matched live, shadow and market accuracy, Brier
+  score, log loss, confidence diagnostics and actionable-call counts.
+  Results are separated by coin and experiment configuration. Pending
+  outcomes are counted but not scored. The default is the latest 10,000
+  recorded pairs, not all historical decisions.
+- `/api/shadow-decisions`: exact features, buffered index ticks, model
+  settings, both recommendations and confirmation votes, quote sizes,
+  bid/ask prices, quote timestamps and index-tick age, joined to outcomes.
+  The default is the latest 200 pairs.
+- Both accept `index_id=BRTI` or `index_id=SOLUSD_RTI` and `limit=1..10000`.
+
+These are research endpoints, not a new dashboard panel. The existing
+dashboard and its calibration numbers still describe the live model.
+The stored NO ask is inferred as `1 - YES bid`. Quotes and their ages are
+recorded as observed, not guaranteed fresh or executable; fees, fills,
+latency and slippage are not simulated. Comparison scores are not net profit.
+Changing model parameters, edge threshold or decision lead time starts a
+separate configuration group. Algorithm changes require bumping the
+experiment/model/confirmation version labels before collecting more data.
+
+For the Docker deployment, update the source on the server, back up the
+database, then run `docker compose up -d --build`. Keep the existing database
+volume; do not run `docker compose down -v`. Inspect `/api/shadow-decisions`
+after the next new market locks. Comparison scores appear after settlement.
+Local edits alone do not update a bot already running on another machine.
 
 ## What does it actually do?
 
@@ -99,7 +137,13 @@ or wrong once Kalshi reports the result.
 
 Each card has a small **🐋 Big bets** button. Click it to flip that card
 from the prediction view to a list of the largest recent trades on that
-specific market — click it again to flip back.
+specific market. Enter a minimum dollar amount, such as `$300` or `$500`,
+and press **Filter** to show the latest trades at or above that amount. The
+threshold is remembered in that browser. Click **Big bets** again to flip back.
+
+The filter can only search trades the bot collected. `KALSHI_WHALE_MIN_USD`
+is the collection floor (default `$100`), so lowering the dashboard filter
+below that value cannot recover smaller historical trades that were never saved.
 
 **Important: this shows big trades, not big traders.** Kalshi's public
 trade data doesn't reveal who made a trade — no names, no accounts. So this

@@ -3,8 +3,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi.testclient import TestClient
 
 from kalshi_bot.data.store import Store
+from kalshi_bot.dashboard.server import create_app
 from kalshi_bot.main import BotApp
 
 
@@ -55,4 +57,23 @@ async def test_poll_whale_trades_parses_modern_kalshi_schema(tmp_path):
     assert trades[0]["price_cents"] == 60.0
     assert trades[0]["notional_usd"] == 120.0
 
+    store.close()
+
+
+def test_whale_endpoint_filters_before_applying_limit(tmp_path):
+    store = Store(str(tmp_path / "filtered_whales.db"))
+    for trade_id, ts_ms, notional in (
+        ("SMALL-NEW", 3_000, 200.0),
+        ("BIG-MID", 2_000, 500.0),
+        ("BIG-OLD", 1_000, 700.0),
+    ):
+        store.insert_whale_trade(trade_id, "BTC", ts_ms, "yes", 10, 50, notional)
+    client = TestClient(create_app(store))
+
+    response = client.get("/api/whale-trades", params={"ticker": "BTC", "min_usd": 500, "limit": 1})
+
+    assert response.status_code == 200
+    assert [trade["trade_id"] for trade in response.json()] == ["BIG-MID"]
+    assert client.get("/api/whale-trades", params={"ticker": "BTC", "min_usd": -1}).status_code == 422
+    assert client.get("/api/whale-trades", params={"ticker": "BTC", "limit": 0}).status_code == 422
     store.close()

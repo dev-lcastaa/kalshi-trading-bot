@@ -286,6 +286,48 @@ h1 {
   margin: 0 0 0.75rem;
 }
 
+.whale-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.whale-filter__control {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.whale-filter input {
+  width: 6.5rem;
+  min-width: 0;
+  padding: 0.35rem 0.45rem;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+}
+
+.whale-filter button {
+  padding: 0.35rem 0.55rem;
+  color: var(--text);
+  background: rgba(108, 140, 255, 0.15);
+  border: 1px solid rgba(108, 140, 255, 0.4);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+@media (max-width: 420px) {
+  .whale-filter {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .whale-empty {
   color: var(--muted);
   font-size: 0.85rem;

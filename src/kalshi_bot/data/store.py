@@ -8,6 +8,7 @@ used throughout, so almost no code branches on which backend is in use.
 """
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 import threading
@@ -95,6 +96,15 @@ _SCHEMA_STATEMENTS = [
         count DOUBLE PRECISION NOT NULL,
         price_cents DOUBLE PRECISION NOT NULL,
         notional_usd DOUBLE PRECISION NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shadow_decisions (
+        ticker TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        index_id TEXT NOT NULL,
+        experiment_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_index_ticks_id_ts ON index_ticks (index_id, ts_ms)",
@@ -399,21 +409,109 @@ class Store:
         confirmation_agree: int | None = None,
         confirmation_total: int | None = None,
         confirmation_detail: str | None = None,
+        shadow_snapshot: dict | None = None,
     ) -> None:
         """One-shot: does nothing if a decision was already recorded for this ticker."""
-        self._execute(
-            """INSERT INTO decisions
+        snapshot_json = json.dumps(shadow_snapshot, allow_nan=False) if shadow_snapshot is not None else None
+        with self._lock:
+            try:
+                cursor = self._raw_execute(
+                    """INSERT INTO decisions
                (ticker, ts_ms, seconds_to_expiry, index_price, strike, model_p_yes,
                 market_p_yes, edge, recommendation, confidence, confirmation_agree, confirmation_total,
                 confirmation_detail)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (ticker) DO NOTHING""",
-            (
-                ticker, ts_ms, seconds_to_expiry, index_price, strike, model_p_yes,
-                market_p_yes, edge, recommendation, confidence, confirmation_agree, confirmation_total,
-                confirmation_detail,
-            ),
-        )
+                    (
+                        ticker, ts_ms, seconds_to_expiry, index_price, strike, model_p_yes,
+                        market_p_yes, edge, recommendation, confidence, confirmation_agree, confirmation_total,
+                        confirmation_detail,
+                    ),
+                )
+                if cursor.rowcount == 1 and shadow_snapshot is not None:
+                    self._raw_execute(
+                        """INSERT INTO shadow_decisions
+                           (ticker, ts_ms, index_id, experiment_id, snapshot_json)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (ticker, ts_ms, shadow_snapshot["index_id"], shadow_snapshot["experiment_id"], snapshot_json),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def shadow_decisions(self, limit: int = 200, index_id: str | None = None) -> list[dict]:
+        sql = """SELECT s.ticker, s.ts_ms, s.index_id, s.experiment_id, s.snapshot_json,
+                        m.close_ts_ms, m.result
+                 FROM shadow_decisions s
+                 INNER JOIN decisions d ON d.ticker = s.ticker AND d.ts_ms = s.ts_ms
+                 LEFT JOIN markets m ON m.ticker = s.ticker"""
+        params: list = []
+        if index_id is not None:
+            sql += " WHERE s.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY s.ts_ms DESC, s.ticker ASC LIMIT ?"
+        params.append(limit)
+        cursor = self._query(sql, tuple(params))
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        for row in rows:
+            row["snapshot"] = json.loads(row.pop("snapshot_json"))
+        return rows
+
+    def shadow_comparison(self, limit: int = 10000, index_id: str | None = None) -> dict:
+        rows = self.shadow_decisions(limit=limit, index_id=index_id)
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            groups.setdefault((row["experiment_id"], row["index_id"]), []).append(row)
+        comparisons = []
+        for (experiment_id, coin), group in groups.items():
+            settled = [row for row in group if row["result"] in ("yes", "no")]
+            scores = {}
+            for name in ("live", "shadow", "market"):
+                correct = actionable = actionable_correct = high_confidence = high_confidence_correct = 0
+                squared_error = log_loss = confidence_sum = 0.0
+                for row in settled:
+                    snapshot = row["snapshot"]
+                    probability = snapshot["market_p_yes"] if name == "market" else snapshot[name]["model_p_yes"]
+                    outcome = float(row["result"] == "yes")
+                    is_correct = (probability >= 0.5) == bool(outcome)
+                    correct += int(is_correct)
+                    squared_error += (probability - outcome) ** 2
+                    clipped = min(max(probability, 1e-6), 1 - 1e-6)
+                    log_loss -= outcome * math.log(clipped) + (1 - outcome) * math.log(1 - clipped)
+                    confidence = max(probability, 1 - probability)
+                    confidence_sum += confidence
+                    if confidence >= 0.9:
+                        high_confidence += 1
+                        high_confidence_correct += int(is_correct)
+                    recommendation = snapshot[name]["recommendation"] if name != "market" else "NO_EDGE"
+                    if recommendation in ("BUY_YES", "BUY_NO"):
+                        actionable += 1
+                        actionable_correct += int((recommendation == "BUY_YES") == bool(outcome))
+                count = len(settled)
+                scores[name] = {
+                    "n": count,
+                    "correct": correct,
+                    "accuracy": correct / count if count else None,
+                    "brier": squared_error / count if count else None,
+                    "log_loss": log_loss / count if count else None,
+                    "mean_confidence": confidence_sum / count if count else None,
+                    "high_confidence_n": high_confidence,
+                    "high_confidence_accuracy": high_confidence_correct / high_confidence if high_confidence else None,
+                    "actionable_n": actionable if name != "market" else None,
+                    "actionable_correct": actionable_correct if name != "market" else None,
+                }
+            comparisons.append({
+                "experiment_id": experiment_id,
+                "index_id": coin,
+                "recorded": len(group),
+                "pending": len(group) - len(settled),
+                "first_decision_ts_ms": min(row["ts_ms"] for row in group),
+                "last_decision_ts_ms": max(row["ts_ms"] for row in group),
+                "scores": scores,
+            })
+        return {"limit": limit, "recorded": len(rows), "groups": comparisons}
 
     def calibration_stats(self, limit: int = 200, index_id: str | None = None) -> dict:
         """Rolling Brier score / log loss of the model vs. the market, over the
@@ -505,11 +603,15 @@ class Store:
         row = cur.fetchone()
         return row[0] if row and row[0] is not None else None
 
-    def recent_whale_trades(self, ticker: str, limit: int = 20) -> list[dict]:
+    def recent_whale_trades(
+        self, ticker: str, limit: int = 20, min_usd: float = 0.0
+    ) -> list[dict]:
         cur = self._query(
             """SELECT trade_id, ticker, ts_ms, side, count, price_cents, notional_usd
-               FROM whale_trades WHERE ticker = ? ORDER BY ts_ms DESC LIMIT ?""",
-            (ticker, limit),
+               FROM whale_trades
+               WHERE ticker = ? AND notional_usd >= ?
+               ORDER BY ts_ms DESC LIMIT ?""",
+            (ticker, min_usd, limit),
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]

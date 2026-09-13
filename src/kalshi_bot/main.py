@@ -6,9 +6,11 @@ amends, or cancels orders.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
@@ -19,7 +21,8 @@ from .config import Settings
 from .dashboard.broadcaster import Broadcaster
 from .dashboard.server import create_app
 from .data.store import Store
-from .features.engine import build_features
+from .features.engine import Features, build_features
+from .kalshi_client.models import Signal
 from .kalshi_client.rest import KalshiRestClient
 from .kalshi_client.ws import KalshiWsClient
 from .market_discovery import find_15min_markets
@@ -52,6 +55,8 @@ class MarketState:
         self.yes_ask_dollars: float | None = None
         self.yes_bid_size: float = 0.0
         self.yes_ask_size: float = 0.0
+        self.quote_ts_ms: int | None = None
+        self.quote_received_at_ms: int | None = None
 
 
 class BotApp:
@@ -175,6 +180,8 @@ class BotApp:
         state.yes_ask_dollars = float(msg["yes_ask_dollars"])
         state.yes_bid_size = float(msg["yes_bid_size_fp"])
         state.yes_ask_size = float(msg["yes_ask_size_fp"])
+        state.quote_ts_ms = int(msg["ts_ms"])
+        state.quote_received_at_ms = int(time.time() * 1000)
         self.store.insert_market_tick(
             market_ticker=ticker,
             ts_ms=int(msg["ts_ms"]),
@@ -205,6 +212,78 @@ class BotApp:
         await self.broadcaster.broadcast(
             {"type": "index_tick", "index_id": index_id, "ts_ms": ts_ms, "value": value}
         )
+
+    def _build_shadow_snapshot(
+        self,
+        state: MarketState,
+        features: Features,
+        signal: Signal,
+        decision_recommendation: str,
+        now_ms: int,
+        ticks: list[tuple[int, float]],
+    ) -> dict | None:
+        if not isinstance(self.predictor, SettlementAwarePredictor):
+            return None
+        if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
+            return None
+        challenger = SettlementAwarePredictor(
+            momentum_weight=self.predictor.momentum_weight,
+            imbalance_weight=0.0,
+            window_sec=self.predictor.window_sec,
+        )
+        shadow_signal = generate_signal(
+            ticker=state.ticker, index_id=state.index_id, features=features,
+            predictor=challenger, yes_bid_dollars=state.yes_bid_dollars,
+            yes_ask_dollars=state.yes_ask_dollars,
+            edge_threshold=self.settings.edge_threshold, ts_ms=now_ms,
+        )
+        shadow_confirmation = check_confirmation(features, shadow_signal.model_p_yes >= 0.5)
+        parameters = {
+            "model_version": "settlement-v2",
+            "momentum_weight": self.predictor.momentum_weight,
+            "live_imbalance_weight": self.predictor.imbalance_weight,
+            "shadow_imbalance_weight": 0.0,
+            "window_sec": self.predictor.window_sec,
+            "edge_threshold": self.settings.edge_threshold,
+            "decision_lead_sec": self.settings.decision_lead_sec,
+            "confirmation_version": "majority-v1",
+        }
+        fingerprint = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
+        snapshot = {
+            "schema_version": 1,
+            "experiment_id": "settlement-no-book-v1-" + fingerprint,
+            "parameters": parameters,
+            "index_id": state.index_id,
+            "features": asdict(features),
+            "index_ticks": list(ticks),
+            "index_tick_ts_ms": ticks[-1][0],
+            "index_tick_age_ms": now_ms - ticks[-1][0],
+            "quotes": {
+                "yes_bid_dollars": state.yes_bid_dollars,
+                "yes_ask_dollars": state.yes_ask_dollars,
+                "no_ask_dollars": 1.0 - state.yes_bid_dollars,
+                "yes_bid_size": state.yes_bid_size,
+                "yes_ask_size": state.yes_ask_size,
+                "ts_ms": state.quote_ts_ms,
+                "received_at_ms": state.quote_received_at_ms,
+                "age_ms": now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None,
+            },
+            "live": {
+                "model_p_yes": signal.model_p_yes,
+                "raw_recommendation": signal.recommendation,
+                "recommendation": decision_recommendation,
+                "confirmation": asdict(check_confirmation(features, signal.model_p_yes >= 0.5)),
+            },
+            "shadow": {
+                "model_p_yes": shadow_signal.model_p_yes,
+                "raw_recommendation": shadow_signal.recommendation,
+                "recommendation": shadow_signal.recommendation if shadow_confirmation.confirmed else "NO_EDGE",
+                "confirmation": asdict(shadow_confirmation),
+            },
+            "market_p_yes": signal.market_p_yes,
+        }
+        json.dumps(snapshot, allow_nan=False)
+        return snapshot
 
     async def prediction_loop(self) -> None:
         while True:
@@ -263,6 +342,13 @@ class BotApp:
                             for c in confirmation.checks
                         ]
                     )
+                    shadow_snapshot = None
+                    try:
+                        shadow_snapshot = self._build_shadow_snapshot(
+                            state, features, signal, decision_recommendation, now_ms, ticks,
+                        )
+                    except Exception:
+                        logger.exception("Shadow prediction failed for %s; keeping the live decision", ticker)
                     self.store.record_decision(
                         ticker=ticker,
                         ts_ms=now_ms,
@@ -277,6 +363,7 @@ class BotApp:
                         confirmation_agree=confirmation.agree,
                         confirmation_total=confirmation.total,
                         confirmation_detail=confirmation_detail,
+                        shadow_snapshot=shadow_snapshot,
                     )
                     logger.info(
                         "Decision locked for %s at T-%.0fs: %s (model=%.3f market=%.3f, confirmation=%d/%d)",
