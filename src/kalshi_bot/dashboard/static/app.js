@@ -117,8 +117,8 @@ function outcomeHtml(r, predictedAbove) {
 }
 
 const TRADE_LABELS = {
-  BUY_YES: { label: "BET UP", sub: "BUY YES (BELOW MARKET)", cls: "up", icon: "\u25B2" },
-  BUY_NO: { label: "BET DOWN", sub: "BUY NO (BELOW MARKET)", cls: "down", icon: "\u25BC" },
+  BUY_YES: { label: "BET UP", sub: "BUY YES (CONTRACT UNDERPRICED)", cls: "up", icon: "\u25B2" },
+  BUY_NO: { label: "BET DOWN", sub: "BUY NO (CONTRACT UNDERPRICED)", cls: "down", icon: "\u25BC" },
   NO_EDGE: { label: "NO TRADE", sub: "FAIRLY PRICED", cls: "none", icon: "\u25CB" },
 };
 
@@ -162,6 +162,10 @@ function tradeBannerHtml(r) {
   const edgeVal = r.decision_edge !== undefined && r.decision_edge !== null ? Math.abs(Number(r.decision_edge) * 100).toFixed(1) : "0.0";
   const modelP = r.decision_model_p_yes !== undefined && r.decision_model_p_yes !== null ? Number(r.decision_model_p_yes) : 0.5;
   const winProb = rec === "BUY_NO" ? ((1 - modelP) * 100).toFixed(1) : (modelP * 100).toFixed(1);
+  const lockedPrice = r.decision_index_price !== undefined && r.decision_index_price !== null
+    ? Number(r.decision_index_price)
+    : null;
+  const goalPrice = Number(r.strike);
   const minutesLeft = r.decision_seconds_to_expiry !== undefined && r.decision_seconds_to_expiry !== null
     ? (Number(r.decision_seconds_to_expiry) / 60).toFixed(1)
     : "0.0";
@@ -205,6 +209,10 @@ function tradeBannerHtml(r) {
             </div>
             <span class="trade-banner__edge-caption">
               ${rec === "NO_EDGE" ? "Market is priced fairly with no edge." : `Locked-in Edge: <strong>+${edgeVal}% advantage</strong> over Kalshi odds (${winProb}% model win probability)`}
+            </span>
+            <span class="trade-banner__snapshot">
+              Decision snapshot: ${lockedPrice !== null ? `$${formatUsd(lockedPrice)} vs goal $${formatUsd(goalPrice)}` : "price unavailable"}
+              <span class="snapshot-note">&bull; live price below is current</span>
             </span>
           </div>
         </div>
@@ -300,7 +308,7 @@ function predictionHtml(r) {
     <div class="price-matrix">
       <div class="price-tile">
         <div class="tile-header">
-          <span class="tile-label">INDEX PRICE</span>
+          <span class="tile-label">LIVE INDEX PRICE</span>
           <span class="live-dot-tag" data-role="live-tag">LIVE</span>
         </div>
         <div class="tile-value tile-value--price" data-role="index-price">${indexPrice !== null ? "$" + formatUsd(indexPrice) : "--"}</div>

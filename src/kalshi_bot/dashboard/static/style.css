@@ -965,6 +965,21 @@ body {
   font-weight: 700;
 }
 
+.trade-banner__snapshot {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 600;
+}
+
+.snapshot-note {
+  color: var(--text-disabled);
+  font-family: var(--font-sans);
+  font-weight: 500;
+}
+
 .trade-banner__action {
   font-size: 0.78rem;
   font-weight: 700;
