@@ -21,7 +21,7 @@ from .config import Settings
 from .dashboard.broadcaster import Broadcaster
 from .dashboard.server import create_app
 from .data.store import Store
-from .external_prices import aggregate_external_prices, collect_coinbase
+from .external_prices import aggregate_external_prices, collect_coinbase, collect_kraken
 from .features.engine import Features, build_features
 from .kalshi_client.models import Signal
 from .kalshi_client.rest import KalshiRestClient
@@ -600,6 +600,7 @@ class BotApp:
             self.outcome_polling_loop(),
             self.whale_polling_loop(),
             collect_coinbase(self.store, asyncio.Event()),
+            collect_kraken(self.store, asyncio.Event()),
             server.serve(),
         )
 
