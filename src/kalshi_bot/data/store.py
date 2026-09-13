@@ -115,6 +115,20 @@ _SCHEMA_STATEMENTS = [
         snapshot_json TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS external_ticks (
+        source TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        index_id TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        received_at_ms BIGINT NOT NULL,
+        price DOUBLE PRECISION NOT NULL,
+        bid DOUBLE PRECISION NOT NULL,
+        ask DOUBLE PRECISION NOT NULL,
+        volume_24h DOUBLE PRECISION,
+        PRIMARY KEY (source, symbol, ts_ms)
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_index_ticks_id_ts ON index_ticks (index_id, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_market_ticks_ticker_ts ON market_ticks (market_ticker, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_markets_status ON markets (status, closed_at_ms)",
@@ -192,6 +206,31 @@ class Store:
                ON CONFLICT (index_id, ts_ms) DO UPDATE SET value = excluded.value""",
             (index_id, ts_ms, value),
         )
+
+    def insert_external_tick(
+        self, source: str, symbol: str, index_id: str, ts_ms: int,
+        received_at_ms: int, price: float, bid: float, ask: float,
+        volume_24h: float,
+    ) -> None:
+        self._execute(
+            """INSERT INTO external_ticks
+               (source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (source, symbol, ts_ms) DO UPDATE SET
+                 received_at_ms = excluded.received_at_ms,
+                 price = excluded.price, bid = excluded.bid, ask = excluded.ask,
+                 volume_24h = excluded.volume_24h""",
+            (source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h),
+        )
+
+    def recent_external_ticks(self, since_ms: int) -> list[dict]:
+        cur = self._query(
+            """SELECT source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h
+               FROM external_ticks WHERE received_at_ms >= ? ORDER BY received_at_ms""",
+            (since_ms,),
+        )
+        columns = [column[0] for column in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
 
     def insert_market_tick(
         self,

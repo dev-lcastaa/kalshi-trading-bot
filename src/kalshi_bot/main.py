@@ -21,6 +21,7 @@ from .config import Settings
 from .dashboard.broadcaster import Broadcaster
 from .dashboard.server import create_app
 from .data.store import Store
+from .external_prices import aggregate_external_prices, collect_coinbase
 from .features.engine import Features, build_features
 from .kalshi_client.models import Signal
 from .kalshi_client.rest import KalshiRestClient
@@ -308,6 +309,9 @@ class BotApp:
         quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
         index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
         quality_flags = self._quality_flags(state, features, ticks, now_ms)
+        external = aggregate_external_prices(
+            self.store.recent_external_ticks(now_ms - 5_000), now_ms, max_age_ms=5_000
+        ).get(state.index_id)
         parameters = {
             "predictor_version": getattr(self.settings, "predictor_version", type(self.predictor).__name__),
             "poll_interval_sec": self.settings.poll_interval_sec,
@@ -350,6 +354,13 @@ class BotApp:
             },
             "parameters": parameters,
             "quality_flags": quality_flags,
+            "external_prices": external or {
+                "source_count": 0,
+                "max_age_ms": None,
+                "price": None,
+                "price_dispersion": None,
+                "sources": [],
+            },
         }
 
     def _quality_flags(
@@ -588,6 +599,7 @@ class BotApp:
             self.rediscovery_loop(),
             self.outcome_polling_loop(),
             self.whale_polling_loop(),
+            collect_coinbase(self.store, asyncio.Event()),
             server.serve(),
         )
 

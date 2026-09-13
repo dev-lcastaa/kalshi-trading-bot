@@ -23,6 +23,26 @@ settlement formula, decision timing, edge threshold, and confirmation rules
 stay the same. Book imbalance remains part of the confirmation gate for
 both models; only the challenger's probability-model tilt is removed.
 
+### External crypto prices
+
+The bot now connects to Coinbase's public Advanced Trade WebSocket for
+`BTC-USD` and `SOL-USD`. It stores source ticks in `external_ticks` and adds a
+fresh aggregate to each locked `decision_snapshots` record:
+
+- median reference price
+- source count and source names
+- maximum receive age
+- cross-source price dispersion
+- bid/ask and 24-hour volume for the raw tick
+
+This is **shadow-only**. External prices do not currently alter v2 probabilities
+or live recommendations. Coinbase is not CF Benchmarks RTI, so using it as a
+direct replacement would introduce basis risk. The collector reconnects after
+feed failures and records receive time separately from the exchange event time.
+Treat `source_count < 1`, stale age, or high dispersion as unavailable external
+features. The next step is adding at least one independent exchange and testing
+an external-feature challenger on chronological holdouts before allowing it to
+influence a signal.
 The new `shadow_decisions` table is created automatically in SQLite or
 Postgres. Existing decisions are never backfilled or overwritten. Restarting
 does not replace snapshots. Shadow collection requires the `v2` live model;
