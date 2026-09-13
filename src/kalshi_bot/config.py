@@ -39,6 +39,8 @@ class Settings:
     predictor_version: str
     closed_grace_sec: int
     decision_lead_sec: int
+    whale_min_usd: float
+    whale_poll_interval_sec: float
 
     @staticmethod
     def load() -> "Settings":
@@ -62,4 +64,7 @@ class Settings:
             predictor_version=os.environ.get("KALSHI_PREDICTOR_VERSION", "v2").strip().lower(),
             closed_grace_sec=int(os.environ.get("KALSHI_CLOSED_GRACE_SEC", "10")),
             decision_lead_sec=int(os.environ.get("KALSHI_DECISION_LEAD_SEC", "390")),
+            # Fills at or above this dollar size are surfaced as a "big bet".
+            whale_min_usd=float(os.environ.get("KALSHI_WHALE_MIN_USD", "100")),
+            whale_poll_interval_sec=float(os.environ.get("KALSHI_WHALE_POLL_INTERVAL_SEC", "20")),
         )

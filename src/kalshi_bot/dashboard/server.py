@@ -59,6 +59,12 @@ def create_app(
     def get_calibration(limit: int = 200, index_id: str | None = None) -> dict:
         return store.calibration_stats(limit=limit, index_id=index_id)
 
+    @app.get("/api/whale-trades")
+    def get_whale_trades(ticker: str, limit: int = 20) -> list[dict]:
+        """Recent large fills for one market. Anonymous - Kalshi's public trade
+        feed does not expose who made a trade, only the fill's side/size/price."""
+        return store.recent_whale_trades(ticker, limit=limit)
+
     @app.websocket("/ws/live")
     async def ws_live(websocket: WebSocket) -> None:
         """Pushes live index ticks (and other events) as soon as the bot receives them."""

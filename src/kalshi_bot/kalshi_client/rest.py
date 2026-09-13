@@ -91,6 +91,24 @@ class KalshiRestClient:
     async def get_market_orderbook(self, ticker: str) -> dict[str, Any]:
         return await self._get(f"/markets/{ticker}/orderbook")
 
+    async def get_trades(
+        self,
+        ticker: str | None = None,
+        min_ts: int | None = None,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Public trade feed (individual fills). No trader identity is exposed by
+        Kalshi - this is anonymous, used only to spot unusually large single fills."""
+        params: dict[str, Any] = {"limit": limit}
+        if ticker:
+            params["ticker"] = ticker
+        if min_ts is not None:
+            params["min_ts"] = min_ts
+        if cursor:
+            params["cursor"] = cursor
+        return await self._get("/markets/trades", params=params)
+
     async def get_market_candlesticks(
         self,
         series_ticker: str,

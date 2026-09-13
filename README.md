@@ -95,6 +95,20 @@ Closed markets stay visible (dimmed) for a few seconds, then move to the
 **Closed Markets tab**, where you can see whether each past call was right
 or wrong once Kalshi reports the result.
 
+### 🐋 Big bets (who's putting in the big money?)
+
+Each card has a small **🐋 Big bets** button. Click it to flip that card
+from the prediction view to a list of the largest recent trades on that
+specific market — click it again to flip back.
+
+**Important: this shows big trades, not big traders.** Kalshi's public
+trade data doesn't reveal who made a trade — no names, no accounts. So this
+can't tell you "who" is betting big, only that a trade of unusually large
+size (by default, $100+) just happened, on which side, and at what price.
+A large trade can be someone with strong conviction — or just as easily a
+hedge, an exit, or someone market-making. Treat it as something worth
+noticing, not something to blindly copy.
+
 ## How it makes its guess (in plain terms)
 
 The bot doesn't just guess randomly — it uses:
@@ -148,6 +162,8 @@ measured and what its limits are:
 | `KALSHI_PREDICTOR_VERSION` | `v1` (simple) or `v2` (default, more accurate model) |
 | `KALSHI_CLOSED_GRACE_SEC` | How long a just-closed market stays on the Active tab |
 | `KALSHI_DECISION_LEAD_SEC` | How early (in seconds) the final BET UP/DOWN call locks in |
+| `KALSHI_WHALE_MIN_USD` | Minimum dollar size of a trade to count as a "big bet" |
+| `KALSHI_WHALE_POLL_INTERVAL_SEC` | How often to check for new big bets |
 | `DATABASE_URL` | A file path = SQLite; a `postgresql://` link = Postgres (Docker sets this automatically) |
 | `KALSHI_DASHBOARD_HOST` / `KALSHI_DASHBOARD_PORT` | Where the dashboard is served |
 

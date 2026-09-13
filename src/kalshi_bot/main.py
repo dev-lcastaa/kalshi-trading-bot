@@ -315,6 +315,44 @@ class BotApp:
                 self.store.record_outcome(ticker, result)
                 logger.info("Recorded settlement outcome for %s: %s", ticker, result)
 
+    async def whale_polling_loop(self) -> None:
+        """Surface unusually large individual fills ("big bets") on active markets.
+
+        Kalshi's public trade feed does not expose trader identity - this only
+        flags large single fills, not specific people or accounts.
+        """
+        while True:
+            await asyncio.sleep(self.settings.whale_poll_interval_sec)
+            for ticker in list(self.markets):
+                try:
+                    await self._poll_whale_trades(ticker)
+                except Exception:
+                    logger.exception("Whale-trade polling failed for %s", ticker)
+
+    async def _poll_whale_trades(self, ticker: str) -> None:
+        since_ts_ms = self.store.latest_whale_trade_ts(ticker)
+        min_ts = int(since_ts_ms / 1000) + 1 if since_ts_ms is not None else None
+        data = await self.rest.get_trades(ticker=ticker, min_ts=min_ts, limit=200)
+        for trade in data.get("trades", []):
+            ts_ms = _parse_ts_ms(trade.get("created_time"))
+            side = trade.get("taker_side")
+            if ts_ms is None or side not in ("yes", "no"):
+                continue
+            count = float(trade.get("count", 0))
+            price_cents = float(trade.get("yes_price" if side == "yes" else "no_price", 0))
+            notional_usd = count * price_cents / 100.0
+            if notional_usd < self.settings.whale_min_usd:
+                continue
+            self.store.insert_whale_trade(
+                trade_id=str(trade["trade_id"]),
+                ticker=ticker,
+                ts_ms=ts_ms,
+                side=side,
+                count=count,
+                price_cents=price_cents,
+                notional_usd=notional_usd,
+            )
+
     async def run(self) -> None:
         await self.discover_and_subscribe()
 
@@ -335,6 +373,7 @@ class BotApp:
             self.prediction_loop(),
             self.rediscovery_loop(),
             self.outcome_polling_loop(),
+            self.whale_polling_loop(),
             server.serve(),
         )
 

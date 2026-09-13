@@ -248,6 +248,75 @@ h1 {
   margin-bottom: 0.75rem;
 }
 
+.card-header__right {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.whale-toggle {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.whale-toggle:hover {
+  color: var(--text);
+  border-color: rgba(108, 140, 255, 0.4);
+}
+.whale-toggle.active {
+  color: var(--accent);
+  background: rgba(108, 140, 255, 0.15);
+  border-color: rgba(108, 140, 255, 0.4);
+}
+
+.card-face--whales {
+  min-height: 8rem;
+}
+
+.whale-caption {
+  color: var(--muted);
+  font-size: 0.75rem;
+  margin: 0 0 0.75rem;
+}
+
+.whale-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+  padding: 0.5rem 0;
+}
+
+.whale-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.85rem;
+}
+.whale-row:last-child { border-bottom: none; }
+
+.whale-side {
+  font-weight: 700;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.whale-side.up { color: var(--green); background: rgba(51, 209, 122, 0.12); }
+.whale-side.down { color: var(--red); background: rgba(255, 92, 92, 0.12); }
+
+.whale-amount { font-weight: 700; }
+.whale-price, .whale-ago { color: var(--muted); font-size: 0.78rem; }
+.whale-ago { margin-left: auto; }
+
 .coin-icon {
   display: inline-flex;
   align-items: center;

@@ -218,3 +218,53 @@ def test_record_decision_is_one_shot(tmp_path):
     rows = store.dashboard_markets(grace_period_sec=0)
     assert rows[0]["decision_ts_ms"] == 1_000
     assert rows[0]["decision_model_p_yes"] == 0.7
+
+
+def test_insert_whale_trade_is_idempotent_by_trade_id(tmp_path):
+    store = _make_store(tmp_path)
+    store.insert_whale_trade(
+        trade_id="T1", ticker="KXBTC15M-A", ts_ms=1_000, side="yes", count=200.0,
+        price_cents=60.0, notional_usd=120.0,
+    )
+    # Re-polling the same trade (already-seen fill) must not create a duplicate row.
+    store.insert_whale_trade(
+        trade_id="T1", ticker="KXBTC15M-A", ts_ms=1_000, side="yes", count=200.0,
+        price_cents=60.0, notional_usd=120.0,
+    )
+
+    trades = store.recent_whale_trades("KXBTC15M-A")
+
+    assert len(trades) == 1
+    assert trades[0]["notional_usd"] == 120.0
+
+
+def test_recent_whale_trades_scoped_to_ticker_and_ordered_newest_first(tmp_path):
+    store = _make_store(tmp_path)
+    store.insert_whale_trade(
+        trade_id="T1", ticker="KXBTC15M-A", ts_ms=1_000, side="yes", count=200.0,
+        price_cents=60.0, notional_usd=120.0,
+    )
+    store.insert_whale_trade(
+        trade_id="T2", ticker="KXBTC15M-A", ts_ms=2_000, side="no", count=300.0,
+        price_cents=40.0, notional_usd=120.0,
+    )
+    store.insert_whale_trade(
+        trade_id="T3", ticker="KXSOL15M-A", ts_ms=1_500, side="yes", count=100.0,
+        price_cents=50.0, notional_usd=50.0,
+    )
+
+    trades = store.recent_whale_trades("KXBTC15M-A")
+
+    assert [t["trade_id"] for t in trades] == ["T2", "T1"]
+
+
+def test_latest_whale_trade_ts_none_when_no_trades_recorded(tmp_path):
+    store = _make_store(tmp_path)
+    assert store.latest_whale_trade_ts("KXBTC15M-A") is None
+
+    store.insert_whale_trade(
+        trade_id="T1", ticker="KXBTC15M-A", ts_ms=1_000, side="yes", count=200.0,
+        price_cents=60.0, notional_usd=120.0,
+    )
+
+    assert store.latest_whale_trade_ts("KXBTC15M-A") == 1_000

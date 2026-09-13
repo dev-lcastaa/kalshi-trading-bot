@@ -86,9 +86,21 @@ _SCHEMA_STATEMENTS = [
         confirmation_detail TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS whale_trades (
+        trade_id TEXT PRIMARY KEY,
+        ticker TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        side TEXT NOT NULL,
+        count DOUBLE PRECISION NOT NULL,
+        price_cents DOUBLE PRECISION NOT NULL,
+        notional_usd DOUBLE PRECISION NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_index_ticks_id_ts ON index_ticks (index_id, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_market_ticks_ticker_ts ON market_ticks (market_ticker, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_markets_status ON markets (status, closed_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_whale_trades_ticker_ts ON whale_trades (ticker, ts_ms)",
 ]
 
 
@@ -461,4 +473,44 @@ class Store:
             "market_log_loss": market_ll / n,
             "baseline_brier": baseline_sq / n,
         }
+
+    # --- Big-bet ("whale") tracking ---------------------------------------------------
+
+    def insert_whale_trade(
+        self,
+        trade_id: str,
+        ticker: str,
+        ts_ms: int,
+        side: str,
+        count: float,
+        price_cents: float,
+        notional_usd: float,
+    ) -> None:
+        """One row per large fill. Idempotent - safe to re-insert the same trade_id
+        across polls since a market's trade feed is re-scanned each cycle."""
+        self._execute(
+            """INSERT INTO whale_trades
+               (trade_id, ticker, ts_ms, side, count, price_cents, notional_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (trade_id) DO NOTHING""",
+            (trade_id, ticker, ts_ms, side, count, price_cents, notional_usd),
+        )
+
+    def latest_whale_trade_ts(self, ticker: str) -> int | None:
+        """Most recent trade timestamp already recorded for this ticker, so polling
+        only needs to ask Kalshi for trades newer than this."""
+        cur = self._query(
+            "SELECT MAX(ts_ms) FROM whale_trades WHERE ticker = ?", (ticker,)
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def recent_whale_trades(self, ticker: str, limit: int = 20) -> list[dict]:
+        cur = self._query(
+            """SELECT trade_id, ticker, ts_ms, side, count, price_cents, notional_usd
+               FROM whale_trades WHERE ticker = ? ORDER BY ts_ms DESC LIMIT ?""",
+            (ticker, limit),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
 

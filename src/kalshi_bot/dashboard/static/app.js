@@ -183,12 +183,20 @@ function predictionHtml(r) {
   `;
 }
 
+function whaleFaceHtml() {
+  return `
+    <p class="whale-caption">Recent large trades on this market. Anonymous —
+      Kalshi doesn't reveal who made a trade, only its size.</p>
+    <div class="whale-empty" data-role="whale-list">Loading big bets…</div>
+  `;
+}
+
 function cardHtml(r) {
   const isClosed = r.status === "closed";
   return `
     <article class="card ${isClosed ? "card--closed" : ""}" data-ticker="${r.ticker}"
               data-status="${r.status}" data-close-ts="${r.close_ts_ms}" data-closed-at="${r.closed_at_ms ?? ""}"
-              data-index-id="${r.index_id ?? ""}">
+              data-index-id="${r.index_id ?? ""}" data-view="prediction">
       <div class="card-accent"></div>
       <div class="card-header">
         <div>
@@ -196,9 +204,17 @@ function cardHtml(r) {
           <span class="coin">${coinName(r.index_id)}</span>
           <span class="ticker">${r.ticker}</span>
         </div>
-        <span class="countdown ${isClosed ? "expired" : ""}" data-role="countdown">--:--</span>
+        <div class="card-header__right">
+          <button type="button" class="whale-toggle" data-role="whale-toggle" title="Show big bets on this market">🐋 Big bets</button>
+          <span class="countdown ${isClosed ? "expired" : ""}" data-role="countdown">--:--</span>
+        </div>
       </div>
-      ${predictionHtml(r)}
+      <div class="card-face card-face--prediction" data-role="face-prediction">
+        ${predictionHtml(r)}
+      </div>
+      <div class="card-face card-face--whales" data-role="face-whales" hidden>
+        ${whaleFaceHtml()}
+      </div>
     </article>
   `;
 }
@@ -226,6 +242,12 @@ function renderCards(rows) {
     return order !== 0 ? order : a.close_ts_ms - b.close_ts_ms;
   });
 
+  // Remember which cards were flipped to the big-bets view so a re-render
+  // (every 5s) doesn't silently snap them back to the prediction view.
+  const flippedTickers = new Set(
+    [...container.querySelectorAll('.card[data-view="whales"]')].map((el) => el.dataset.ticker)
+  );
+
   let html = "";
   let lastIndexId;
   sorted.forEach((r) => {
@@ -238,11 +260,59 @@ function renderCards(rows) {
   container.innerHTML = html;
   tickCountdowns();
 
+  if (flippedTickers.size) {
+    container.querySelectorAll(".card").forEach((card) => {
+      if (flippedTickers.has(card.dataset.ticker)) setCardView(card, "whales");
+    });
+  }
+
   const indexIds = new Set(sorted.map((r) => r.index_id).filter(Boolean));
   indexIds.forEach((indexId) => {
     patchLiveCards(indexId); // apply whatever we already know immediately (no flash of stale data)
     ensureSparklineSeed(indexId).then(() => patchLiveCards(indexId));
   });
+}
+
+function setCardView(card, view) {
+  card.dataset.view = view;
+  const predictionFace = card.querySelector('[data-role="face-prediction"]');
+  const whaleFace = card.querySelector('[data-role="face-whales"]');
+  if (predictionFace) predictionFace.hidden = view !== "prediction";
+  if (whaleFace) whaleFace.hidden = view !== "whales";
+  const toggleBtn = card.querySelector('[data-role="whale-toggle"]');
+  if (toggleBtn) toggleBtn.classList.toggle("active", view === "whales");
+  if (view === "whales") loadWhaleTrades(card);
+}
+
+async function loadWhaleTrades(card) {
+  const ticker = card.dataset.ticker;
+  const listEl = card.querySelector('[data-role="whale-list"]');
+  if (!listEl) return;
+  try {
+    const res = await fetch(`/api/whale-trades?ticker=${encodeURIComponent(ticker)}&limit=20`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const trades = await res.json();
+    listEl.outerHTML = trades.length
+      ? `<div data-role="whale-list">${trades.map(whaleTradeRowHtml).join("")}</div>`
+      : '<div class="whale-empty" data-role="whale-list">No big bets on this market yet.</div>';
+  } catch {
+    listEl.outerHTML = '<div class="whale-empty" data-role="whale-list">Couldn\'t load big bets right now.</div>';
+  }
+}
+
+function whaleTradeRowHtml(t) {
+  const sideLabel = t.side === "yes" ? "YES" : "NO";
+  const sideClass = t.side === "yes" ? "up" : "down";
+  const secondsAgo = Math.max(0, Math.floor((Date.now() - t.ts_ms) / 1000));
+  const ago = secondsAgo < 60 ? `${secondsAgo}s ago` : `${Math.floor(secondsAgo / 60)}m ago`;
+  return (
+    '<div class="whale-row">' +
+    `<span class="whale-side ${sideClass}">${sideLabel}</span>` +
+    `<span class="whale-amount">$${Math.round(t.notional_usd).toLocaleString()}</span>` +
+    `<span class="whale-price">@ ${Number(t.price_cents).toFixed(1)}\u00a2</span>` +
+    `<span class="whale-ago">${ago}</span>` +
+    "</div>"
+  );
 }
 
 function drawSparkline(canvas, points, strike) {
@@ -545,6 +615,15 @@ async function refresh() {
 
 document.querySelectorAll(".tab-button").forEach((btn) => {
   btn.addEventListener("click", () => setTab(btn.dataset.tab));
+});
+
+// Delegated (not per-card) so the listener survives renderCards() rebuilding innerHTML.
+document.getElementById("cards").addEventListener("click", (event) => {
+  const toggle = event.target.closest('[data-role="whale-toggle"]');
+  if (!toggle) return;
+  const card = toggle.closest(".card");
+  if (!card) return;
+  setCardView(card, card.dataset.view === "whales" ? "prediction" : "whales");
 });
 
 fetch("/api/config")
