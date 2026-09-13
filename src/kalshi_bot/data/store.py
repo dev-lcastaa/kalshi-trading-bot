@@ -107,6 +107,14 @@ _SCHEMA_STATEMENTS = [
         snapshot_json TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_snapshots (
+        ticker TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        index_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_index_ticks_id_ts ON index_ticks (index_id, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_market_ticks_ticker_ts ON market_ticks (market_ticker, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_markets_status ON markets (status, closed_at_ms)",
@@ -411,6 +419,7 @@ class Store:
         confirmation_total: int | None = None,
         confirmation_detail: str | None = None,
         shadow_snapshot: dict | None = None,
+        decision_snapshot: dict | None = None,
     ) -> None:
         """One-shot: does nothing if a decision was already recorded for this ticker."""
         snapshot_json = json.dumps(shadow_snapshot, allow_nan=False) if shadow_snapshot is not None else None
@@ -435,6 +444,12 @@ class Store:
                            (ticker, ts_ms, index_id, experiment_id, snapshot_json)
                            VALUES (?, ?, ?, ?, ?)""",
                         (ticker, ts_ms, shadow_snapshot["index_id"], shadow_snapshot["experiment_id"], snapshot_json),
+                    )
+                if cursor.rowcount == 1 and decision_snapshot is not None:
+                    self._raw_execute(
+                        """INSERT INTO decision_snapshots (ticker, ts_ms, index_id, snapshot_json)
+                           VALUES (?, ?, ?, ?)""",
+                        (ticker, ts_ms, decision_snapshot["index_id"], json.dumps(decision_snapshot, allow_nan=False)),
                     )
                 self._conn.commit()
             except Exception:

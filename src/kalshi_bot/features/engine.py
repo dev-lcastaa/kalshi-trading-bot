@@ -25,6 +25,8 @@ class Features:
     momentum_short_per_sec: float = 0.0  # same, restricted to the trailing SHORT_MOMENTUM_WINDOW_SEC
     window_ticks_observed: int = 0  # ticks already inside the settlement-averaging window
     window_avg_so_far: float | None = None  # running average of those ticks
+    history_span_sec: float = 0.0
+    history_tick_count: int = 0
 
 
 def realized_vol_per_sqrt_sec(ticks: list[tuple[int, float]]) -> float:
@@ -149,4 +151,6 @@ def build_features(
         momentum_short_per_sec=momentum_ols_per_sec(short_ticks),
         window_ticks_observed=window_ticks_observed,
         window_avg_so_far=window_avg_so_far,
+        history_span_sec=max((index_ticks[-1][0] - index_ticks[0][0]) / 1000.0, 0.0),
+        history_tick_count=len(index_ticks),
     )

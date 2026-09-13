@@ -26,7 +26,7 @@ from .kalshi_client.models import Signal
 from .kalshi_client.rest import KalshiRestClient
 from .kalshi_client.ws import KalshiWsClient
 from .market_discovery import find_15min_markets
-from .prediction.model import RandomWalkPredictor, SettlementAwarePredictor
+from .prediction.model import RandomWalkPredictor, RegularizedSettlementPredictor, SettlementAwarePredictor
 from .signals.confirmation import check_confirmation
 from .signals.generator import generate_signal
 
@@ -226,9 +226,8 @@ class BotApp:
             return None
         if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
             return None
-        challenger = SettlementAwarePredictor(
+        challenger = RegularizedSettlementPredictor(
             momentum_weight=self.predictor.momentum_weight,
-            imbalance_weight=0.0,
             window_sec=self.predictor.window_sec,
         )
         shadow_signal = generate_signal(
@@ -243,15 +242,19 @@ class BotApp:
             "momentum_weight": self.predictor.momentum_weight,
             "live_imbalance_weight": self.predictor.imbalance_weight,
             "shadow_imbalance_weight": 0.0,
+            "shadow_model_version": "regularized-settlement-v3",
+            "shadow_min_history_sec": challenger.min_history_sec,
+            "shadow_min_history_ticks": challenger.min_history_ticks,
             "window_sec": self.predictor.window_sec,
             "edge_threshold": self.settings.edge_threshold,
             "decision_lead_sec": self.settings.decision_lead_sec,
             "confirmation_version": "majority-v1",
+            "recommendation_version": "purchase-price-v2",
         }
         fingerprint = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
         snapshot = {
             "schema_version": 1,
-            "experiment_id": "settlement-no-book-v1-" + fingerprint,
+            "experiment_id": "regularized-settlement-v3-" + fingerprint,
             "parameters": parameters,
             "index_id": state.index_id,
             "features": asdict(features),
@@ -284,6 +287,71 @@ class BotApp:
         }
         json.dumps(snapshot, allow_nan=False)
         return snapshot
+
+    def _build_decision_snapshot(
+        self,
+        state: MarketState,
+        features: Features,
+        signal: Signal,
+        decision_recommendation: str,
+        confirmation: Any,
+        now_ms: int,
+        ticks: list[tuple[int, float]],
+    ) -> dict:
+        quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
+        index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
+        quality_flags: list[str] = []
+        if len(ticks) < 120 or features.history_span_sec < 240:
+            quality_flags.append("short_index_history")
+        if index_tick_age_ms is None or index_tick_age_ms > 5_000:
+            quality_flags.append("stale_index_tick")
+        if quote_age_ms is None or quote_age_ms > 5_000:
+            quality_flags.append("stale_quote")
+        if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
+            quality_flags.append("missing_quote")
+        elif not 0 <= state.yes_bid_dollars <= state.yes_ask_dollars <= 1:
+            quality_flags.append("invalid_quote")
+        parameters = {
+            "predictor_version": getattr(self.settings, "predictor_version", type(self.predictor).__name__),
+            "poll_interval_sec": self.settings.poll_interval_sec,
+            "edge_threshold": self.settings.edge_threshold,
+            "decision_lead_sec": self.settings.decision_lead_sec,
+            "confirmation_version": "majority-v1",
+            "recommendation_version": "purchase-price-v2",
+        }
+        fingerprint = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
+        return {
+            "schema_version": 1,
+            "experiment_id": "live-" + fingerprint,
+            "index_id": state.index_id,
+            "ticker": state.ticker,
+            "decision_ts_ms": now_ms,
+            "close_ts_ms": state.close_ts_ms,
+            "features": asdict(features),
+            "index_ticks": list(ticks),
+            "index_tick_age_ms": index_tick_age_ms,
+            "quotes": {
+                "yes_bid_dollars": state.yes_bid_dollars,
+                "yes_ask_dollars": state.yes_ask_dollars,
+                "no_ask_dollars": 1.0 - state.yes_bid_dollars if state.yes_bid_dollars is not None else None,
+                "yes_bid_size": state.yes_bid_size,
+                "yes_ask_size": state.yes_ask_size,
+                "ts_ms": state.quote_ts_ms,
+                "received_at_ms": state.quote_received_at_ms,
+                "age_ms": quote_age_ms,
+            },
+            "live": {
+                "model_p_yes": signal.model_p_yes,
+                "market_p_yes": signal.market_p_yes,
+                "edge": signal.edge,
+                "raw_recommendation": signal.recommendation,
+                "recommendation": decision_recommendation,
+                "confidence": max(signal.model_p_yes, 1 - signal.model_p_yes),
+                "confirmation": asdict(confirmation),
+            },
+            "parameters": parameters,
+            "quality_flags": quality_flags,
+        }
 
     async def prediction_loop(self) -> None:
         while True:
@@ -342,6 +410,9 @@ class BotApp:
                             for c in confirmation.checks
                         ]
                     )
+                    decision_snapshot = self._build_decision_snapshot(
+                        state, features, signal, decision_recommendation, confirmation, now_ms, ticks,
+                    )
                     shadow_snapshot = None
                     try:
                         shadow_snapshot = self._build_shadow_snapshot(
@@ -364,6 +435,7 @@ class BotApp:
                         confirmation_total=confirmation.total,
                         confirmation_detail=confirmation_detail,
                         shadow_snapshot=shadow_snapshot,
+                        decision_snapshot=decision_snapshot,
                     )
                     logger.info(
                         "Decision locked for %s at T-%.0fs: %s (model=%.3f market=%.3f, confirmation=%d/%d)",

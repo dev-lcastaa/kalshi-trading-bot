@@ -1,6 +1,10 @@
 import random
+from dataclasses import asdict
 
-from kalshi_bot.backtest.runner import BacktestCase, run_backtest
+import pytest
+
+from kalshi_bot.backtest.runner import BacktestCase, evaluate_snapshots, run_backtest
+from kalshi_bot.features.engine import build_features
 from kalshi_bot.prediction.model import RandomWalkPredictor, SettlementAwarePredictor
 
 
@@ -79,4 +83,67 @@ def test_v2_settlement_aware_predictor_is_not_worse_than_v1():
     assert v2_result.n > 0
     # Allow a small tolerance for noise, but v2 shouldn't be meaningfully worse.
     assert v2_result.brier_score <= v1_result.brier_score * 1.05
+
+
+def _snapshot(ticker="BTC", close=600000, result="yes", experiment="test"):
+    ticks = [(second * 1000, 100 + second * 0.001) for second in range(301)]
+    return {
+        "ticker": ticker, "experiment_id": experiment, "index_id": ticker,
+        "ts_ms": 300000, "close_ts_ms": close, "result": result,
+        "snapshot": {
+            "features": asdict(build_features(ticks, 100, (close - 300000) / 1000)),
+            "index_ticks": ticks, "parameters": {"edge_threshold": 0.05},
+            "quotes": {"yes_bid_dollars": 0.4, "yes_ask_dollars": 0.6, "ts_ms": 299000},
+            "live": {"model_p_yes": 0.8, "recommendation": "BUY_YES"},
+            "shadow": {"model_p_yes": 0.3, "recommendation": "BUY_NO"},
+            "market_p_yes": 0.5,
+        },
+    }
+
+
+def test_snapshot_evaluator_scores_decisions_and_purchase_prices():
+    result = evaluate_snapshots([_snapshot(), _snapshot(close=900000, experiment="other")], RandomWalkPredictor())
+    assert len(result["groups"]) == 2
+    scores = result["groups"][0]["scores"]["all"]
+    assert scores["live"]["n"] == 1
+    assert scores["live"]["brier"] == pytest.approx(0.04)
+    assert scores["live"]["ask_gross_pnl"] == pytest.approx(0.4)
+    assert scores["recorded_shadow"]["ask_gross_pnl"] == pytest.approx(-0.6)
+    assert scores["market"]["trades"] == 0
+
+
+def test_snapshot_evaluator_keeps_paired_windows_together_and_excludes_duplicates():
+    rows = [_snapshot(ticker=coin, close=close) for coin in ("BTC", "SOL") for close in (600000, 900000)]
+    rows[1]["ticker"] = "BTC-LATER"
+    rows[3]["ticker"] = "SOL-LATER"
+    result = evaluate_snapshots(rows + [rows[0]], RandomWalkPredictor())
+    assert result["excluded_rows"] == 1
+    for group in result["groups"]:
+        assert group["split_close_ts_ms"] == 900000
+        assert group["scores"]["earlier"]["live"]["n"] == 1
+        assert group["scores"]["later"]["live"]["n"] == 1
+
+
+@pytest.mark.parametrize("defect", ["pending", "future_tick", "future_quote", "closed", "horizon", "crossed"])
+def test_snapshot_evaluator_excludes_invalid_or_future_inputs(defect):
+    row = _snapshot()
+    if defect == "pending":
+        row["result"] = None
+    elif defect == "future_tick":
+        row["snapshot"]["index_ticks"].append((301000, 100))
+    elif defect == "future_quote":
+        row["snapshot"]["quotes"]["ts_ms"] = 301000
+    elif defect == "closed":
+        row["ts_ms"] = row["close_ts_ms"]
+    elif defect == "horizon":
+        row["snapshot"]["features"]["seconds_to_expiry"] = 0
+    else:
+        row["snapshot"]["quotes"]["yes_bid_dollars"] = 0.9
+    result = evaluate_snapshots([row], RandomWalkPredictor())
+    assert result["excluded_rows"] == 1
+    assert result["groups"] == []
+
+
+def test_snapshot_evaluator_handles_empty_input():
+    assert evaluate_snapshots([], RandomWalkPredictor())["groups"] == []
 

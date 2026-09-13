@@ -28,9 +28,11 @@ def generate_signal(
     # Require the recommendation to agree with the model's own directional call
     # (not just "edge vs market"), so a signal meant to dictate a trade is never
     # BUY_YES while the model itself thinks BELOW is more likely, or vice versa.
-    if model_p > 0.5 and edge > edge_threshold:
+    yes_purchase_edge = model_p - yes_ask_dollars
+    no_purchase_edge = (1 - model_p) - (1 - yes_bid_dollars)
+    if model_p > 0.5 and yes_purchase_edge > edge_threshold:
         recommendation = "BUY_YES"
-    elif model_p < 0.5 and edge < -edge_threshold:
+    elif model_p < 0.5 and no_purchase_edge > edge_threshold:
         recommendation = "BUY_NO"
     else:
         recommendation = "NO_EDGE"

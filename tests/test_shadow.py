@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,7 +10,7 @@ from kalshi_bot.dashboard.server import create_app
 from kalshi_bot.data.store import Store
 from kalshi_bot.features.engine import Features
 from kalshi_bot.main import BotApp, MarketState
-from kalshi_bot.prediction.model import SettlementAwarePredictor
+from kalshi_bot.prediction.model import RegularizedSettlementPredictor, SettlementAwarePredictor
 
 
 @pytest.mark.asyncio
@@ -42,16 +43,26 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
     assert decision["decision_recommendation"] == "BUY_YES"
     assert decision["decision_model_p_yes"] > 0.8
     assert app.predictor.imbalance_weight == 0.05
+    audit_row = app.store._query("SELECT snapshot_json FROM decision_snapshots WHERE ticker = ?", (state.ticker,)).fetchone()
+    assert audit_row is not None
+    audit_snapshot = json.loads(audit_row[0])
+    assert audit_snapshot["live"]["recommendation"] == "BUY_YES"
+    assert audit_snapshot["quality_flags"] == []
+    assert audit_snapshot["parameters"]["recommendation_version"] == "purchase-price-v2"
     rows = app.store.shadow_decisions()
     if shadow_fails:
         assert rows == []
     else:
         assert len(rows) == 1
         snapshot = rows[0]["snapshot"]
+        assert snapshot["parameters"]["recommendation_version"] == "purchase-price-v2"
+        assert snapshot["parameters"]["shadow_model_version"] == "regularized-settlement-v3"
+        assert snapshot["parameters"]["shadow_min_history_sec"] == 240
+        assert rows[0]["experiment_id"].startswith("regularized-settlement-v3-")
         features = Features(**snapshot["features"])
         assert snapshot["live"]["model_p_yes"] == decision["decision_model_p_yes"]
         assert snapshot["live"]["model_p_yes"] == app.predictor.predict(features)
-        assert snapshot["shadow"]["model_p_yes"] == SettlementAwarePredictor(imbalance_weight=0).predict(features)
+        assert snapshot["shadow"]["model_p_yes"] == RegularizedSettlementPredictor().predict(features)
         assert snapshot["shadow"]["model_p_yes"] < snapshot["live"]["model_p_yes"]
         assert snapshot["quotes"]["age_ms"] == 500
         assert snapshot["quotes"]["received_at_ms"] == 321500

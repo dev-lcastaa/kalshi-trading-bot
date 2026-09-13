@@ -137,6 +137,80 @@ class SettlementAwarePredictor:
         return _normal_cdf(z)
 
 
+class RegularizedSettlementPredictor(SettlementAwarePredictor):
+    """Experimental arithmetic-Brownian approximation for the settlement average.
+
+    Uses no order-book drift. The average's drift horizon is the midpoint of
+    its future interval, not its endpoint. Adds drift-estimation variance:
+    continuous-time OLS on a Brownian path has slope variance 6*sigma^2/(5*H).
+    This is an approximation for dense observations, not calibrated confidence.
+    Sparse history, zero measured volatility, or incomplete settlement data
+    return a neutral probability instead of a deterministic trade forecast.
+    """
+
+    def __init__(
+        self,
+        momentum_weight: float = 0.3,
+        window_sec: int = SETTLEMENT_WINDOW_SEC,
+        min_history_sec: float = 240.0,
+        min_history_ticks: int = 120,
+    ):
+        if not math.isfinite(momentum_weight) or not 0 <= momentum_weight <= 1:
+            raise ValueError("momentum_weight must be between zero and one")
+        if window_sec <= 0 or not math.isfinite(min_history_sec) or min_history_sec <= 0 or min_history_ticks < 3:
+            raise ValueError("window and history requirements must be positive")
+        super().__init__(momentum_weight=momentum_weight, imbalance_weight=0.0, window_sec=window_sec)
+        self.min_history_sec = min_history_sec
+        self.min_history_ticks = min_history_ticks
+
+    def predict(self, features: Features) -> float:
+        price = features.index_price
+        goal = features.strike
+        remaining = features.seconds_to_expiry
+        observed = features.window_ticks_observed
+        average = features.window_avg_so_far
+        if not all(math.isfinite(value) for value in (price, goal, remaining, observed)) or price <= 0 or goal <= 0:
+            return 0.5
+        if average is not None and (not math.isfinite(average) or average <= 0):
+            return 0.5
+        if remaining <= 0:
+            if observed != self.window_sec or average is None:
+                return 0.5
+            return 1.0 if average > goal else (0.0 if average < goal else 0.5)
+
+        volatility = features.realized_vol_per_sqrt_sec
+        history = features.history_span_sec
+        momentum = features.momentum_ols_per_sec
+        if not all(math.isfinite(value) for value in (volatility, history, momentum, features.history_tick_count)):
+            return 0.5
+        if history < self.min_history_sec or features.history_tick_count < self.min_history_ticks or volatility <= 0:
+            return 0.5
+
+        if remaining >= self.window_sec:
+            if observed != 0:
+                return 0.5
+            base_mean = price
+            mean_time = remaining - self.window_sec / 2
+            variance_time = remaining - self.window_sec + self.window_sec / 3
+        else:
+            if average is None or not 0 < observed < self.window_sec:
+                return 0.5
+            if abs(observed - (self.window_sec - remaining)) > 2:
+                return 0.5
+            future_weight = (self.window_sec - observed) / self.window_sec
+            base_mean = (1 - future_weight) * average + future_weight * price
+            mean_time = future_weight * remaining / 2
+            variance_time = future_weight ** 2 * remaining / 3
+
+        drift = self.momentum_weight * momentum
+        drift_variance_time = self.momentum_weight ** 2 * (6 / 5) * mean_time ** 2 / history
+        mean = base_mean + price * drift * mean_time
+        deviation = price * volatility * math.sqrt(variance_time + drift_variance_time)
+        if not math.isfinite(mean) or not math.isfinite(deviation) or deviation <= 0:
+            return 0.5
+        return _normal_cdf((mean - goal) / deviation)
+
+
 def market_implied_probability(yes_bid_dollars: float, yes_ask_dollars: float) -> float:
     """Mid-price of the yes side as the market's implied P(yes)."""
     return (yes_bid_dollars + yes_ask_dollars) / 2.0
