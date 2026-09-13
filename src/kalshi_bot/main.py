@@ -322,12 +322,12 @@ class BotApp:
         flags large single fills, not specific people or accounts.
         """
         while True:
-            await asyncio.sleep(self.settings.whale_poll_interval_sec)
             for ticker in list(self.markets):
                 try:
                     await self._poll_whale_trades(ticker)
                 except Exception:
                     logger.exception("Whale-trade polling failed for %s", ticker)
+            await asyncio.sleep(self.settings.whale_poll_interval_sec)
 
     async def _poll_whale_trades(self, ticker: str) -> None:
         since_ts_ms = self.store.latest_whale_trade_ts(ticker)
@@ -335,14 +335,40 @@ class BotApp:
         data = await self.rest.get_trades(ticker=ticker, min_ts=min_ts, limit=200)
         for trade in data.get("trades", []):
             ts_ms = _parse_ts_ms(trade.get("created_time"))
-            side = trade.get("taker_side")
+            side = trade.get("taker_side") or trade.get("taker_outcome_side")
             if ts_ms is None or side not in ("yes", "no"):
                 continue
-            count = float(trade.get("count", 0))
-            price_cents = float(trade.get("yes_price" if side == "yes" else "no_price", 0))
+
+            count_raw = (
+                trade.get("count_fp")
+                if trade.get("count_fp") is not None
+                else trade.get("count", 0)
+            )
+            try:
+                count = float(count_raw or 0)
+            except (ValueError, TypeError):
+                count = 0.0
+
+            yes_dollars = trade.get("yes_price_dollars")
+            no_dollars = trade.get("no_price_dollars")
+            try:
+                if side == "yes":
+                    if yes_dollars is not None:
+                        price_cents = float(yes_dollars) * 100.0
+                    else:
+                        price_cents = float(trade.get("yes_price", 0))
+                else:
+                    if no_dollars is not None:
+                        price_cents = float(no_dollars) * 100.0
+                    else:
+                        price_cents = float(trade.get("no_price", 0))
+            except (ValueError, TypeError):
+                price_cents = 0.0
+
             notional_usd = count * price_cents / 100.0
             if notional_usd < self.settings.whale_min_usd:
                 continue
+
             self.store.insert_whale_trade(
                 trade_id=str(trade["trade_id"]),
                 ticker=ticker,
