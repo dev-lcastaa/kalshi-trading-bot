@@ -144,6 +144,8 @@ class BotApp:
             yes_bid_dollars=state.yes_bid_dollars,
             yes_ask_dollars=state.yes_ask_dollars,
             edge_threshold=self.settings.edge_threshold,
+            fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
+            slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
             ts_ms=state.close_ts_ms,
         )
         self.store.insert_signal(signal)
@@ -234,7 +236,10 @@ class BotApp:
             ticker=state.ticker, index_id=state.index_id, features=features,
             predictor=challenger, yes_bid_dollars=state.yes_bid_dollars,
             yes_ask_dollars=state.yes_ask_dollars,
-            edge_threshold=self.settings.edge_threshold, ts_ms=now_ms,
+            edge_threshold=self.settings.edge_threshold,
+            fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
+            slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
+            ts_ms=now_ms,
         )
         shadow_confirmation = check_confirmation(features, shadow_signal.model_p_yes >= 0.5)
         parameters = {
@@ -247,6 +252,8 @@ class BotApp:
             "shadow_min_history_ticks": challenger.min_history_ticks,
             "window_sec": self.predictor.window_sec,
             "edge_threshold": self.settings.edge_threshold,
+            "fee_multiplier": getattr(self.settings, "fee_multiplier", 1.0),
+            "slippage_per_contract": getattr(self.settings, "slippage_per_contract", 0.0),
             "decision_lead_sec": self.settings.decision_lead_sec,
             "confirmation_version": "majority-v1",
             "recommendation_version": "purchase-price-v2",
@@ -300,21 +307,13 @@ class BotApp:
     ) -> dict:
         quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
         index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
-        quality_flags: list[str] = []
-        if len(ticks) < 120 or features.history_span_sec < 240:
-            quality_flags.append("short_index_history")
-        if index_tick_age_ms is None or index_tick_age_ms > 5_000:
-            quality_flags.append("stale_index_tick")
-        if quote_age_ms is None or quote_age_ms > 5_000:
-            quality_flags.append("stale_quote")
-        if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
-            quality_flags.append("missing_quote")
-        elif not 0 <= state.yes_bid_dollars <= state.yes_ask_dollars <= 1:
-            quality_flags.append("invalid_quote")
+        quality_flags = self._quality_flags(state, features, ticks, now_ms)
         parameters = {
             "predictor_version": getattr(self.settings, "predictor_version", type(self.predictor).__name__),
             "poll_interval_sec": self.settings.poll_interval_sec,
             "edge_threshold": self.settings.edge_threshold,
+            "fee_multiplier": getattr(self.settings, "fee_multiplier", 1.0),
+            "slippage_per_contract": getattr(self.settings, "slippage_per_contract", 0.0),
             "decision_lead_sec": self.settings.decision_lead_sec,
             "confirmation_version": "majority-v1",
             "recommendation_version": "purchase-price-v2",
@@ -353,6 +352,30 @@ class BotApp:
             "quality_flags": quality_flags,
         }
 
+    def _quality_flags(
+        self, state: MarketState, features: Features, ticks: list[tuple[int, float]], now_ms: int
+    ) -> list[str]:
+        min_history_sec = getattr(self.settings, "min_index_history_sec", 240.0)
+        min_history_ticks = getattr(self.settings, "min_index_history_ticks", 120)
+        max_input_age_ms = getattr(self.settings, "max_input_age_ms", 5_000)
+        min_quote_size = getattr(self.settings, "min_quote_size", 0.0)
+        flags: list[str] = []
+        if len(ticks) < min_history_ticks or features.history_span_sec < min_history_sec:
+            flags.append("short_index_history")
+        index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
+        if index_tick_age_ms is None or index_tick_age_ms > max_input_age_ms:
+            flags.append("stale_index_tick")
+        quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
+        if quote_age_ms is None or quote_age_ms > max_input_age_ms:
+            flags.append("stale_quote")
+        if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
+            flags.append("missing_quote")
+        elif not 0 <= state.yes_bid_dollars <= state.yes_ask_dollars <= 1:
+            flags.append("invalid_quote")
+        if state.yes_bid_size < min_quote_size or state.yes_ask_size < min_quote_size:
+            flags.append("insufficient_quote_size")
+        return flags
+
     async def prediction_loop(self) -> None:
         while True:
             await asyncio.sleep(self.settings.poll_interval_sec)
@@ -374,6 +397,10 @@ class BotApp:
                     yes_ask_size=state.yes_ask_size,
                     close_ts_ms=state.close_ts_ms,
                 )
+                quality_flags = self._quality_flags(state, features, ticks, now_ms)
+                if quality_flags:
+                    logger.info("Abstaining from %s: %s", ticker, ", ".join(quality_flags))
+                    continue
                 signal = generate_signal(
                     ticker=ticker,
                     index_id=state.index_id,
@@ -382,6 +409,8 @@ class BotApp:
                     yes_bid_dollars=state.yes_bid_dollars,
                     yes_ask_dollars=state.yes_ask_dollars,
                     edge_threshold=self.settings.edge_threshold,
+                    fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
+                    slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
                 )
                 self.store.insert_signal(signal)
 

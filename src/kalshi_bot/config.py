@@ -41,6 +41,12 @@ class Settings:
     decision_lead_sec: int
     whale_min_usd: float
     whale_poll_interval_sec: float
+    min_index_history_sec: float
+    min_index_history_ticks: int
+    max_input_age_ms: int
+    min_quote_size: float
+    fee_multiplier: float
+    slippage_per_contract: float
 
     @staticmethod
     def load() -> "Settings":
@@ -67,4 +73,10 @@ class Settings:
             # Fills at or above this dollar size are surfaced as a "big bet".
             whale_min_usd=float(os.environ.get("KALSHI_WHALE_MIN_USD", "100")),
             whale_poll_interval_sec=float(os.environ.get("KALSHI_WHALE_POLL_INTERVAL_SEC", "20")),
+            min_index_history_sec=float(os.environ.get("KALSHI_MIN_INDEX_HISTORY_SEC", "240")),
+            min_index_history_ticks=int(os.environ.get("KALSHI_MIN_INDEX_HISTORY_TICKS", "120")),
+            max_input_age_ms=int(os.environ.get("KALSHI_MAX_INPUT_AGE_MS", "5000")),
+            min_quote_size=float(os.environ.get("KALSHI_MIN_QUOTE_SIZE", "1")),
+            fee_multiplier=float(os.environ.get("KALSHI_FEE_MULTIPLIER", "1")),
+            slippage_per_contract=float(os.environ.get("KALSHI_SLIPPAGE_PER_CONTRACT", "0")),
         )

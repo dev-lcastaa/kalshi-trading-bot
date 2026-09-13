@@ -4,7 +4,7 @@ import pytest
 
 from kalshi_bot.features.engine import Features
 from kalshi_bot.prediction.model import RandomWalkPredictor
-from kalshi_bot.signals.generator import generate_signal
+from kalshi_bot.signals.generator import generate_signal, kalshi_taker_fee_per_contract
 
 
 def _features(index_price=100.0, strike=100.0, seconds_to_expiry=60.0):
@@ -48,6 +48,31 @@ def test_generate_signal_recommendation_thresholds():
         yes_bid_dollars=0.49, yes_ask_dollars=0.51, edge_threshold=0.05,
     )
     assert no_edge.recommendation == "NO_EDGE"
+
+
+def test_recommendation_requires_net_edge_after_execution_costs():
+    class FixedPredictor:
+        def predict(self, features):
+            return 0.70
+
+    before_costs = generate_signal(
+        ticker="T", index_id="BRTI", features=_features(), predictor=FixedPredictor(),
+        yes_bid_dollars=0.40, yes_ask_dollars=0.60, edge_threshold=0.05,
+    )
+    after_costs = generate_signal(
+        ticker="T", index_id="BRTI", features=_features(), predictor=FixedPredictor(),
+        yes_bid_dollars=0.40, yes_ask_dollars=0.60, edge_threshold=0.05,
+        fee_multiplier=1.0, slippage_per_contract=0.03,
+    )
+
+    assert before_costs.recommendation == "BUY_YES"
+    assert after_costs.recommendation == "NO_EDGE"
+
+
+def test_kalshi_taker_fee_formula_rounds_up_to_cents():
+    assert kalshi_taker_fee_per_contract(0.50) == 0.02
+    assert kalshi_taker_fee_per_contract(0.20) == 0.02
+    assert kalshi_taker_fee_per_contract(0.50, 0.5) == 0.01
 
 
 @pytest.mark.parametrize(

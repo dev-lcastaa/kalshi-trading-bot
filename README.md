@@ -482,7 +482,13 @@ modify or deploy anything to that server.
 | `KALSHI_COIN_TICKS` | Which coins to find markets for (default `BTC,SOL`) |
 | `KALSHI_POLL_INTERVAL_SEC` | How often the bot recalculates its guess |
 | `KALSHI_EDGE_THRESHOLD` | Minimum model probability minus purchase price, before fees/slippage |
+| `KALSHI_FEE_MULTIPLIER` | Kalshi taker-fee multiplier used in `ceil(M * 0.07 * P * (1-P) * 100) / 100` (default `1`) |
+| `KALSHI_SLIPPAGE_PER_CONTRACT` | Conservative slippage in dollars deducted from executable edge (default `0`) |
 | `KALSHI_PREDICTOR_VERSION` | `v1` (simple) or `v2` (default, settlement-aware; accuracy must be validated) |
+| `KALSHI_MIN_INDEX_HISTORY_SEC` | Minimum index history span before a signal is allowed (default `240`) |
+| `KALSHI_MIN_INDEX_HISTORY_TICKS` | Minimum index observations before a signal is allowed (default `120`) |
+| `KALSHI_MAX_INPUT_AGE_MS` | Maximum quote/index age before the bot abstains (default `5000`) |
+| `KALSHI_MIN_QUOTE_SIZE` | Minimum YES bid and ask size required for a signal (default `1`) |
 | `KALSHI_CLOSED_GRACE_SEC` | How long a just-closed market stays on the Active tab |
 | `KALSHI_DECISION_LEAD_SEC` | How early (in seconds) the final BET UP/DOWN call locks in |
 | `KALSHI_WHALE_MIN_USD` | Minimum dollar size of a trade to count as a "big bet" |

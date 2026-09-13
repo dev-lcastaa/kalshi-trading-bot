@@ -18,7 +18,12 @@ from kalshi_bot.prediction.model import RegularizedSettlementPredictor, Settleme
 async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_path, monkeypatch, shadow_fails):
     app = BotApp.__new__(BotApp)
     app.store = Store(str(tmp_path / "shadow.db"))
-    app.settings = SimpleNamespace(poll_interval_sec=2, decision_lead_sec=390, edge_threshold=0.05)
+    app.settings = SimpleNamespace(
+        poll_interval_sec=2, decision_lead_sec=390, edge_threshold=0.05,
+        min_quote_size=1.0, min_index_history_sec=240.0,
+        min_index_history_ticks=120, max_input_age_ms=5000,
+        fee_multiplier=1.0, slippage_per_contract=0.0,
+    )
     app.predictor = SettlementAwarePredictor()
     state = MarketState("BTC-TEST", 100.0, 700000, "BRTI")
     app.markets = {state.ticker: state}
@@ -26,7 +31,7 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
     monkeypatch.setattr("kalshi_bot.main.time.time", lambda: 321.5)
     app._handle_ticker({
         "market_ticker": state.ticker, "yes_bid_dollars": "0.4", "yes_ask_dollars": "0.5",
-        "yes_bid_size_fp": "100", "yes_ask_size_fp": "0", "ts_ms": 321000,
+        "yes_bid_size_fp": "100", "yes_ask_size_fp": "1", "ts_ms": 321000,
         "price_dollars": "0.45", "volume_fp": "1", "open_interest_fp": "1",
     })
     app.store.upsert_active_market(state.ticker, "BRTI", 100, 700000, 321000)
