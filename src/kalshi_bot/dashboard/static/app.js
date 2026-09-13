@@ -1,11 +1,20 @@
-const COIN_NAMES = {
-  BRTI: "Bitcoin (BTC)",
-  SOLUSD_RTI: "Solana (SOL)",
-};
-
-const COIN_ICONS = {
-  BRTI: "\u20BF",
-  SOLUSD_RTI: "\u25CE",
+﻿const COIN_META = {
+  BRTI: {
+    name: "Bitcoin",
+    pair: "BTC / USD",
+    icon: "\u20BF",
+    symbol: "BTC",
+    accent: "#f59e0b",
+    gradient: "linear-gradient(135deg, #f59e0b, #d97706)",
+  },
+  SOLUSD_RTI: {
+    name: "Solana",
+    pair: "SOL / USD",
+    icon: "\u25CE",
+    symbol: "SOL",
+    accent: "#06b6d4",
+    gradient: "linear-gradient(135deg, #06b6d4, #8b5cf6)",
+  },
 };
 
 const ENDPOINTS = {
@@ -14,214 +23,455 @@ const ENDPOINTS = {
 };
 
 const EMPTY_MESSAGES = {
-  active: "No open 15-minute BTC/SOL markets right now.",
-  closed: "No closed markets yet.",
+  active: "No active 15-minute BTC/SOL markets matching filters right now.",
+  closed: "No closed markets found.",
 };
 
 let currentTab = "active";
-let decisionLeadSec = 390; // overwritten by /api/config on load
-const storedWhaleMinUsd = Number(localStorage.getItem("whaleMinUsd"));
-let whaleMinUsd = Number.isFinite(storedWhaleMinUsd) && storedWhaleMinUsd >= 0
-  ? storedWhaleMinUsd
-  : 100;
+let currentCoinFilter = "all";
+let searchQuery = "";
+let rawMarketRows = [];
+let decisionLeadSec = 390; // Overwritten by /api/config
 
-// Populated by refreshCalibration(); used to render the per-coin section headers.
-const calibrationByCoin = {}; // index_id -> stats from /api/calibration
+let whaleMinUsd = 100;
+try {
+  const stored = Number(localStorage.getItem("whaleMinUsd"));
+  if (Number.isFinite(stored) && stored >= 0) {
+    whaleMinUsd = stored;
+  }
+} catch {
+  whaleMinUsd = 100;
+}
 
-// Live price state, updated by WebSocket pushes rather than polling.
+// Calibration stats store: overall and per-coin
+const calibrationStore = {
+  overall: null,
+  BRTI: null,
+  SOLUSD_RTI: null,
+};
+
+// Live price state, updated by WebSocket pushes
 const sparklineHistories = {}; // index_id -> [{ts_ms, value}, ...] ascending
 const latestLiveByIndex = {}; // index_id -> {ts_ms, value}
 const seededIndexIds = new Set();
 
-function coinName(indexId) {
-  return COIN_NAMES[indexId] ?? indexId ?? "Unknown";
-}
-
-function coinIcon(indexId) {
-  return COIN_ICONS[indexId] ?? "\u25CF";
+function getCoinMeta(indexId) {
+  return COIN_META[indexId] ?? {
+    name: indexId ?? "Unknown",
+    pair: indexId ?? "",
+    icon: "\u25CF",
+    symbol: indexId ?? "",
+    accent: "#6366f1",
+    gradient: "linear-gradient(135deg, #6366f1, #a855f7)",
+  };
 }
 
 function formatUsd(value) {
-  return Number(value).toLocaleString(undefined, {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return "--";
+  }
+  return Number(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
 }
 
 function formatCountdown(msRemaining) {
-  if (msRemaining <= 0) return { text: "closed", cls: "expired" };
+  if (msRemaining <= 0) return { text: "00:00", cls: "expired", rawSec: 0 };
   const totalSec = Math.floor(msRemaining / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
-  const text = `${m}:${String(s).padStart(2, "0")}`;
-  return { text, cls: totalSec <= 60 ? "closing-soon" : "" };
+  const text = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  let cls = "";
+  if (totalSec <= 60) {
+    cls = "closing-urgent";
+  } else if (totalSec <= 180) {
+    cls = "closing-soon";
+  }
+  return { text, cls, rawSec: totalSec };
 }
 
 function formatElapsed(msElapsed) {
   const totalSec = Math.max(Math.floor(msElapsed / 1000), 0);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
-  if (m === 0) return `closed ${s}s ago`;
-  return `closed ${m}m ${s}s ago`;
+  if (m === 0) return `Settled ${s}s ago`;
+  if (m < 60) return `Settled ${m}m ${s}s ago`;
+  const h = Math.floor(m / 60);
+  return `Settled ${h}h ${m % 60}m ago`;
 }
 
 function outcomeHtml(r, predictedAbove) {
   if (r.result !== "yes" && r.result !== "no") return "";
   const settledAbove = r.result === "yes";
   const correct = settledAbove === predictedAbove;
-  return `<p class="outcome ${correct ? "correct" : "incorrect"}">Result: ${settledAbove ? "ABOVE" : "BELOW"} — we were ${correct ? "right" : "wrong"}</p>`;
+  return `
+    <div class="settlement-banner ${correct ? "settlement--win" : "settlement--loss"}">
+      <div class="settlement-icon">${correct ? "\u2713" : "\u2717"}</div>
+      <div class="settlement-content">
+        <div class="settlement-title">${correct ? "OUTCOME: WIN" : "OUTCOME: MISSED"}</div>
+        <div class="settlement-detail">Settled <strong>${settledAbove ? "ABOVE GOAL" : "BELOW GOAL"}</strong> &bull; Model predicted <strong>${predictedAbove ? "ABOVE" : "BELOW"}</strong></div>
+      </div>
+    </div>
+  `;
 }
 
 const TRADE_LABELS = {
-  BUY_YES: ["BET UP", "up"],
-  BUY_NO: ["BET DOWN", "down"],
-  NO_EDGE: ["NO TRADE", "none"],
+  BUY_YES: { label: "BET UP", sub: "BUY YES (BELOW MARKET)", cls: "up", icon: "\u25B2" },
+  BUY_NO: { label: "BET DOWN", sub: "BUY NO (BELOW MARKET)", cls: "down", icon: "\u25BC" },
+  NO_EDGE: { label: "NO TRADE", sub: "FAIRLY PRICED", cls: "none", icon: "\u25CB" },
 };
 
 function tradeBannerHtml(r) {
   const rec = r.decision_recommendation;
+
+  // 1. Pending Lock-in state (earlier in the 15m cycle)
   if (rec === undefined || rec === null) {
-    return (
-      '<div class="trade-banner trade-banner--pending">' +
-      '<div class="trade-banner__header">' +
-      "<span>Final call locks in</span>" +
-      '<span class="trade-banner__countdown" data-role="decision-countdown">--:--</span>' +
-      "</div>" +
-      "</div>"
-    );
+    const liveRec = (r.recommendation || "NO_EDGE").toUpperCase();
+    const liveEdge = r.edge !== undefined && r.edge !== null ? (Number(r.edge) * 100).toFixed(1) : "0.0";
+    let liveLean = "Monitoring order book & momentum\u2026";
+    if (liveRec === "BUY_YES") {
+      liveLean = `Live bias: Leaning UP (+${liveEdge}% pricing edge)`;
+    } else if (liveRec === "BUY_NO") {
+      liveLean = `Live bias: Leaning DOWN (+${Math.abs(Number(liveEdge))}% pricing edge)`;
+    } else if (liveRec === "NO_EDGE") {
+      liveLean = "Live bias: No trade (fairly priced by market)";
+    }
+
+    return `
+      <div class="trade-banner trade-banner--pending">
+        <div class="trade-banner__header">
+          <div class="trade-banner__title-group">
+            <span class="pulse-radar"></span>
+            <div class="trade-banner__text">
+              <span class="trade-banner__action">FINAL CALL LOCKS IN AT T-6:30</span>
+              <span class="trade-banner__lean-text">${liveLean}</span>
+            </div>
+          </div>
+          <div class="trade-banner__timer">
+            <span class="timer-label">LOCKS IN</span>
+            <span class="trade-banner__countdown" data-role="decision-countdown">--:--</span>
+          </div>
+        </div>
+      </div>
+    `;
   }
-  const pair = TRADE_LABELS[rec] || ["NO TRADE", "none"];
-  const label = pair[0];
-  const cls = pair[1];
-  const confidence = (Number(r.decision_confidence) * 100).toFixed(1);
-  const minutesLeft = (Number(r.decision_seconds_to_expiry) / 60).toFixed(1);
+
+  // 2. Locked-in Actionable Decision
+  const info = TRADE_LABELS[rec] || { label: "NO TRADE", sub: "FAIR VALUE", cls: "none", icon: "\u25CB" };
+  const edgeVal = r.decision_edge !== undefined && r.decision_edge !== null ? Math.abs(Number(r.decision_edge) * 100).toFixed(1) : "0.0";
+  const modelP = r.decision_model_p_yes !== undefined && r.decision_model_p_yes !== null ? Number(r.decision_model_p_yes) : 0.5;
+  const winProb = rec === "BUY_NO" ? ((1 - modelP) * 100).toFixed(1) : (modelP * 100).toFixed(1);
+  const minutesLeft = r.decision_seconds_to_expiry !== undefined && r.decision_seconds_to_expiry !== null
+    ? (Number(r.decision_seconds_to_expiry) / 60).toFixed(1)
+    : "0.0";
   const agree = r.decision_confirmation_agree;
   const total = r.decision_confirmation_total;
   const confirmationNote =
     agree !== undefined && agree !== null && total
-      ? ` &middot; ${agree}/${total} checks agreed`
+      ? `<span class="conf-count">${agree}/${total} momentum & book checks agreed</span>`
       : "";
+
   let checks = [];
   try {
     checks = r.decision_confirmation_detail ? JSON.parse(r.decision_confirmation_detail) : [];
   } catch {
     checks = [];
   }
+
   const checksHtml = checks.length
-    ? '<ul class="trade-banner__checks">' +
+    ? '<div class="checks-grid">' +
       checks
         .map(
           (c) =>
-            `<li class="check ${c.agree ? "check--yes" : "check--no"}">${c.agree ? "✓" : "✗"} ${c.name}</li>`
+            `<div class="check-pill ${c.agree ? "check-pill--pass" : "check-pill--fail"}">` +
+            `<span class="check-icon">${c.agree ? "\u2713" : "\u2717"}</span>` +
+            `<span class="check-name">${c.name}</span>` +
+            `</div>`
         )
         .join("") +
-      "</ul>"
+      "</div>"
     : "";
-  return (
-    `<div class="trade-banner trade-banner--${cls}">` +
-    '<div class="trade-banner__header">' +
-    `<span class="trade-banner__label">${label}</span>` +
-    `<span class="trade-banner__meta">locked in with ${minutesLeft} min left &middot; ${confidence}% confidence${confirmationNote}</span>` +
-    "</div>" +
-    checksHtml +
-    "</div>"
-  );
+
+  return `
+    <div class="trade-banner trade-banner--${info.cls}">
+      <div class="trade-banner__header">
+        <div class="trade-banner__title-group">
+          <span class="trade-banner__badge-icon">${info.icon}</span>
+          <div class="trade-banner__text">
+            <div class="trade-banner__main-row">
+              <span class="trade-banner__main-call">${info.label}</span>
+              <span class="trade-banner__sub-call">${info.sub}</span>
+            </div>
+            <span class="trade-banner__edge-caption">
+              ${rec === "NO_EDGE" ? "Market is priced fairly with no edge." : `Locked-in Edge: <strong>+${edgeVal}% advantage</strong> over Kalshi odds (${winProb}% model win probability)`}
+            </span>
+          </div>
+        </div>
+        <div class="trade-banner__metrics">
+          <div class="metric-pill">
+            <span class="metric-val">${rec === "NO_EDGE" ? "0.0%" : `+${edgeVal}%`}</span>
+            <span class="metric-label">MARKET EDGE</span>
+          </div>
+          <div class="metric-pill">
+            <span class="metric-val">${winProb}%</span>
+            <span class="metric-label">WIN PROB</span>
+          </div>
+          <div class="metric-pill">
+            <span class="metric-val">${minutesLeft}m</span>
+            <span class="metric-label">LOCKED AT</span>
+          </div>
+        </div>
+      </div>
+      ${confirmationNote ? `<div class="trade-banner__subbar">${confirmationNote}</div>` : ""}
+      ${checksHtml}
+    </div>
+  `;
 }
 
 function predictionHtml(r) {
   const hasSignal = r.model_p_yes !== null && r.model_p_yes !== undefined;
+  const indexPrice = r.index_price !== null && r.index_price !== undefined ? Number(r.index_price) : null;
+  const strike = Number(r.strike);
+
+  const priceDiff = indexPrice !== null ? indexPrice - strike : 0;
+  const diffSign = priceDiff >= 0 ? "+" : "";
+  const diffPct = strike > 0 ? ((priceDiff / strike) * 100).toFixed(2) : "0.00";
+
   if (!hasSignal) {
-    return '<p class="waiting">Waiting for market data…</p>';
+    return `
+      ${tradeBannerHtml(r)}
+      <div class="price-matrix">
+        <div class="price-tile">
+          <div class="tile-header">
+            <span class="tile-label">INDEX PRICE</span>
+            <span class="live-dot-tag" data-role="live-tag">LIVE</span>
+          </div>
+          <div class="tile-value tile-value--price" data-role="index-price">${indexPrice !== null ? "$" + formatUsd(indexPrice) : "Collecting..."}</div>
+        </div>
+        <div class="price-tile">
+          <div class="tile-header">
+            <span class="tile-label">GOAL PRICE</span>
+            <span class="tile-tag">TARGET</span>
+          </div>
+          <div class="tile-value tile-value--strike">$${formatUsd(strike)}</div>
+        </div>
+        <div class="price-tile">
+          <div class="tile-header">
+            <span class="tile-label">GAP TO GOAL</span>
+            <span class="tile-tag ${priceDiff >= 0 ? "tag--bull" : "tag--bear"}">${priceDiff >= 0 ? "ABOVE" : "BELOW"}</span>
+          </div>
+          <div class="tile-value ${priceDiff >= 0 ? "val--bull" : "val--bear"}" data-role="price-diff">
+            ${indexPrice !== null ? `${diffSign}$${formatUsd(priceDiff)} <span class="pct-sub">(${diffSign}${diffPct}%)</span>` : "--"}
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-container">
+        <canvas class="sparkline" data-role="sparkline" data-strike="${strike}" width="640" height="150"></canvas>
+        <div class="chart-hud">
+          <span class="chart-tag" data-role="chart-low">LOW: --</span>
+          <span class="chart-tag chart-tag--center">10-MIN TRAILING TIMEFRAME</span>
+          <span class="chart-tag" data-role="chart-high">HIGH: --</span>
+        </div>
+      </div>
+
+      <div class="waiting-box"><span class="spinner"></span> Awaiting initial model features and order book depth...</div>
+    `;
   }
 
   const modelP = Number(r.model_p_yes);
   const marketP = Number(r.market_p_yes);
   const predictedAbove = modelP >= 0.5;
-  const confidence = (predictedAbove ? modelP : 1 - modelP) * 100;
+  const winProb = (predictedAbove ? modelP : 1 - modelP) * 100;
   const rec = (r.recommendation || "NO_EDGE").toLowerCase();
   const recLabel =
-    { buy_yes: "Yes looks cheap", buy_no: "No looks cheap", no_edge: "Priced fairly" }[rec] ??
+    { buy_yes: "YES Underpriced", buy_no: "NO Underpriced", no_edge: "Priced Fairly" }[rec] ??
     r.recommendation;
-  const priceDiff = Number(r.index_price) - Number(r.strike);
-  const diffSign = priceDiff >= 0 ? "+" : "";
+  const edgePts = (Number(r.edge) * 100).toFixed(1);
+  const edgePositive = Number(r.edge) >= 0;
 
   return `
     ${tradeBannerHtml(r)}
 
-    <div class="prediction">
-      <span class="call ${predictedAbove ? "above" : "below"}">${predictedAbove ? "ABOVE" : "BELOW"}</span>
-      <span class="confidence">${confidence.toFixed(1)}% confident right now</span>
-    </div>
     ${outcomeHtml(r, predictedAbove)}
 
-    <div class="price-row">
-      <span>Price: <strong data-role="index-price">$${formatUsd(r.index_price)}</strong>
-        <span class="live-tag" data-role="live-tag">live</span></span>
-      <span>Target: <strong>$${formatUsd(r.strike)}</strong></span>
-      <span data-role="price-diff">${diffSign}${formatUsd(priceDiff)}</span>
+    <!-- Price Target Matrix -->
+    <div class="price-matrix">
+      <div class="price-tile">
+        <div class="tile-header">
+          <span class="tile-label">INDEX PRICE</span>
+          <span class="live-dot-tag" data-role="live-tag">LIVE</span>
+        </div>
+        <div class="tile-value tile-value--price" data-role="index-price">${indexPrice !== null ? "$" + formatUsd(indexPrice) : "--"}</div>
+      </div>
+
+      <div class="price-tile">
+        <div class="tile-header">
+          <span class="tile-label">GOAL PRICE</span>
+          <span class="tile-tag">TARGET</span>
+        </div>
+        <div class="tile-value tile-value--strike">$${formatUsd(strike)}</div>
+      </div>
+
+      <div class="price-tile">
+        <div class="tile-header">
+          <span class="tile-label">GAP TO GOAL</span>
+          <span class="tile-tag ${priceDiff >= 0 ? "tag--bull" : "tag--bear"}">${priceDiff >= 0 ? "ABOVE" : "BELOW"}</span>
+        </div>
+        <div class="tile-value ${priceDiff >= 0 ? "val--bull" : "val--bear"}" data-role="price-diff">
+          ${diffSign}$${formatUsd(priceDiff)} <span class="pct-sub">(${diffSign}${diffPct}%)</span>
+        </div>
+      </div>
     </div>
 
-    <canvas class="sparkline" data-role="sparkline" data-strike="${r.strike}" width="640" height="160"></canvas>
-    <div class="sparkline-meta">
-      <span data-role="chart-low">low --</span>
-      <span data-role="chart-range">last 10 min</span>
-      <span data-role="chart-high">high --</span>
+    <!-- Interactive Sparkline Chart -->
+    <div class="chart-container">
+      <canvas class="sparkline" data-role="sparkline" data-strike="${strike}" width="640" height="150"></canvas>
+      <div class="chart-hud">
+        <span class="chart-tag" data-role="chart-low">LOW: --</span>
+        <span class="chart-tag chart-tag--center">10-MIN TRAILING TIMEFRAME</span>
+        <span class="chart-tag" data-role="chart-high">HIGH: --</span>
+      </div>
     </div>
 
-    <div class="bar-label"><span>Our prediction</span><span>${(modelP * 100).toFixed(1)}%</span></div>
-    <div class="bar-track">
-      <div class="bar-fill model" style="width:${(modelP * 100).toFixed(1)}%"></div>
-      <div class="bar-marker" style="left:${(marketP * 100).toFixed(1)}%" title="Market odds"></div>
+    <!-- Probability & Edge Meters -->
+    <div class="prob-section">
+      <div class="prob-row">
+        <div class="prob-info">
+          <span class="prob-label">AI Model Win Probability</span>
+          <span class="prob-val prob-val--model">${(modelP * 100).toFixed(1)}% ABOVE GOAL</span>
+        </div>
+        <div class="prob-bar-track">
+          <div class="prob-bar-fill prob-bar-fill--model" style="width: ${(modelP * 100).toFixed(1)}%"></div>
+          <div class="prob-bar-target" style="left: ${(marketP * 100).toFixed(1)}%" title="Market Odds Reference"></div>
+        </div>
+      </div>
+
+      <div class="prob-row">
+        <div class="prob-info">
+          <span class="prob-label">Kalshi Market Implied Odds</span>
+          <span class="prob-val prob-val--market">${(marketP * 100).toFixed(1)}% ABOVE GOAL</span>
+        </div>
+        <div class="prob-bar-track">
+          <div class="prob-bar-fill prob-bar-fill--market" style="width: ${(marketP * 100).toFixed(1)}%"></div>
+        </div>
+      </div>
+
+      <div class="edge-callout-bar">
+        <div class="edge-pill ${edgePositive ? "edge-pill--pos" : "edge-pill--neg"}">
+          <span class="edge-icon">${edgePositive ? "\u25B2" : "\u25BC"}</span>
+          <span>Pricing Advantage: <strong>${edgePositive ? "+" : ""}${edgePts} pts edge</strong></span>
+        </div>
+        <div class="confidence-pill">
+          <span>Directional Probability: <strong>${winProb.toFixed(1)}% ${predictedAbove ? "ABOVE" : "BELOW"}</strong></span>
+        </div>
+      </div>
     </div>
 
-    <div class="bar-label"><span>Market odds</span><span>${(marketP * 100).toFixed(1)}%</span></div>
-    <div class="bar-track">
-      <div class="bar-fill market" style="width:${(marketP * 100).toFixed(1)}%"></div>
-    </div>
-    <p class="gap-note">Difference from market: ${r.edge >= 0 ? "+" : ""}${(Number(r.edge) * 100).toFixed(1)} pts</p>
-
-    <div class="footer-row">
-      <span class="badge ${rec}">${recLabel}</span>
-      <span class="updated-at" data-role="updated">updated ${new Date(r.ts_ms).toLocaleTimeString()}</span>
+    <!-- Card Footer -->
+    <div class="card-footer">
+      <span class="badge badge--${rec}">${recLabel}</span>
+      <span class="updated-at" data-role="updated">Updated ${r.ts_ms ? new Date(r.ts_ms).toLocaleTimeString() : "--"}</span>
     </div>
   `;
 }
 
 function whaleFaceHtml() {
   return `
-    <p class="whale-caption">Recent large trades on this market. Anonymous —
-      Kalshi doesn't reveal who made a trade, only its size.</p>
-    <form class="whale-filter" data-role="whale-filter">
-      <label>Minimum trade</label>
-      <div class="whale-filter__control">
-        <span aria-hidden="true">$</span>
-        <input type="number" data-role="whale-min" min="0" step="1"
-               value="${whaleMinUsd}" aria-label="Minimum trade amount in dollars" />
-        <button type="submit">Filter</button>
+    <div class="whale-tracker-header">
+      <div class="whale-tracker-title-bar">
+        <div class="whale-tracker-heading">
+          <span class="whale-icon-badge">\uD83D\uDC0B</span>
+          <div>
+            <h3 class="whale-title">Whale Tracker &mdash; Institutional Order Flow</h3>
+            <p class="whale-caption">Surfacing anonymous high-volume fills and positioning on this 15-minute market.</p>
+          </div>
+        </div>
       </div>
-    </form>
-    <div class="whale-empty" data-role="whale-list">Loading big bets…</div>
+
+      <div class="whale-filter-card">
+        <div class="whale-filter-top">
+          <span class="filter-label">Quick Minimum Filter:</span>
+          <div class="whale-presets" data-role="whale-presets">
+            <button type="button" class="preset-chip ${whaleMinUsd === 0 ? "active" : ""}" data-val="0">All</button>
+            <button type="button" class="preset-chip ${whaleMinUsd === 50 ? "active" : ""}" data-val="50">$50+</button>
+            <button type="button" class="preset-chip ${whaleMinUsd === 100 ? "active" : ""}" data-val="100">$100+</button>
+            <button type="button" class="preset-chip ${whaleMinUsd === 250 ? "active" : ""}" data-val="250">$250+</button>
+            <button type="button" class="preset-chip ${whaleMinUsd === 500 ? "active" : ""}" data-val="500">$500+</button>
+            <button type="button" class="preset-chip ${whaleMinUsd === 1000 ? "active" : ""}" data-val="1000">$1,000+</button>
+          </div>
+        </div>
+
+        <form class="whale-filter-form" data-role="whale-filter">
+          <label class="custom-label">Custom Min USD:</label>
+          <div class="whale-input-group">
+            <span class="input-prefix">$</span>
+            <input type="number" class="whale-input" data-role="whale-min" min="0" step="10"
+                   value="${whaleMinUsd}" aria-label="Minimum trade amount in dollars" />
+            <button type="submit" class="whale-btn-apply">Apply</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="whale-stream-container">
+      <div class="whale-stream-header">
+        <span>SIDE</span>
+        <span>TRADE NOTIONAL</span>
+        <span>FILL PRICE</span>
+        <span>TIMESTAMP</span>
+      </div>
+      <div class="whale-stream-list" data-role="whale-list">
+        <div class="whale-loading">
+          <span class="spinner"></span> Scanning order book fills&hellip;
+        </div>
+      </div>
+    </div>
   `;
 }
 
 function cardHtml(r) {
   const isClosed = r.status === "closed";
+  const meta = getCoinMeta(r.index_id);
   return `
-    <article class="card ${isClosed ? "card--closed" : ""}" data-ticker="${r.ticker}"
-              data-status="${r.status}" data-close-ts="${r.close_ts_ms}" data-closed-at="${r.closed_at_ms ?? ""}"
-              data-index-id="${r.index_id ?? ""}" data-view="prediction">
-      <div class="card-accent"></div>
+    <article class="card ${isClosed ? "card--closed" : ""} card--${meta.symbol.toLowerCase()}"
+             data-ticker="${r.ticker}"
+             data-status="${r.status}"
+             data-close-ts="${r.close_ts_ms}"
+             data-closed-at="${r.closed_at_ms ?? ""}"
+             data-index-id="${r.index_id ?? ""}"
+             data-view="prediction">
+      <div class="card-glow" style="background: radial-gradient(circle at 80% 0%, ${meta.accent}15, transparent 60%);"></div>
+      
+      <!-- Card Header -->
       <div class="card-header">
-        <div>
-          <span class="coin-icon">${coinIcon(r.index_id)}</span>
-          <span class="coin">${coinName(r.index_id)}</span>
-          <span class="ticker">${r.ticker}</span>
+        <div class="card-header__left">
+          <div class="coin-badge" style="border-color: ${meta.accent}40;">
+            <span class="coin-badge__icon" style="color: ${meta.accent};">${meta.icon}</span>
+            <div class="coin-badge__text">
+              <div class="coin-badge__name">${meta.name} <span class="badge-sub">15m</span></div>
+              <div class="coin-badge__ticker-row">
+                <span class="ticker-code">${r.ticker}</span>
+                <button type="button" class="btn-copy-ticker" data-ticker="${r.ticker}" title="Copy market ticker">\u2398</button>
+              </div>
+            </div>
+          </div>
         </div>
+
         <div class="card-header__right">
-          <button type="button" class="whale-toggle" data-role="whale-toggle" title="Show big bets on this market">🐋 Big bets</button>
-          <span class="countdown ${isClosed ? "expired" : ""}" data-role="countdown">--:--</span>
+          <button type="button" class="whale-toggle-btn" data-role="whale-toggle" title="Toggle Whale Tracker feed">
+            <span class="whale-toggle-icon">\uD83D\uDC0B</span>
+            <span class="whale-toggle-label">Whale Tracker</span>
+          </button>
+          <div class="countdown-badge ${isClosed ? "expired" : ""}" data-role="countdown">
+            <span class="clock-icon">\u23F1</span>
+            <span class="countdown-val">--:--</span>
+          </div>
         </div>
       </div>
+
+      <!-- Card Faces -->
       <div class="card-face card-face--prediction" data-role="face-prediction">
         ${predictionHtml(r)}
       </div>
@@ -232,42 +482,60 @@ function cardHtml(r) {
   `;
 }
 
-const COIN_ORDER = { BRTI: 0, SOLUSD_RTI: 1 };
-
-function coinSectionHeaderInnerHtml(indexId) {
-  const label = `${coinIcon(indexId)} ${coinName(indexId).split(" (")[0]} track record`;
-  const stats = calibrationByCoin[indexId];
-  return calibrationRowHtml(label, stats || { n: 0 });
-}
-
-function coinSectionHeaderHtml(indexId) {
-  return `<div class="coin-section-header" data-index-id="${indexId}">${coinSectionHeaderInnerHtml(indexId)}</div>`;
-}
-
 function renderCards(rows) {
+  rawMarketRows = rows || [];
   const container = document.getElementById("cards");
-  if (rows.length === 0) {
-    container.innerHTML = `<p class="empty-state">${EMPTY_MESSAGES[currentTab]}</p>`;
+  if (!container) return;
+
+  // Update tab badge counts
+  const activeCountEl = document.getElementById("active-count");
+  const closedCountEl = document.getElementById("closed-count");
+  if (currentTab === "active" && activeCountEl) {
+    activeCountEl.textContent = rows.length;
+  } else if (closedCountEl) {
+    closedCountEl.textContent = rows.length;
+  }
+
+  // Filter rows by Coin and Search Query
+  let filtered = rawMarketRows.filter((r) => {
+    if (currentCoinFilter !== "all" && r.index_id !== currentCoinFilter) {
+      return false;
+    }
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      const tickerMatch = r.ticker && r.ticker.toLowerCase().includes(q);
+      const strikeMatch = r.strike && String(r.strike).includes(q);
+      const coinMatch = r.index_id && r.index_id.toLowerCase().includes(q);
+      if (!tickerMatch && !strikeMatch && !coinMatch) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state-card">
+        <div class="empty-icon">\uD83D\uDCC2</div>
+        <p class="empty-title">${EMPTY_MESSAGES[currentTab]}</p>
+        <p class="empty-desc">${searchQuery ? "Try clearing your search query or coin filter." : "The engine is standing by for upcoming settlement windows."}</p>
+      </div>
+    `;
     return;
   }
-  const sorted = [...rows].sort((a, b) => {
+
+  // Sort by Coin Priority (BTC first, then SOL) then Expiration timestamp
+  const COIN_ORDER = { BRTI: 0, SOLUSD_RTI: 1 };
+  const sorted = [...filtered].sort((a, b) => {
     const order = (COIN_ORDER[a.index_id] ?? 99) - (COIN_ORDER[b.index_id] ?? 99);
     return order !== 0 ? order : a.close_ts_ms - b.close_ts_ms;
   });
 
-  // Remember which cards were flipped to the big-bets view so a re-render
-  // (every 5s) doesn't silently snap them back to the prediction view.
+  // Preserve flipped cards state across re-renders
   const flippedTickers = new Set(
     [...container.querySelectorAll('.card[data-view="whales"]')].map((el) => el.dataset.ticker)
   );
 
   let html = "";
-  let lastIndexId;
   sorted.forEach((r) => {
-    if (r.index_id && r.index_id !== lastIndexId) {
-      html += coinSectionHeaderHtml(r.index_id);
-      lastIndexId = r.index_id;
-    }
     html += cardHtml(r);
   });
   container.innerHTML = html;
@@ -275,13 +543,15 @@ function renderCards(rows) {
 
   if (flippedTickers.size) {
     container.querySelectorAll(".card").forEach((card) => {
-      if (flippedTickers.has(card.dataset.ticker)) setCardView(card, "whales");
+      if (flippedTickers.has(card.dataset.ticker)) {
+        setCardView(card, "whales");
+      }
     });
   }
 
   const indexIds = new Set(sorted.map((r) => r.index_id).filter(Boolean));
   indexIds.forEach((indexId) => {
-    patchLiveCards(indexId); // apply whatever we already know immediately (no flash of stale data)
+    patchLiveCards(indexId);
     ensureSparklineSeed(indexId).then(() => patchLiveCards(indexId));
   });
 }
@@ -290,51 +560,99 @@ function setCardView(card, view) {
   card.dataset.view = view;
   const predictionFace = card.querySelector('[data-role="face-prediction"]');
   const whaleFace = card.querySelector('[data-role="face-whales"]');
+  const toggleBtn = card.querySelector('[data-role="whale-toggle"]');
+
   if (predictionFace) predictionFace.hidden = view !== "prediction";
   if (whaleFace) whaleFace.hidden = view !== "whales";
-  const toggleBtn = card.querySelector('[data-role="whale-toggle"]');
-  if (toggleBtn) toggleBtn.classList.toggle("active", view === "whales");
-  if (view === "whales") loadWhaleTrades(card);
+  if (toggleBtn) {
+    toggleBtn.classList.toggle("active", view === "whales");
+    const label = toggleBtn.querySelector(".whale-toggle-label");
+    const icon = toggleBtn.querySelector(".whale-toggle-icon");
+    if (label && icon) {
+      if (view === "whales") {
+        label.textContent = "Prediction Signal";
+        icon.textContent = "\u26A1";
+      } else {
+        label.textContent = "Whale Tracker";
+        icon.textContent = "\uD83D\uDC0B";
+      }
+    }
+  }
+
+  if (view === "whales") {
+    loadWhaleTrades(card);
+  }
 }
 
 async function loadWhaleTrades(card) {
   const ticker = card.dataset.ticker;
   const listEl = card.querySelector('[data-role="whale-list"]');
   if (!listEl) return;
-  listEl.className = "whale-empty";
-  listEl.textContent = "Loading big bets…";
+
+  listEl.innerHTML = '<div class="whale-loading"><span class="spinner"></span> Scanning order book fills&hellip;</div>';
   try {
-    const query = new URLSearchParams({ ticker, limit: "20", min_usd: String(whaleMinUsd) });
+    const query = new URLSearchParams({ ticker, limit: "30", min_usd: String(whaleMinUsd) });
     const res = await fetch(`/api/whale-trades?${query}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const trades = await res.json();
-    listEl.outerHTML = trades.length
-      ? `<div data-role="whale-list">${trades.map(whaleTradeRowHtml).join("")}</div>`
-      : `<div class="whale-empty" data-role="whale-list">No trades at or above $${whaleMinUsd.toLocaleString()}.</div>`;
+
+    if (!trades || trades.length === 0) {
+      listEl.innerHTML = `
+        <div class="whale-empty-state">
+          <div class="whale-empty-icon">\uD83D\uDD0D</div>
+          <div class="whale-empty-text">No whale fills at or above $${whaleMinUsd.toLocaleString()} found yet.</div>
+          <div class="whale-empty-sub">Lower the minimum threshold or wait for incoming market volume.</div>
+        </div>
+      `;
+      return;
+    }
+
+    const maxUsd = Math.max(...trades.map((t) => t.notional_usd || 100), 500);
+    listEl.innerHTML = trades.map((t) => whaleTradeRowHtml(t, maxUsd)).join("");
   } catch {
-    listEl.outerHTML = '<div class="whale-empty" data-role="whale-list">Couldn\'t load big bets right now.</div>';
+    listEl.innerHTML = '<div class="whale-error">Unable to fetch whale trades right now.</div>';
   }
 }
 
-function whaleTradeRowHtml(t) {
-  const sideLabel = t.side === "yes" ? "YES" : "NO";
-  const sideClass = t.side === "yes" ? "up" : "down";
+function whaleTradeRowHtml(t, maxUsd) {
+  const isYes = t.side === "yes";
+  const sideLabel = isYes ? "YES / UP" : "NO / DOWN";
+  const sideClass = isYes ? "side--yes" : "side--no";
+  const notional = Math.round(t.notional_usd);
+  const priceCents = Number(t.price_cents).toFixed(1);
+  const count = t.count ? Number(t.count).toLocaleString() : Math.round(notional / (Number(t.price_cents) / 100 || 1));
+
   const secondsAgo = Math.max(0, Math.floor((Date.now() - t.ts_ms) / 1000));
   const ago = secondsAgo < 60 ? `${secondsAgo}s ago` : `${Math.floor(secondsAgo / 60)}m ago`;
-  return (
-    '<div class="whale-row">' +
-    `<span class="whale-side ${sideClass}">${sideLabel}</span>` +
-    `<span class="whale-amount">$${Math.round(t.notional_usd).toLocaleString()}</span>` +
-    `<span class="whale-price">@ ${Number(t.price_cents).toFixed(1)}\u00a2</span>` +
-    `<span class="whale-ago">${ago}</span>` +
-    "</div>"
-  );
+
+  const barPct = Math.min(Math.max((notional / maxUsd) * 100, 10), 100);
+
+  return `
+    <div class="whale-row">
+      <div class="whale-cell whale-cell--side">
+        <span class="whale-side-badge ${sideClass}">${sideLabel}</span>
+      </div>
+      <div class="whale-cell whale-cell--amount">
+        <div class="amount-val">$${notional.toLocaleString()}</div>
+        <div class="amount-sub">${count} contracts</div>
+        <div class="amount-bar" style="width: ${barPct}%;"></div>
+      </div>
+      <div class="whale-cell whale-cell--price">
+        <div class="price-val">@ ${priceCents}&cent;</div>
+      </div>
+      <div class="whale-cell whale-cell--time">
+        <span class="time-ago">${ago}</span>
+      </div>
+    </div>
+  `;
 }
 
 function drawSparkline(canvas, points, strike) {
   const dpr = window.devicePixelRatio || 1;
-  const cssWidth = canvas.clientWidth || 640;
-  const cssHeight = canvas.clientHeight || 160;
+  const rect = canvas.getBoundingClientRect();
+  const cssWidth = rect.width || canvas.clientWidth || 640;
+  const cssHeight = rect.height || canvas.clientHeight || 150;
+
   canvas.width = cssWidth * dpr;
   canvas.height = cssHeight * dpr;
   const ctx = canvas.getContext("2d");
@@ -342,9 +660,10 @@ function drawSparkline(canvas, points, strike) {
   ctx.clearRect(0, 0, cssWidth, cssHeight);
 
   if (!points || points.length < 2) {
-    ctx.fillStyle = "rgba(255,255,255,0.25)";
-    ctx.font = "11px system-ui";
-    ctx.fillText("collecting price history…", 4, cssHeight / 2);
+    ctx.fillStyle = "rgba(255,255,255,0.3)";
+    ctx.font = "12px 'JetBrains Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("Gathering live 10-minute tick history\u2026", cssWidth / 2, cssHeight / 2);
     return;
   }
 
@@ -354,11 +673,10 @@ function drawSparkline(canvas, points, strike) {
   const max = Math.max(...values, strikeNum);
   const range = max - min || 1;
 
-  // Reserve margin on the left for price-axis labels and at the bottom for time labels
-  const padLeft = 56;
-  const padRight = 6;
-  const padTop = 10;
-  const padBottom = 16;
+  const padLeft = 68;
+  const padRight = 16;
+  const padTop = 14;
+  const padBottom = 22;
   const plotW = cssWidth - padLeft - padRight;
   const plotH = cssHeight - padTop - padBottom;
 
@@ -366,85 +684,115 @@ function drawSparkline(canvas, points, strike) {
   const yAt = (v) => padTop + plotH - ((v - min) / range) * plotH;
 
   const lastAbove = values[values.length - 1] >= strikeNum;
-  const lineColor = lastAbove ? "#33d17a" : "#ff5c5c";
+  const strokeColor = lastAbove ? "#10b981" : "#f43f5e";
 
-  // Horizontal grid lines + price-axis labels (max / mid / min)
-  ctx.font = "10px system-ui";
-  ctx.fillStyle = "rgba(255,255,255,0.35)";
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  // Grid Lines & Price Axis Labels
+  ctx.font = "10px 'JetBrains Mono', monospace";
+  ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.05)";
   ctx.lineWidth = 1;
+
   [max, (max + min) / 2, min].forEach((v) => {
     const y = yAt(v);
     ctx.beginPath();
     ctx.moveTo(padLeft, y);
     ctx.lineTo(cssWidth - padRight, y);
     ctx.stroke();
-    ctx.fillText(`$${formatUsd(v)}`, 2, y + 3);
+    ctx.textAlign = "left";
+    ctx.fillText(`$${formatUsd(v)}`, 6, y + 3);
   });
 
-  // Strike reference line + label
-  ctx.strokeStyle = "rgba(255,255,255,0.35)";
-  ctx.setLineDash([3, 3]);
-  ctx.lineWidth = 1;
+  // Goal Price Dotted Line
+  const strikeY = yAt(strikeNum);
+  ctx.save();
+  ctx.strokeStyle = "rgba(168, 85, 247, 0.65)";
+  ctx.setLineDash([4, 4]);
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(padLeft, yAt(strikeNum));
-  ctx.lineTo(cssWidth - padRight, yAt(strikeNum));
+  ctx.moveTo(padLeft, strikeY);
+  ctx.lineTo(cssWidth - padRight, strikeY);
   ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.fillText(`strike $${formatUsd(strikeNum)}`, cssWidth - padRight - 90, yAt(strikeNum) - 4);
+  ctx.restore();
 
-  // Gradient fill under the price line
-  const gradient = ctx.createLinearGradient(0, 0, 0, cssHeight);
-  gradient.addColorStop(0, lastAbove ? "rgba(51,209,122,0.25)" : "rgba(255,92,92,0.25)");
-  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  // Goal Price Tag Box
+  ctx.fillStyle = "rgba(168, 85, 247, 0.2)";
+  ctx.fillRect(cssWidth - padRight - 110, strikeY - 14, 110, 16);
+  ctx.fillStyle = "#c084fc";
+  ctx.font = "bold 9px 'JetBrains Mono', monospace";
+  ctx.textAlign = "right";
+  ctx.fillText(`GOAL $${formatUsd(strikeNum)}`, cssWidth - padRight - 6, strikeY - 3);
+
+  // Gradient Area Fill
+  const gradient = ctx.createLinearGradient(0, padTop, 0, padTop + plotH);
+  if (lastAbove) {
+    gradient.addColorStop(0, "rgba(16, 185, 129, 0.28)");
+    gradient.addColorStop(1, "rgba(16, 185, 129, 0.0)");
+  } else {
+    gradient.addColorStop(0, "rgba(244, 63, 94, 0.28)");
+    gradient.addColorStop(1, "rgba(244, 63, 94, 0.0)");
+  }
+
   ctx.beginPath();
   ctx.moveTo(xAt(0), yAt(values[0]));
   values.forEach((v, i) => ctx.lineTo(xAt(i), yAt(v)));
-  ctx.lineTo(cssWidth - padRight, cssHeight - padBottom);
-  ctx.lineTo(padLeft, cssHeight - padBottom);
+  ctx.lineTo(xAt(values.length - 1), padTop + plotH);
+  ctx.lineTo(xAt(0), padTop + plotH);
   ctx.closePath();
   ctx.fillStyle = gradient;
   ctx.fill();
 
-  // Price line
+  // Price Path
   ctx.beginPath();
   ctx.moveTo(xAt(0), yAt(values[0]));
   values.forEach((v, i) => ctx.lineTo(xAt(i), yAt(v)));
-  ctx.strokeStyle = lineColor;
-  ctx.lineWidth = 1.75;
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = 2;
   ctx.lineJoin = "round";
+  ctx.lineCap = "round";
   ctx.stroke();
 
-  // Dot at the latest price
+  // Pulse Glow at Current Price
   const lastX = xAt(values.length - 1);
   const lastY = yAt(values[values.length - 1]);
+
   ctx.beginPath();
-  ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
-  ctx.fillStyle = lineColor;
+  ctx.arc(lastX, lastY, 6, 0, Math.PI * 2);
+  ctx.fillStyle = lastAbove ? "rgba(16, 185, 129, 0.3)" : "rgba(244, 63, 94, 0.3)";
   ctx.fill();
 
-  // Time-axis labels (start / end of the visible window)
-  ctx.fillStyle = "rgba(255,255,255,0.35)";
-  ctx.font = "10px system-ui";
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = strokeColor;
+  ctx.fill();
+
+  // Time Axis Labels
+  ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+  ctx.font = "9px 'JetBrains Mono', monospace";
   ctx.textAlign = "left";
-  ctx.fillText(new Date(points[0].ts_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), padLeft, cssHeight - 3);
+  ctx.fillText(
+    new Date(points[0].ts_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    padLeft,
+    cssHeight - 6
+  );
   ctx.textAlign = "right";
-  ctx.fillText(new Date(points[points.length - 1].ts_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), cssWidth - padRight, cssHeight - 3);
-  ctx.textAlign = "left";
+  ctx.fillText(
+    new Date(points[points.length - 1].ts_ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    cssWidth - padRight,
+    cssHeight - 6
+  );
 }
 
 function updateSparklineMeta(card, points) {
   const lowEl = card.querySelector('[data-role="chart-low"]');
   const highEl = card.querySelector('[data-role="chart-high"]');
   if (!points || points.length < 2) {
-    if (lowEl) lowEl.textContent = "low --";
-    if (highEl) highEl.textContent = "high --";
+    if (lowEl) lowEl.textContent = "LOW: --";
+    if (highEl) highEl.textContent = "HIGH: --";
     return;
   }
   const values = points.map((p) => p.value);
-  if (lowEl) lowEl.textContent = `low $${formatUsd(Math.min(...values))}`;
-  if (highEl) highEl.textContent = `high $${formatUsd(Math.max(...values))}`;
+  if (lowEl) lowEl.textContent = `LOW: $${formatUsd(Math.min(...values))}`;
+  if (highEl) highEl.textContent = `HIGH: $${formatUsd(Math.max(...values))}`;
 }
 
 async function ensureSparklineSeed(indexId) {
@@ -456,7 +804,7 @@ async function ensureSparklineSeed(indexId) {
       sparklineHistories[indexId] = await res.json();
     }
   } catch {
-    seededIndexIds.delete(indexId); // allow retrying on the next render
+    seededIndexIds.delete(indexId);
   }
 }
 
@@ -471,7 +819,8 @@ function appendLiveTick(indexId, tsMs, value) {
 
 function patchLiveCards(indexId) {
   const live = latestLiveByIndex[indexId];
-  document.querySelectorAll(`.card[data-index-id="${CSS.escape(indexId)}"]`).forEach((card) => {
+  const selector = CSS && CSS.escape ? `.card[data-index-id="${CSS.escape(indexId)}"]` : `.card[data-index-id="${indexId}"]`;
+  document.querySelectorAll(selector).forEach((card) => {
     const canvas = card.querySelector('[data-role="sparkline"]');
     if (canvas) {
       drawSparkline(canvas, sparklineHistories[indexId] || [], canvas.dataset.strike);
@@ -480,27 +829,40 @@ function patchLiveCards(indexId) {
     if (!live) return;
     const priceEl = card.querySelector('[data-role="index-price"]');
     const diffEl = card.querySelector('[data-role="price-diff"]');
-    if (priceEl) priceEl.textContent = `$${formatUsd(live.value)}`;
+
+    if (priceEl) {
+      priceEl.textContent = `$${formatUsd(live.value)}`;
+      priceEl.classList.remove("flash-update");
+      void priceEl.offsetWidth; // trigger reflow
+      priceEl.classList.add("flash-update");
+    }
+
     if (diffEl && canvas) {
-      const diff = live.value - Number(canvas.dataset.strike);
-      diffEl.textContent = `${diff >= 0 ? "+" : ""}${formatUsd(diff)}`;
+      const strike = Number(canvas.dataset.strike);
+      const diff = live.value - strike;
+      const diffPct = strike > 0 ? ((diff / strike) * 100).toFixed(2) : "0.00";
+      const sign = diff >= 0 ? "+" : "";
+      diffEl.innerHTML = `${sign}$${formatUsd(diff)} <span class="pct-sub">(${sign}${diffPct}%)</span>`;
+      diffEl.className = `tile-value ${diff >= 0 ? "val--bull" : "val--bear"}`;
     }
   });
 }
 
 function tickCountdowns() {
   document.querySelectorAll(".card").forEach((card) => {
-    const el = card.querySelector('[data-role="countdown"]');
-    if (el) {
+    const countdownEl = card.querySelector('[data-role="countdown"]');
+    const valEl = countdownEl?.querySelector(".countdown-val");
+
+    if (countdownEl && valEl) {
       if (card.dataset.status === "closed") {
         const closedAt = Number(card.dataset.closedAt);
-        el.textContent = Number.isFinite(closedAt) && closedAt > 0 ? formatElapsed(Date.now() - closedAt) : "closed";
-        el.className = "countdown expired";
+        valEl.textContent = Number.isFinite(closedAt) && closedAt > 0 ? formatElapsed(Date.now() - closedAt) : "Settled";
+        countdownEl.className = "countdown-badge expired";
       } else {
         const closeTsMs = Number(card.dataset.closeTs);
         const { text, cls } = formatCountdown(closeTsMs - Date.now());
-        el.textContent = text;
-        el.className = `countdown ${cls}`;
+        valEl.textContent = text;
+        countdownEl.className = `countdown-badge ${cls}`;
       }
     }
 
@@ -510,7 +872,8 @@ function tickCountdowns() {
       const decisionAtMs = closeTsMs - decisionLeadSec * 1000;
       const msRemaining = decisionAtMs - Date.now();
       if (msRemaining <= 0) {
-        decisionEl.textContent = "any moment\u2026";
+        decisionEl.textContent = "LOCKING IN NOW";
+        decisionEl.classList.add("urgent");
       } else {
         const { text } = formatCountdown(msRemaining);
         decisionEl.textContent = text;
@@ -519,10 +882,19 @@ function tickCountdowns() {
   });
 }
 
+function updateClock() {
+  const clockEl = document.getElementById("system-clock");
+  if (!clockEl) return;
+  const now = new Date();
+  const utcStr = now.toISOString().substring(11, 19) + " UTC";
+  clockEl.textContent = utcStr;
+}
+
 function setStatus(state, label) {
   const el = document.getElementById("conn-status");
+  if (!el) return;
   el.className = `status status--${state}`;
-  el.textContent = label;
+  el.textContent = label.toUpperCase();
 }
 
 let liveSocket = null;
@@ -534,7 +906,7 @@ function connectLiveSocket() {
 
   liveSocket.addEventListener("open", () => {
     liveSocketBackoffMs = 1000;
-    setStatus("live", "live");
+    setStatus("live", "LIVE FEED");
   });
 
   liveSocket.addEventListener("message", (event) => {
@@ -550,7 +922,7 @@ function connectLiveSocket() {
   });
 
   liveSocket.addEventListener("close", () => {
-    setStatus("pending", "reconnecting…");
+    setStatus("pending", "RECONNECTING");
     setTimeout(connectLiveSocket, liveSocketBackoffMs);
     liveSocketBackoffMs = Math.min(liveSocketBackoffMs * 2, 15000);
   });
@@ -567,49 +939,88 @@ async function fetchCalibration(indexId) {
   return res.json();
 }
 
-function calibrationRowHtml(label, c) {
-  if (!c.n) {
-    return `<div class="calibration"><span class="calibration-label">${label}: waiting for the first settled market&hellip;</span></div>`;
+function renderHudCalibrationCard(title, coinSymbol, c) {
+  if (!c || !c.n) {
+    return `
+      <div class="hud-card">
+        <div class="hud-card__top">
+          <span class="hud-card__symbol">${coinSymbol}</span>
+          <span class="hud-card__label">${title}</span>
+        </div>
+        <div class="hud-card__body">
+          <div class="hud-card__empty">Awaiting first settled outcome&hellip;</div>
+        </div>
+      </div>
+    `;
   }
-  const better = c.model_brier <= c.market_brier;
-  return (
-    '<div class="calibration">' +
-    `<span class="calibration-label">${label} (last ${c.n} settled)</span>` +
-    '<span class="calibration-chips">' +
-    `<span class="chip ${better ? "chip--good" : "chip--bad"}">Us ${c.model_brier.toFixed(3)}</span>` +
-    `<span class="chip">Market ${c.market_brier.toFixed(3)}</span>` +
-    `<span class="chip chip--muted">Coin flip ${c.baseline_brier.toFixed(3)}</span>` +
-    "</span>" +
-    '<span class="calibration-hint">lower = more accurate</span>' +
-    "</div>"
-  );
+
+  const isBetter = c.model_brier <= c.market_brier;
+  const delta = (c.market_brier - c.model_brier).toFixed(3);
+  const deltaSign = Number(delta) >= 0 ? "+" : "";
+
+  return `
+    <div class="hud-card ${isBetter ? "hud-card--outperforming" : "hud-card--underperforming"}">
+      <div class="hud-card__top">
+        <div class="hud-card__badge-wrap">
+          <span class="hud-card__symbol">${coinSymbol}</span>
+          <span class="hud-card__label">${title}</span>
+        </div>
+        <span class="hud-card__status-pill ${isBetter ? "pill--success" : "pill--warning"}">
+          ${isBetter ? "OUTPERFORMING MARKET" : "TRACKING MARKET"}
+        </span>
+      </div>
+
+      <div class="hud-card__metrics-grid">
+        <div class="hud-metric">
+          <span class="hud-metric__label">US (BRIER)</span>
+          <span class="hud-metric__val ${isBetter ? "val--better" : "val--worse"}">${c.model_brier.toFixed(3)}</span>
+        </div>
+        <div class="hud-metric">
+          <span class="hud-metric__label">MARKET (BRIER)</span>
+          <span class="hud-metric__val">${c.market_brier.toFixed(3)}</span>
+        </div>
+        <div class="hud-metric">
+          <span class="hud-metric__label">COIN FLIP</span>
+          <span class="hud-metric__val val--muted">${c.baseline_brier.toFixed(3)}</span>
+        </div>
+      </div>
+
+      <div class="hud-card__footer">
+        <span class="sample-badge">${c.n} settled markets</span>
+        <span class="edge-delta">${deltaSign}${delta} Brier delta</span>
+      </div>
+    </div>
+  `;
 }
 
 async function refreshCalibration() {
   const el = document.getElementById("calibration");
+  if (!el) return;
+
   try {
     const [overall, btc, sol] = await Promise.all([
       fetchCalibration(),
       fetchCalibration("BRTI"),
       fetchCalibration("SOLUSD_RTI"),
     ]);
-    el.innerHTML = calibrationRowHtml("Overall track record", overall);
 
-    calibrationByCoin.BRTI = btc;
-    calibrationByCoin.SOLUSD_RTI = sol;
-    // Patch section headers already in the DOM in place, rather than re-rendering
-    // all cards (which would wipe out sparkline canvases/live state).
-    document.querySelectorAll(".coin-section-header").forEach((header) => {
-      header.innerHTML = coinSectionHeaderInnerHtml(header.dataset.indexId);
-    });
+    calibrationStore.overall = overall;
+    calibrationStore.BRTI = btc;
+    calibrationStore.SOLUSD_RTI = sol;
+
+    el.innerHTML = `
+      ${renderHudCalibrationCard("Overall Engine", "\u26A1", overall)}
+      ${renderHudCalibrationCard("Bitcoin Model", "\u20BF", btc)}
+      ${renderHudCalibrationCard("Solana Model", "\u25CE", sol)}
+    `;
   } catch {
-    el.innerHTML = '<div class="calibration">Calibration: unavailable</div>';
+    el.innerHTML = '<div class="hud-card"><div class="hud-card__empty">Calibration telemetry currently unavailable.</div></div>';
   }
 }
 
 function setTab(tab) {
   currentTab = tab;
-  document.querySelectorAll(".tab-button").forEach((btn) => {
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
   refresh();
@@ -621,63 +1032,153 @@ async function refresh() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
     renderCards(rows);
-    setStatus("live", "live");
-    document.getElementById("last-updated").textContent =
-      `Dashboard refreshed ${new Date().toLocaleTimeString()}`;
+    setStatus("live", "LIVE FEED");
+    const updatedEl = document.getElementById("last-updated");
+    if (updatedEl) {
+      updatedEl.textContent = `Last Refreshed: ${new Date().toLocaleTimeString()}`;
+    }
   } catch (err) {
-    setStatus("error", "connection error");
+    setStatus("error", "FEED ERROR");
   }
 }
 
-document.querySelectorAll(".tab-button").forEach((btn) => {
-  btn.addEventListener("click", () => setTab(btn.dataset.tab));
-});
-
-// Delegated (not per-card) so the listener survives renderCards() rebuilding innerHTML.
-document.getElementById("cards").addEventListener("click", (event) => {
-  const toggle = event.target.closest('[data-role="whale-toggle"]');
-  if (!toggle) return;
-  const card = toggle.closest(".card");
-  if (!card) return;
-  setCardView(card, card.dataset.view === "whales" ? "prediction" : "whales");
-});
-
-document.getElementById("cards").addEventListener("submit", (event) => {
-  const form = event.target.closest('[data-role="whale-filter"]');
-  if (!form) return;
-  event.preventDefault();
-  const input = form.querySelector('[data-role="whale-min"]');
-  const value = Number(input?.value);
-  if (!Number.isFinite(value) || value < 0) {
-    input?.setCustomValidity("Enter zero or a positive dollar amount.");
-    input?.reportValidity();
-    return;
-  }
-  input.setCustomValidity("");
-  whaleMinUsd = value;
-  localStorage.setItem("whaleMinUsd", String(value));
-  document.querySelectorAll('[data-role="whale-min"]').forEach((field) => {
-    field.value = String(value);
+function initApp() {
+  // Tab Switching
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setTab(btn.dataset.tab));
   });
-  const card = form.closest(".card");
-  if (card) loadWhaleTrades(card);
-});
 
-fetch("/api/config")
-  .then((res) => res.json())
-  .then((cfg) => {
-    if (cfg.decision_lead_sec) decisionLeadSec = cfg.decision_lead_sec;
-  })
-  .catch(() => {});
+  // Coin Filter Chips
+  document.querySelectorAll(".filter-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      document.querySelectorAll(".filter-chip").forEach((c) => c.classList.remove("active"));
+      chip.classList.add("active");
+      currentCoinFilter = chip.dataset.filter;
+      renderCards(rawMarketRows);
+    });
+  });
 
-connectLiveSocket();
-refresh();
-refreshCalibration();
-// Price updates now arrive instantly over the WebSocket; this poll only needs
-// to catch prediction/edge recomputation and market open/close transitions.
-setInterval(refresh, 5000);
-setInterval(tickCountdowns, 1000);
-setInterval(refreshCalibration, 15000);
+  // Search Box
+  const searchInput = document.getElementById("market-search");
+  const clearBtn = document.getElementById("search-clear");
+  if (searchInput) {
+    searchInput.addEventListener("input", (e) => {
+      searchQuery = e.target.value.trim();
+      if (clearBtn) clearBtn.hidden = !searchQuery;
+      renderCards(rawMarketRows);
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      if (searchInput) {
+        searchInput.value = "";
+        searchQuery = "";
+        clearBtn.hidden = true;
+        renderCards(rawMarketRows);
+      }
+    });
+  }
 
+  // Delegated Card Click Handlers
+  const cardsContainer = document.getElementById("cards");
+  if (cardsContainer) {
+    cardsContainer.addEventListener("click", (event) => {
+      // 1. Toggle Whale Tracker View
+      const toggle = event.target.closest('[data-role="whale-toggle"]');
+      if (toggle) {
+        const card = toggle.closest(".card");
+        if (card) {
+          setCardView(card, card.dataset.view === "whales" ? "prediction" : "whales");
+        }
+        return;
+      }
 
+      // 2. Copy Ticker Button
+      const copyBtn = event.target.closest(".btn-copy-ticker");
+      if (copyBtn) {
+        const ticker = copyBtn.dataset.ticker;
+        if (ticker) {
+          navigator.clipboard.writeText(ticker).then(() => {
+            copyBtn.textContent = "\u2713";
+            copyBtn.classList.add("copied");
+            setTimeout(() => {
+              copyBtn.textContent = "\u2398";
+              copyBtn.classList.remove("copied");
+            }, 1800);
+          });
+        }
+        return;
+      }
 
+      // 3. Whale Tracker Preset Filter Chips
+      const presetBtn = event.target.closest(".preset-chip");
+      if (presetBtn) {
+        const val = Number(presetBtn.dataset.val);
+        if (Number.isFinite(val)) {
+          whaleMinUsd = val;
+          try {
+            localStorage.setItem("whaleMinUsd", String(val));
+          } catch {}
+          const card = presetBtn.closest(".card");
+          if (card) {
+            card.querySelectorAll(".preset-chip").forEach((c) => c.classList.toggle("active", Number(c.dataset.val) === val));
+            const input = card.querySelector('[data-role="whale-min"]');
+            if (input) input.value = String(val);
+            loadWhaleTrades(card);
+          }
+        }
+        return;
+      }
+    });
+
+    // Custom Whale Filter Submit
+    cardsContainer.addEventListener("submit", (event) => {
+      const form = event.target.closest('[data-role="whale-filter"]');
+      if (!form) return;
+      event.preventDefault();
+      const input = form.querySelector('[data-role="whale-min"]');
+      const value = Number(input?.value);
+      if (!Number.isFinite(value) || value < 0) {
+        input?.setCustomValidity("Enter zero or a positive dollar amount.");
+        input?.reportValidity();
+        return;
+      }
+      input.setCustomValidity("");
+      whaleMinUsd = value;
+      try {
+        localStorage.setItem("whaleMinUsd", String(value));
+      } catch {}
+      const card = form.closest(".card");
+      if (card) {
+        card.querySelectorAll(".preset-chip").forEach((c) => c.classList.toggle("active", Number(c.dataset.val) === value));
+        loadWhaleTrades(card);
+      }
+    });
+  }
+
+  // Fetch Config for decision lead time
+  fetch("/api/config")
+    .then((res) => res.json())
+    .then((cfg) => {
+      if (cfg.decision_lead_sec) decisionLeadSec = cfg.decision_lead_sec;
+    })
+    .catch(() => {});
+
+  // Startup Loops
+  connectLiveSocket();
+  refresh();
+  refreshCalibration();
+  updateClock();
+
+  setInterval(refresh, 5000);
+  setInterval(tickCountdowns, 1000);
+  setInterval(refreshCalibration, 15000);
+  setInterval(updateClock, 1000);
+}
+
+// Ensure execution happens even if DOM is already parsed
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initApp);
+} else {
+  initApp();
+}

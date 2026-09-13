@@ -2,39 +2,123 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AQLabs — Kalshi 15-Minute Crypto Signal</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AQLabs — Quantitative Crypto Prediction Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <header>
-    <div class="title-row">
-      <div class="brand">
-        <span class="brand-mark">AQ</span>
-        <div class="brand-text">
-          <span class="brand-name">AQLabs</span>
-          <h1>Kalshi 15-Minute Crypto Signal</h1>
+  <div class="app-layout">
+    <!-- Top Navigation Bar -->
+    <header class="top-nav">
+      <div class="nav-container">
+        <div class="brand-group">
+          <div class="brand-badge">
+            <span class="brand-logo">AQ</span>
+            <span class="brand-glow"></span>
+          </div>
+          <div class="brand-info">
+            <div class="brand-meta">
+              <span class="brand-title">AQLABS</span>
+              <span class="badge-tag">QUANTITATIVE</span>
+            </div>
+            <h1 class="product-title">Kalshi 15-Minute Crypto Engine</h1>
+          </div>
+        </div>
+
+        <div class="nav-controls">
+          <div class="live-indicator-wrap">
+            <span class="pulse-dot"></span>
+            <span id="conn-status" class="status status--pending">CONNECTING</span>
+          </div>
+          <div class="system-clock" id="system-clock">--:--:-- UTC</div>
+          <div class="mode-pill" title="System operates strictly in read-only / monitor mode">
+            <span class="mode-icon">🛡️</span> MONITOR MODE
+          </div>
         </div>
       </div>
-      <span id="conn-status" class="status status--pending">connecting…</span>
-    </div>
-    <p class="disclaimer">Monitor-only &mdash; this tool never places, amends, or cancels orders.</p>
-    <div id="calibration" class="calibration-group">
-      <div class="calibration">Track record: waiting for the first settled market&hellip;</div>
-    </div>
-    <nav class="tabs">
-      <button class="tab-button active" data-tab="active">Active Markets</button>
-      <button class="tab-button" data-tab="closed">Closed Markets</button>
-    </nav>
-  </header>
+    </header>
 
-  <main id="cards" class="cards">
-    <p class="empty-state">Waiting for market data…</p>
-  </main>
+    <!-- KPI / Track Record HUD -->
+    <section class="hud-section">
+      <div class="hud-container">
+        <div class="hud-header">
+          <div class="hud-title">
+            <span class="icon-pulse">⚡</span>
+            <span>PERFORMANCE &amp; CALIBRATION HUD</span>
+          </div>
+          <span class="hud-subtitle">Real-time Brier score tracking (lower is more accurate)</span>
+        </div>
+        <div id="calibration" class="hud-grid">
+          <div class="hud-card hud-card--loading">
+            <div class="hud-card__label">Track Record</div>
+            <div class="hud-card__val">Initializing calibration data&hellip;</div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-  <footer>
-    <span id="last-updated"></span>
-  </footer>
+    <!-- Toolbar: Tabs, Coin Filter & Search -->
+    <section class="toolbar-section">
+      <div class="toolbar-container">
+        <div class="toolbar-left">
+          <nav class="tabs-segmented">
+            <button class="tab-button tab-btn active" data-tab="active">
+              <span class="tab-icon">🟢</span>
+              <span>Active Markets</span>
+              <span class="tab-count" id="active-count">0</span>
+            </button>
+            <button class="tab-button tab-btn" data-tab="closed">
+              <span class="tab-icon">📜</span>
+              <span>Closed History</span>
+              <span class="tab-count" id="closed-count">0</span>
+            </button>
+          </nav>
+
+          <div class="coin-filter-group" id="coin-filters">
+            <button class="filter-chip active" data-filter="all">All Coins</button>
+            <button class="filter-chip" data-filter="BRTI"><span class="chip-icon">₿</span> Bitcoin</button>
+            <button class="filter-chip" data-filter="SOLUSD_RTI"><span class="chip-icon">◎</span> Solana</button>
+          </div>
+        </div>
+
+        <div class="toolbar-right">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="market-search" placeholder="Filter goal price or ticker…" autocomplete="off" />
+            <button type="button" id="search-clear" class="search-clear" hidden>&times;</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Content: Market Cards Grid -->
+    <main class="main-content">
+      <div id="cards" class="cards cards-grid">
+        <div class="empty-state-card">
+          <div class="scanner-anim"></div>
+          <p class="empty-title">Scanning Kalshi 15-Minute Markets…</p>
+          <p class="empty-desc">Connecting to real-time order books, price feeds, and prediction models.</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <div class="footer-container">
+        <div class="footer-left">
+          <span class="footer-brand">AQLabs Prediction Intelligence</span>
+          <span class="footer-sep">&bull;</span>
+          <span class="disclaimer-text">Monitor-only. Never places, amends, or cancels orders.</span>
+        </div>
+        <div class="footer-right">
+          <span id="last-updated" class="footer-timestamp">Awaiting telemetry…</span>
+        </div>
+      </div>
+    </footer>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

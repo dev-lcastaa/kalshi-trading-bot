@@ -133,13 +133,15 @@ Closed markets stay visible (dimmed) for a few seconds, then move to the
 **Closed Markets tab**, where you can see whether each past call was right
 or wrong once Kalshi reports the result.
 
-### 🐋 Big bets (who's putting in the big money?)
+### 🐋 Whale Tracker (who's putting in the big money?)
 
-Each card has a small **🐋 Big bets** button. Click it to flip that card
-from the prediction view to a list of the largest recent trades on that
-specific market. Enter a minimum dollar amount, such as `$300` or `$500`,
-and press **Filter** to show the latest trades at or above that amount. The
-threshold is remembered in that browser. Click **Big bets** again to flip back.
+Each card has a **🐋 Whale Tracker** button. Click it to flip that card
+from the prediction view to the live institutional order flow of the largest
+recent fills on that specific market. Use the quick filter preset chips
+(`$50+`, `$100+`, `$250+`, `$500+`, `$1,000+`) or type a custom minimum dollar
+amount and press **Apply** to surface the latest trades meeting that threshold.
+The threshold is remembered in your browser. Click **Prediction Signal** (⚡)
+again to flip back to the signal view.
 
 The filter can only search trades the bot collected. `KALSHI_WHALE_MIN_USD`
 is the collection floor (default `$100`), so lowering the dashboard filter
