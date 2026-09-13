@@ -1749,14 +1749,73 @@ body {
 }
 
 @media (max-width: 768px) {
+  body {
+    overflow-x: hidden;
+  }
+
+  .nav-container,
+  .hud-section,
+  .toolbar-section,
+  .main-content,
+  .app-footer {
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
   .nav-container {
     flex-direction: column;
     align-items: flex-start;
+    gap: 0.75rem;
+  }
+
+  .brand-group {
+    width: 100%;
+    gap: 0.7rem;
+  }
+
+  .brand-badge {
+    width: 2.4rem;
+    height: 2.4rem;
+  }
+
+  .product-title {
+    font-size: 1rem;
+    line-height: 1.25;
   }
 
   .nav-controls {
     width: 100%;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.5rem;
+  }
+
+  .live-indicator-wrap {
+    min-width: 0;
+  }
+
+  .system-clock {
+    justify-self: end;
+  }
+
+  .mode-pill {
+    grid-column: 1 / -1;
+    justify-content: center;
+    width: 100%;
+  }
+
+  .hud-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .hud-title {
+    font-size: 0.68rem;
+  }
+
+  .hud-subtitle {
+    font-size: 0.68rem;
   }
 
   .toolbar-container {
@@ -1764,9 +1823,40 @@ body {
     align-items: stretch;
   }
 
-  .toolbar-left, .toolbar-right {
+  .toolbar-left,
+  .toolbar-right {
     width: 100%;
-    justify-content: space-between;
+  }
+
+  .toolbar-left {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.65rem;
+  }
+
+  .tabs-segmented {
+    width: 100%;
+  }
+
+  .tab-btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 2.75rem;
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
+  }
+
+  .coin-filter-group {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    width: 100%;
+  }
+
+  .filter-chip {
+    justify-content: center;
+    min-height: 2.5rem;
+    padding-left: 0.35rem;
+    padding-right: 0.35rem;
   }
 
   .search-box {
@@ -1779,10 +1869,167 @@ body {
 
   .cards-grid {
     grid-template-columns: 1fr;
+    gap: 1rem;
   }
 
-  .whale-stream-header, .whale-row {
-    grid-template-columns: 80px 1fr 70px 65px;
+  .card {
+    padding: 1rem;
+    border-radius: 14px;
+  }
+
+  .card-header {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  .card-header__right {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.5rem;
+  }
+
+  .whale-toggle-btn,
+  .countdown-badge {
+    justify-content: center;
+    min-height: 2.6rem;
+  }
+
+  .price-matrix {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .price-tile:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .trade-banner__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .trade-banner__metrics {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .metric-pill {
+    align-items: flex-start;
+  }
+
+  .edge-callout-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .chart-container {
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+  }
+
+  .chart-tag--center {
+    display: none;
+  }
+
+  .whale-filter-top,
+  .whale-filter-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .whale-presets {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .preset-chip {
+    min-height: 2.35rem;
+  }
+
+  .whale-input-group {
+    width: 100%;
+  }
+
+  .whale-input {
+    flex: 1;
+    width: auto;
+    min-height: 2.5rem;
+  }
+
+  .whale-btn-apply {
+    min-width: 5rem;
+    min-height: 2.5rem;
+  }
+
+  .whale-stream-container {
+    overflow-x: auto;
+  }
+
+  .whale-stream-header,
+  .whale-row {
+    min-width: 390px;
+  }
+
+  .footer-container {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .footer-left {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    line-height: 1.4;
+  }
+
+  .footer-right {
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .brand-meta {
+    gap: 0.35rem;
+  }
+
+  .badge-tag {
+    display: none;
+  }
+
+  .product-title {
+    font-size: 0.92rem;
+  }
+
+  .nav-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .system-clock {
+    justify-self: stretch;
+    text-align: center;
+  }
+
+  .price-matrix {
+    grid-template-columns: 1fr;
+  }
+
+  .price-tile:last-child {
+    grid-column: auto;
+  }
+
+  .trade-banner__metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .trade-banner__metrics .metric-pill:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .whale-stream-header,
+  .whale-row {
+    min-width: 360px;
   }
 }
 
