@@ -1048,6 +1048,67 @@ async function refreshCalibration() {
   }
 }
 
+function formatMetric(value) {
+  return value === null || value === undefined ? "--" : Number(value).toFixed(3);
+}
+
+function shadowCardHtml(group) {
+  const { live, shadow, market } = group.scores;
+  const candidateBetter = shadow.n > 0 && shadow.brier < live.brier;
+  const marketBetter = shadow.n > 0 && shadow.brier < market.brier;
+  const coin = group.index_id === "BRTI" ? "\u20BF Bitcoin" : "\u25CE Solana";
+  const candidateTrades = shadow.actionable_n ?? 0;
+  const candidateCorrect = shadow.actionable_correct ?? 0;
+  return `
+    <article class="shadow-card ${candidateBetter ? "shadow-card--improved" : ""}">
+      <div class="shadow-card__header">
+        <div>
+          <span class="shadow-card__coin">${coin}</span>
+          <span class="shadow-card__experiment">${group.experiment_id}</span>
+        </div>
+        <span class="shadow-card__state ${candidateBetter ? "shadow-card__state--improved" : ""}">
+          ${candidateBetter ? "BETTER THAN LIVE" : "COLLECTING EVIDENCE"}
+        </span>
+      </div>
+      <div class="shadow-score-grid">
+        <div class="shadow-score">
+          <span class="shadow-score__label">LIVE BRIER</span>
+          <span class="shadow-score__value">${formatMetric(live.brier)}</span>
+        </div>
+        <div class="shadow-score shadow-score--candidate">
+          <span class="shadow-score__label">CANDIDATE BRIER</span>
+          <span class="shadow-score__value">${formatMetric(shadow.brier)}</span>
+        </div>
+        <div class="shadow-score">
+          <span class="shadow-score__label">MARKET BRIER</span>
+          <span class="shadow-score__value ${marketBetter ? "val--better" : ""}">${formatMetric(market.brier)}</span>
+        </div>
+      </div>
+      <div class="shadow-card__footer">
+        <span>${shadow.n} settled / ${group.pending} pending</span>
+        <span>${candidateCorrect}/${candidateTrades} candidate calls correct</span>
+      </div>
+    </article>
+  `;
+}
+
+async function refreshShadowMonitor() {
+  const element = document.getElementById("shadow-monitor");
+  if (!element) return;
+  try {
+    const response = await fetch("/api/shadow-comparison?limit=10000");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data.groups?.length) {
+      element.innerHTML = '<div class="shadow-empty">Shadow models are waiting for the first locked decision.</div>';
+      return;
+    }
+    element.innerHTML = data.groups.map(shadowCardHtml).join("");
+  } catch {
+    element.innerHTML = '<div class="shadow-empty">Shadow comparison is temporarily unavailable.</div>';
+  }
+}
+
 function setTab(tab) {
   currentTab = tab;
   document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -1198,12 +1259,14 @@ function initApp() {
   connectLiveSocket();
   refresh();
   refreshCalibration();
+  refreshShadowMonitor();
   updateClock();
   refreshExternalStatus();
 
   setInterval(refresh, 5000);
   setInterval(tickCountdowns, 1000);
   setInterval(refreshCalibration, 15000);
+  setInterval(refreshShadowMonitor, 30000);
   setInterval(updateClock, 1000);
   setInterval(refreshExternalStatus, 5000);
 }

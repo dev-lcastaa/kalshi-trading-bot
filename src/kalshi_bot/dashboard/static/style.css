@@ -434,6 +434,45 @@ body {
   padding: 0.75rem 0;
 }
 
+.shadow-section {
+  padding: 0.5rem 1.5rem 0.75rem;
+}
+
+.shadow-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.shadow-card, .shadow-empty {
+  background: rgba(12, 14, 22, 0.82);
+  border: 1px solid var(--border-card);
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+}
+
+.shadow-card--improved { border-left: 3px solid var(--green); }
+.shadow-empty { color: var(--text-muted); font-size: 0.78rem; }
+
+.shadow-card__header, .shadow-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.shadow-card__coin { font-size: 0.82rem; font-weight: 700; color: var(--text-main); }
+.shadow-card__experiment { display: block; max-width: 17rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-family: var(--font-mono); font-size: 0.59rem; }
+.shadow-card__state { border: 1px solid var(--border-card); border-radius: 999px; color: var(--text-muted); font-size: 0.58rem; font-weight: 700; letter-spacing: 0.04em; padding: 0.15rem 0.45rem; white-space: nowrap; }
+.shadow-card__state--improved { background: var(--green-bg); border-color: rgba(16, 185, 129, 0.35); color: var(--green); }
+
+.shadow-score-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; margin: 0.75rem 0; }
+.shadow-score { background: rgba(255, 255, 255, 0.03); border-radius: 6px; padding: 0.35rem 0.45rem; }
+.shadow-score--candidate { background: rgba(99, 102, 241, 0.12); }
+.shadow-score__label { display: block; color: var(--text-muted); font-size: 0.55rem; font-weight: 700; letter-spacing: 0.04em; }
+.shadow-score__value { color: var(--text-main); font-family: var(--font-mono); font-size: 0.82rem; font-weight: 700; }
+.shadow-card__footer { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.63rem; }
+
 /* ==========================================================================
    TOOLBAR: TABS, FILTERS & SEARCH
    ========================================================================== */
@@ -1784,6 +1823,7 @@ body {
 
   .nav-container,
   .hud-section,
+  .shadow-section,
   .toolbar-section,
   .main-content,
   .app-footer {
@@ -1837,6 +1877,10 @@ body {
     align-items: flex-start;
     flex-direction: column;
     gap: 0.25rem;
+  }
+
+  .shadow-grid {
+    grid-template-columns: 1fr;
   }
 
   .hud-title {
