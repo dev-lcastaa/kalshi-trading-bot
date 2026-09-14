@@ -9,7 +9,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
-<body>
+<body data-page="live">
   <div class="app-layout">
     <!-- Top Navigation Bar -->
     <header class="top-nav">
@@ -61,21 +61,6 @@
       </div>
     </section>
 
-    <section class="shadow-section" aria-label="Shadow model monitoring">
-      <div class="hud-container">
-        <div class="hud-header">
-          <div class="hud-title">
-            <span class="icon-pulse">◌</span>
-            <span>SHADOW LAB</span>
-          </div>
-          <span class="hud-subtitle">Candidate forecasts are recorded without changing live signals</span>
-        </div>
-        <div id="shadow-monitor" class="shadow-grid">
-          <div class="shadow-empty">Loading shadow comparison&hellip;</div>
-        </div>
-      </div>
-    </section>
-
     <!-- Toolbar: Tabs, Coin Filter & Search -->
     <section class="toolbar-section">
       <div class="toolbar-container">
@@ -90,11 +75,6 @@
               <span class="tab-icon">📜</span>
               <span>Closed History</span>
               <span class="tab-count" id="closed-count">0</span>
-            </button>
-            <button class="tab-button tab-btn" data-tab="shadow">
-              <span class="tab-icon">◌</span>
-              <span>Shadow Lab</span>
-              <span class="tab-count" id="shadow-count">0</span>
             </button>
           </nav>
 
@@ -117,13 +97,6 @@
 
     <!-- Main Content: Market Cards Grid -->
     <main class="main-content">
-      <div id="shadow-warning" class="shadow-warning" hidden>
-        <span class="shadow-warning__icon">!</span>
-        <div>
-          <strong>MODEL UNDER DEVELOPMENT</strong>
-          <span>Shadow forecasts are research only. Do not use them to place trades.</span>
-        </div>
-      </div>
       <div id="cards" class="cards cards-grid">
         <div class="empty-state-card">
           <div class="scanner-anim"></div>

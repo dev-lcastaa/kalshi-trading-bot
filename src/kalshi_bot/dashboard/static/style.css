@@ -438,6 +438,28 @@ body {
   padding: 0.5rem 1.5rem 0.75rem;
 }
 
+.shadow-section--page,
+.shadow-toolbar {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.dashboard-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  border-radius: 8px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #c7d2fe;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.dashboard-link:hover { background: rgba(99, 102, 241, 0.22); color: #ffffff; }
+
 .shadow-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

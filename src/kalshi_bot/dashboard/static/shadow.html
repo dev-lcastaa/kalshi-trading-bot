@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AQLabs - Shadow Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body data-page="shadow">
+  <div class="app-layout">
+    <header class="top-nav">
+      <div class="nav-container">
+        <div class="brand-group">
+          <div class="brand-badge"><span class="brand-logo">AQ</span></div>
+          <div class="brand-info">
+            <div class="brand-meta"><span class="brand-title">AQLABS</span><span class="badge-tag">RESEARCH</span></div>
+            <h1 class="product-title">Shadow Lab</h1>
+          </div>
+        </div>
+        <div class="nav-controls">
+          <div class="system-clock" id="system-clock">--:--:-- UTC</div>
+          <a class="dashboard-link" href="/">Live Dashboard</a>
+        </div>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <div id="shadow-warning" class="shadow-warning">
+        <span class="shadow-warning__icon">!</span>
+        <div>
+          <strong>MODEL UNDER DEVELOPMENT</strong>
+          <span>Shadow forecasts are research only. Do not use them to place trades.</span>
+        </div>
+      </div>
+      <section class="shadow-section shadow-section--page" aria-label="Shadow model recommendations">
+        <div class="hud-container">
+          <div class="hud-header">
+            <div class="hud-title"><span class="icon-pulse">◌</span><span>SHADOW RECOMMENDATIONS</span></div>
+            <span class="hud-subtitle">Candidate predictions use the same decision snapshots as the live model.</span>
+          </div>
+          <div id="shadow-monitor" class="shadow-grid"><div class="shadow-empty">Loading shadow comparison&hellip;</div></div>
+        </div>
+      </section>
+      <section class="toolbar-section shadow-toolbar">
+        <div class="toolbar-container">
+          <div class="toolbar-left">
+            <div class="coin-filter-group" id="coin-filters">
+              <button class="filter-chip active" data-filter="all">All Coins</button>
+              <button class="filter-chip" data-filter="BRTI"><span class="chip-icon">₿</span> Bitcoin</button>
+              <button class="filter-chip" data-filter="SOLUSD_RTI"><span class="chip-icon">◎</span> Solana</button>
+            </div>
+          </div>
+          <div class="toolbar-right"><div class="search-box"><span class="search-icon">🔍</span><input type="text" id="market-search" placeholder="Filter ticker..." autocomplete="off" /><button type="button" id="search-clear" class="search-clear" hidden>&times;</button></div></div>
+        </div>
+      </section>
+      <div id="cards" class="cards cards-grid"><div class="empty-state-card"><div class="scanner-anim"></div><p class="empty-title">Loading shadow forecasts...</p></div></div>
+    </main>
+    <footer class="app-footer"><div class="footer-container"><span class="footer-brand">AQLabs Shadow Research</span><span id="last-updated" class="footer-timestamp">Awaiting telemetry...</span></div></footer>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

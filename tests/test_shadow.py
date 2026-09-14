@@ -81,6 +81,10 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
 def test_shadow_api_scores_only_matched_settled_records_and_separates_experiments(tmp_path):
     store = Store(str(tmp_path / "api.db"))
     client = TestClient(create_app(store))
+    shadow_page = client.get("/shadow")
+    assert shadow_page.status_code == 200
+    assert 'data-page="shadow"' in shadow_page.text
+    assert "MODEL UNDER DEVELOPMENT" in shadow_page.text
     assert client.get("/api/shadow-comparison").json()["groups"] == []
     assert client.get("/api/shadow-decisions?limit=0").status_code == 422
     assert client.get("/api/shadow-comparison?limit=10001").status_code == 422

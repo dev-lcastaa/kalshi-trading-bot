@@ -103,5 +103,9 @@ def create_app(
     def index() -> FileResponse:
         return FileResponse(_STATIC_DIR / "index.html")
 
+    @app.get("/shadow")
+    def shadow_lab() -> FileResponse:
+        return FileResponse(_STATIC_DIR / "shadow.html")
+
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
     return app

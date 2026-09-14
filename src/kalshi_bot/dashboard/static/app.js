@@ -29,7 +29,8 @@ const EMPTY_MESSAGES = {
   shadow: "No locked shadow forecasts are available yet.",
 };
 
-let currentTab = "active";
+const isShadowPage = document.body.dataset.page === "shadow";
+let currentTab = isShadowPage ? "shadow" : "active";
 let currentCoinFilter = "all";
 let searchQuery = "";
 let rawMarketRows = [];
@@ -590,7 +591,7 @@ function shadowDecisionCardHtml(row) {
   const result = row.result === "yes" || row.result === "no" ? row.result.toUpperCase() : "PENDING";
   const callCorrect = row.result && ((forecast.recommendation === "BUY_YES") === (row.result === "yes"));
   return `
-    <article class="shadow-decision-card card--${meta.symbol.toLowerCase()}">
+    <article class="card shadow-decision-card card--${meta.symbol.toLowerCase()}">
       <div class="shadow-decision-card__header">
         <div class="coin-badge">
           <span class="coin-badge__icon" style="color: ${meta.accent};">${meta.icon}</span>
@@ -618,7 +619,8 @@ function renderShadowDecisions(rows) {
     const query = searchQuery.toLowerCase();
     return !query || row.ticker?.toLowerCase().includes(query) || row.index_id?.toLowerCase().includes(query);
   });
-  document.getElementById("shadow-count").textContent = rows.length;
+  const countEl = document.getElementById("shadow-count");
+  if (countEl) countEl.textContent = rows.length;
   container.innerHTML = filtered.length
     ? filtered.map(shadowDecisionCardHtml).join("")
     : `<div class="empty-state-card"><div class="empty-icon">◌</div><p class="empty-title">${EMPTY_MESSAGES.shadow}</p><p class="empty-desc">New forecasts appear after the next decision lock-in.</p></div>`;
@@ -1181,7 +1183,8 @@ function setTab(tab) {
 
 async function refresh() {
   try {
-    const res = await fetch(ENDPOINTS[currentTab]);
+    const endpoint = isShadowPage ? ENDPOINTS.shadow : ENDPOINTS[currentTab];
+    const res = await fetch(endpoint);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
     if (currentTab === "shadow") {
@@ -1322,18 +1325,23 @@ function initApp() {
     .catch(() => {});
 
   // Startup Loops
-  connectLiveSocket();
   refresh();
-  refreshCalibration();
-  refreshShadowMonitor();
   updateClock();
-  refreshExternalStatus();
+  setInterval(updateClock, 1000);
 
+  if (isShadowPage) {
+    refreshShadowMonitor();
+    setInterval(refresh, 30000);
+    setInterval(refreshShadowMonitor, 30000);
+    return;
+  }
+
+  connectLiveSocket();
+  refreshCalibration();
+  refreshExternalStatus();
   setInterval(refresh, 5000);
   setInterval(tickCountdowns, 1000);
   setInterval(refreshCalibration, 15000);
-  setInterval(refreshShadowMonitor, 30000);
-  setInterval(updateClock, 1000);
   setInterval(refreshExternalStatus, 5000);
 }
 
