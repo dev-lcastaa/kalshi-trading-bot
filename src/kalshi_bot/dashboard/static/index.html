@@ -91,6 +91,11 @@
               <span>Closed History</span>
               <span class="tab-count" id="closed-count">0</span>
             </button>
+            <button class="tab-button tab-btn" data-tab="shadow">
+              <span class="tab-icon">◌</span>
+              <span>Shadow Lab</span>
+              <span class="tab-count" id="shadow-count">0</span>
+            </button>
           </nav>
 
           <div class="coin-filter-group" id="coin-filters">
@@ -112,6 +117,13 @@
 
     <!-- Main Content: Market Cards Grid -->
     <main class="main-content">
+      <div id="shadow-warning" class="shadow-warning" hidden>
+        <span class="shadow-warning__icon">!</span>
+        <div>
+          <strong>MODEL UNDER DEVELOPMENT</strong>
+          <span>Shadow forecasts are research only. Do not use them to place trades.</span>
+        </div>
+      </div>
       <div id="cards" class="cards cards-grid">
         <div class="empty-state-card">
           <div class="scanner-anim"></div>

@@ -20,11 +20,13 @@
 const ENDPOINTS = {
   active: "/api/active",
   closed: "/api/closed",
+  shadow: "/api/shadow-decisions?limit=200",
 };
 
 const EMPTY_MESSAGES = {
   active: "No active 15-minute BTC/SOL markets matching filters right now.",
   closed: "No closed markets found.",
+  shadow: "No locked shadow forecasts are available yet.",
 };
 
 let currentTab = "active";
@@ -562,6 +564,64 @@ function renderCards(rows) {
     patchLiveCards(indexId);
     ensureSparklineSeed(indexId).then(() => patchLiveCards(indexId));
   });
+}
+
+function shadowRecommendationHtml(recommendation) {
+  const labels = {
+    BUY_YES: { label: "UP BIAS", side: "YES", cls: "up", icon: "\u25B2" },
+    BUY_NO: { label: "DOWN BIAS", side: "NO", cls: "down", icon: "\u25BC" },
+    NO_EDGE: { label: "NO TRADE", side: "NO ACTION", cls: "none", icon: "\u25CB" },
+  };
+  const info = labels[recommendation] || labels.NO_EDGE;
+  return `<div class="shadow-rec shadow-rec--${info.cls}"><span>${info.icon}</span><div><strong>${info.label}</strong><small>${info.side}</small></div></div>`;
+}
+
+function shadowDecisionCardHtml(row) {
+  const snapshot = row.snapshot || {};
+  const forecast = snapshot.shadow || {};
+  const features = snapshot.features || {};
+  const quotes = snapshot.quotes || {};
+  const meta = getCoinMeta(row.index_id);
+  const probability = Number(forecast.model_p_yes);
+  const marketProbability = Number(snapshot.market_p_yes);
+  const edge = probability - marketProbability;
+  const goal = Number(features.strike);
+  const price = Number(features.index_price);
+  const result = row.result === "yes" || row.result === "no" ? row.result.toUpperCase() : "PENDING";
+  const callCorrect = row.result && ((forecast.recommendation === "BUY_YES") === (row.result === "yes"));
+  return `
+    <article class="shadow-decision-card card--${meta.symbol.toLowerCase()}">
+      <div class="shadow-decision-card__header">
+        <div class="coin-badge">
+          <span class="coin-badge__icon" style="color: ${meta.accent};">${meta.icon}</span>
+          <div><div class="coin-badge__name">${meta.name} <span class="badge-sub">SHADOW</span></div><span class="ticker-code">${row.ticker}</span></div>
+        </div>
+        <span class="shadow-result ${row.result ? (callCorrect ? "shadow-result--correct" : "shadow-result--incorrect") : ""}">${result}</span>
+      </div>
+      ${shadowRecommendationHtml(forecast.recommendation)}
+      <div class="shadow-decision-metrics">
+        <div><span>SHADOW P(YES)</span><strong>${Number.isFinite(probability) ? (probability * 100).toFixed(1) + "%" : "--"}</strong></div>
+        <div><span>MARKET P(YES)</span><strong>${Number.isFinite(marketProbability) ? (marketProbability * 100).toFixed(1) + "%" : "--"}</strong></div>
+        <div><span>MODEL EDGE</span><strong class="${edge >= 0 ? "val--better" : "val--worse"}">${Number.isFinite(edge) ? (edge >= 0 ? "+" : "") + (edge * 100).toFixed(1) + " pts" : "--"}</strong></div>
+      </div>
+      <div class="shadow-decision-prices"><span>Decision price <strong>$${formatUsd(price)}</strong></span><span>Goal <strong>$${formatUsd(goal)}</strong></span><span>YES ask <strong>${quotes.yes_ask_dollars ?? "--"}</strong></span></div>
+      <div class="shadow-decision-card__footer"><span>${new Date(row.ts_ms).toLocaleTimeString()} snapshot</span><span>${snapshot.external_prices?.source_count ?? 0} external sources</span></div>
+    </article>
+  `;
+}
+
+function renderShadowDecisions(rows) {
+  const container = document.getElementById("cards");
+  if (!container) return;
+  const filtered = rows.filter((row) => {
+    if (currentCoinFilter !== "all" && row.index_id !== currentCoinFilter) return false;
+    const query = searchQuery.toLowerCase();
+    return !query || row.ticker?.toLowerCase().includes(query) || row.index_id?.toLowerCase().includes(query);
+  });
+  document.getElementById("shadow-count").textContent = rows.length;
+  container.innerHTML = filtered.length
+    ? filtered.map(shadowDecisionCardHtml).join("")
+    : `<div class="empty-state-card"><div class="empty-icon">◌</div><p class="empty-title">${EMPTY_MESSAGES.shadow}</p><p class="empty-desc">New forecasts appear after the next decision lock-in.</p></div>`;
 }
 
 function setCardView(card, view) {
@@ -1114,6 +1174,8 @@ function setTab(tab) {
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
+  const warning = document.getElementById("shadow-warning");
+  if (warning) warning.hidden = tab !== "shadow";
   refresh();
 }
 
@@ -1122,7 +1184,11 @@ async function refresh() {
     const res = await fetch(ENDPOINTS[currentTab]);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
-    renderCards(rows);
+    if (currentTab === "shadow") {
+      renderShadowDecisions(rows);
+    } else {
+      renderCards(rows);
+    }
     setStatus("live", "LIVE FEED");
     const updatedEl = document.getElementById("last-updated");
     if (updatedEl) {
@@ -1145,7 +1211,7 @@ function initApp() {
       document.querySelectorAll(".filter-chip").forEach((c) => c.classList.remove("active"));
       chip.classList.add("active");
       currentCoinFilter = chip.dataset.filter;
-      renderCards(rawMarketRows);
+      currentTab === "shadow" ? refresh() : renderCards(rawMarketRows);
     });
   });
 
@@ -1156,7 +1222,7 @@ function initApp() {
     searchInput.addEventListener("input", (e) => {
       searchQuery = e.target.value.trim();
       if (clearBtn) clearBtn.hidden = !searchQuery;
-      renderCards(rawMarketRows);
+      currentTab === "shadow" ? refresh() : renderCards(rawMarketRows);
     });
   }
   if (clearBtn) {
@@ -1165,7 +1231,7 @@ function initApp() {
         searchInput.value = "";
         searchQuery = "";
         clearBtn.hidden = true;
-        renderCards(rawMarketRows);
+        currentTab === "shadow" ? refresh() : renderCards(rawMarketRows);
       }
     });
   }
