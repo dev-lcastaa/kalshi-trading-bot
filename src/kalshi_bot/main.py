@@ -21,7 +21,7 @@ from .config import Settings
 from .dashboard.broadcaster import Broadcaster
 from .dashboard.server import create_app
 from .data.store import Store
-from .external_prices import aggregate_external_prices, collect_coinbase, collect_kraken
+from .external_prices import _TICK_QUEUE_MAXSIZE, aggregate_external_prices, collect_coinbase, collect_kraken, persist_external_ticks
 from .features.engine import Features, build_features
 from .kalshi_client.models import Signal
 from .kalshi_client.rest import KalshiRestClient
@@ -580,6 +580,7 @@ class BotApp:
 
     async def run(self) -> None:
         await self.discover_and_subscribe()
+        external_tick_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_TICK_QUEUE_MAXSIZE)
 
         uv_config = uvicorn.Config(
             create_app(
@@ -599,8 +600,9 @@ class BotApp:
             self.rediscovery_loop(),
             self.outcome_polling_loop(),
             self.whale_polling_loop(),
-            collect_coinbase(self.store, asyncio.Event()),
-            collect_kraken(self.store, asyncio.Event()),
+            collect_coinbase(external_tick_queue, asyncio.Event()),
+            collect_kraken(external_tick_queue, asyncio.Event()),
+            persist_external_ticks(self.store, external_tick_queue),
             server.serve(),
         )
 

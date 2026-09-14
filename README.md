@@ -43,6 +43,15 @@ Treat `source_count < 2`, stale age, or high dispersion as unavailable external
 features. The next step is adding at least one independent exchange and testing
 an external-feature challenger on chronological holdouts before allowing it to
 influence a signal.
+
+External WebSocket collectors do not write directly to the bot database. They
+place at most one tick per symbol per second into a bounded in-memory queue;
+a worker thread commits queued ticks in batches. This prevents a burst from an
+external exchange from blocking the dashboard or Kalshi processing. If the
+queue fills, excess external shadow samples are dropped and logged rather than
+delaying the trading-signal path. Persisted feed status therefore reflects the
+latest successfully stored data, not a guarantee that every exchange update was
+retained.
 The new `shadow_decisions` table is created automatically in SQLite or
 Postgres. Existing decisions are never backfilled or overwritten. Restarting
 does not replace snapshots. Shadow collection requires the `v2` live model;

@@ -21,6 +21,9 @@ COINBASE_WS_URL = "wss://advanced-trade-ws.coinbase.com"
 PRODUCTS = {"BTC-USD": "BRTI", "SOL-USD": "SOLUSD_RTI"}
 KRAKEN_WS_URL = "wss://ws.kraken.com/v2"
 KRAKEN_PRODUCTS = {"XBT/USD": "BRTI", "SOL/USD": "SOLUSD_RTI"}
+_PERSIST_INTERVAL_MS = 1_000
+_TICK_QUEUE_MAXSIZE = 1_000
+_BATCH_SIZE = 100
 
 
 def aggregate_external_prices(rows: list[dict], now_ms: int, max_age_ms: int = 5_000) -> dict[str, dict]:
@@ -43,13 +46,14 @@ def aggregate_external_prices(rows: list[dict], now_ms: int, max_age_ms: int = 5
     return result
 
 
-async def collect_coinbase(store, stop_event: asyncio.Event) -> None:
+async def collect_coinbase(tick_queue: asyncio.Queue[dict], stop_event: asyncio.Event) -> None:
     """Reconnect Coinbase's public ticker channel until stop_event is set."""
     subscribe = {
         "type": "subscribe",
         "product_ids": list(PRODUCTS),
         "channel": "ticker",
     }
+    last_persisted: dict[str, int] = {}
     while not stop_event.is_set():
         try:
             async with websockets.connect(COINBASE_WS_URL, ping_interval=20, ping_timeout=10) as socket:
@@ -71,6 +75,8 @@ async def collect_coinbase(store, stop_event: asyncio.Event) -> None:
                                 continue
                             if not 0 < bid <= ask or not price > 0:
                                 continue
+                            if received_at_ms - last_persisted.get(product, 0) < _PERSIST_INTERVAL_MS:
+                                continue
                             timestamp_ms = received_at_ms
                             if ticker.get("time"):
                                 try:
@@ -79,12 +85,13 @@ async def collect_coinbase(store, stop_event: asyncio.Event) -> None:
                                     ).timestamp() * 1000)
                                 except (TypeError, ValueError):
                                     timestamp_ms = received_at_ms
-                            store.insert_external_tick(
-                                source="coinbase", symbol=product, index_id=index_id,
-                                ts_ms=timestamp_ms, received_at_ms=received_at_ms,
-                                price=price, bid=bid, ask=ask,
-                                volume_24h=float(ticker.get("volume_24_h", 0) or 0),
-                            )
+                            _enqueue_tick(tick_queue, {
+                                "source": "coinbase", "symbol": product, "index_id": index_id,
+                                "ts_ms": timestamp_ms, "received_at_ms": received_at_ms,
+                                "price": price, "bid": bid, "ask": ask,
+                                "volume_24h": float(ticker.get("volume_24_h", 0) or 0),
+                            })
+                            last_persisted[product] = received_at_ms
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -92,12 +99,13 @@ async def collect_coinbase(store, stop_event: asyncio.Event) -> None:
             await asyncio.sleep(2)
 
 
-async def collect_kraken(store, stop_event: asyncio.Event) -> None:
+async def collect_kraken(tick_queue: asyncio.Queue[dict], stop_event: asyncio.Event) -> None:
     """Reconnect Kraken's public v2 ticker channel until stop_event is set."""
     subscribe = {
         "method": "subscribe",
         "params": {"channel": "ticker", "symbol": list(KRAKEN_PRODUCTS)},
     }
+    last_persisted: dict[str, int] = {}
     while not stop_event.is_set():
         try:
             async with websockets.connect(KRAKEN_WS_URL, ping_interval=20, ping_timeout=10) as socket:
@@ -120,6 +128,8 @@ async def collect_kraken(store, stop_event: asyncio.Event) -> None:
                             continue
                         if not 0 < bid <= ask or not price > 0:
                             continue
+                        if received_at_ms - last_persisted.get(product, 0) < _PERSIST_INTERVAL_MS:
+                            continue
                         timestamp_ms = received_at_ms
                         if ticker.get("timestamp"):
                             try:
@@ -128,14 +138,41 @@ async def collect_kraken(store, stop_event: asyncio.Event) -> None:
                                 ).timestamp() * 1000)
                             except (TypeError, ValueError):
                                 timestamp_ms = received_at_ms
-                        store.insert_external_tick(
-                            source="kraken", symbol=product, index_id=index_id,
-                            ts_ms=timestamp_ms, received_at_ms=received_at_ms,
-                            price=price, bid=bid, ask=ask,
-                            volume_24h=float(ticker.get("volume", 0) or 0),
-                        )
+                        _enqueue_tick(tick_queue, {
+                            "source": "kraken", "symbol": product, "index_id": index_id,
+                            "ts_ms": timestamp_ms, "received_at_ms": received_at_ms,
+                            "price": price, "bid": bid, "ask": ask,
+                            "volume_24h": float(ticker.get("volume", 0) or 0),
+                        })
+                        last_persisted[product] = received_at_ms
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("External Kraken price feed disconnected; retrying")
             await asyncio.sleep(2)
+
+
+def _enqueue_tick(tick_queue: asyncio.Queue[dict], tick: dict) -> None:
+    """Never block a market-data receive loop on storage pressure."""
+    try:
+        tick_queue.put_nowait(tick)
+    except asyncio.QueueFull:
+        logger.warning("External tick queue full; dropping %s %s", tick["source"], tick["symbol"])
+
+
+async def persist_external_ticks(store, tick_queue: asyncio.Queue[dict]) -> None:
+    """Batch external writes away from the async WebSocket receive loops."""
+    while True:
+        batch = [await tick_queue.get()]
+        while len(batch) < _BATCH_SIZE:
+            try:
+                batch.append(tick_queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+        try:
+            await asyncio.to_thread(store.insert_external_ticks, batch)
+        except Exception:
+            logger.exception("Failed to persist %d external ticks", len(batch))
+        finally:
+            for _ in batch:
+                tick_queue.task_done()

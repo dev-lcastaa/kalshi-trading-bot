@@ -133,6 +133,7 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_market_ticks_ticker_ts ON market_ticks (market_ticker, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_markets_status ON markets (status, closed_at_ms)",
     "CREATE INDEX IF NOT EXISTS idx_whale_trades_ticker_ts ON whale_trades (ticker, ts_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_external_ticks_source_symbol_received ON external_ticks (source, symbol, received_at_ms)",
 ]
 
 
@@ -222,6 +223,29 @@ class Store:
                  volume_24h = excluded.volume_24h""",
             (source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h),
         )
+
+    def insert_external_ticks(self, ticks: list[dict]) -> None:
+        """Persist a feed batch in one transaction; callers may run this on a worker thread."""
+        if not ticks:
+            return
+        rows = [
+            (
+                tick["source"], tick["symbol"], tick["index_id"], tick["ts_ms"],
+                tick["received_at_ms"], tick["price"], tick["bid"], tick["ask"], tick["volume_24h"],
+            )
+            for tick in ticks
+        ]
+        with self._lock:
+            sql = """INSERT INTO external_ticks
+                     (source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT (source, symbol, ts_ms) DO UPDATE SET
+                       received_at_ms = excluded.received_at_ms,
+                       price = excluded.price, bid = excluded.bid, ask = excluded.ask,
+                       volume_24h = excluded.volume_24h"""
+            for row in rows:
+                self._raw_execute(sql, row)
+            self._conn.commit()
 
     def recent_external_ticks(self, since_ms: int) -> list[dict]:
         cur = self._query(
