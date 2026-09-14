@@ -116,6 +116,22 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS shadow_signals (
+        ticker TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        index_id TEXT NOT NULL,
+        index_price DOUBLE PRECISION NOT NULL,
+        strike DOUBLE PRECISION NOT NULL,
+        seconds_to_expiry DOUBLE PRECISION NOT NULL,
+        model_p_yes DOUBLE PRECISION NOT NULL,
+        market_p_yes DOUBLE PRECISION NOT NULL,
+        edge DOUBLE PRECISION NOT NULL,
+        recommendation TEXT NOT NULL,
+        confirmation_agree INTEGER,
+        confirmation_total INTEGER
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS external_ticks (
         source TEXT NOT NULL,
         symbol TEXT NOT NULL,
@@ -363,6 +379,26 @@ class Store:
             ),
         )
 
+    def upsert_shadow_signal(self, signal, confirmation_agree: int, confirmation_total: int) -> None:
+        self._execute(
+            """INSERT INTO shadow_signals
+               (ticker, ts_ms, index_id, index_price, strike, seconds_to_expiry,
+                model_p_yes, market_p_yes, edge, recommendation, confirmation_agree, confirmation_total)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (ticker) DO UPDATE SET
+                 ts_ms = excluded.ts_ms, index_price = excluded.index_price,
+                 strike = excluded.strike, seconds_to_expiry = excluded.seconds_to_expiry,
+                 model_p_yes = excluded.model_p_yes, market_p_yes = excluded.market_p_yes,
+                 edge = excluded.edge, recommendation = excluded.recommendation,
+                 confirmation_agree = excluded.confirmation_agree,
+                 confirmation_total = excluded.confirmation_total""",
+            (
+                signal.ticker, signal.ts_ms, signal.index_id, signal.index_price, signal.strike,
+                signal.seconds_to_expiry, signal.model_p_yes, signal.market_p_yes, signal.edge,
+                signal.recommendation, confirmation_agree, confirmation_total,
+            ),
+        )
+
     def recent_index_ticks(self, index_id: str, since_ms: int) -> list[tuple[int, float]]:
         cur = self._query(
             "SELECT ts_ms, value FROM index_ticks WHERE index_id = ? AND ts_ms >= ? ORDER BY ts_ms",
@@ -469,6 +505,20 @@ class Store:
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def shadow_dashboard_markets(self, grace_period_sec: int) -> list[dict]:
+        now_ms = int(time.time() * 1000)
+        cutoff_ms = now_ms - grace_period_sec * 1000
+        cur = self._query("""
+            SELECT m.ticker, m.index_id, m.strike, m.close_ts_ms, m.status, m.closed_at_ms, m.result,
+                   s.ts_ms, s.index_price, s.seconds_to_expiry, s.model_p_yes, s.market_p_yes,
+                   s.edge, s.recommendation, s.confirmation_agree, s.confirmation_total
+            FROM markets m INNER JOIN shadow_signals s ON s.ticker = m.ticker
+            WHERE m.status = 'active' OR (m.status = 'closed' AND m.closed_at_ms >= ?)
+            ORDER BY m.status ASC, m.close_ts_ms ASC
+        """, (cutoff_ms,))
+        columns = [column[0] for column in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
 
     def closed_markets_history(self, limit: int = 200) -> list[dict]:
         cur = self._query(

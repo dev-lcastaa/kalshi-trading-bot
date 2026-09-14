@@ -52,6 +52,17 @@ queue fills, excess external shadow samples are dropped and logged rather than
 delaying the trading-signal path. Persisted feed status therefore reflects the
 latest successfully stored data, not a guarantee that every exchange update was
 retained.
+
+### Shadow Lab
+
+`/shadow` is a separate research-only page. It receives continuously refreshed
+candidate forecasts from `/api/shadow-active`, computed on the same clean live
+inputs as the primary model. Its card layout mirrors the live dashboard but
+shows the regularized shadow model's probability, candidate recommendation,
+market probability, edge, confirmation count, and current time remaining.
+The page's development warning is permanent: Shadow Lab forecasts must not be
+used to place trades. Locked `shadow_decisions` remain the separate historical
+record used for calibration and comparison after settlement.
 The new `shadow_decisions` table is created automatically in SQLite or
 Postgres. Existing decisions are never backfilled or overwritten. Restarting
 does not replace snapshots. Shadow collection requires the `v2` live model;

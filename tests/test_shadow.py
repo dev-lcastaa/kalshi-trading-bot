@@ -48,6 +48,11 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
     assert decision["decision_recommendation"] == "BUY_YES"
     assert decision["decision_model_p_yes"] > 0.8
     assert app.predictor.imbalance_weight == 0.05
+    shadow_live = app.store.shadow_dashboard_markets(300)
+    assert len(shadow_live) == 1
+    assert shadow_live[0]["ticker"] == state.ticker
+    assert 0.0 <= shadow_live[0]["model_p_yes"] <= 1.0
+    assert shadow_live[0]["recommendation"] in {"BUY_YES", "BUY_NO", "NO_EDGE"}
     audit_row = app.store._query("SELECT snapshot_json FROM decision_snapshots WHERE ticker = ?", (state.ticker,)).fetchone()
     assert audit_row is not None
     audit_snapshot = json.loads(audit_row[0])

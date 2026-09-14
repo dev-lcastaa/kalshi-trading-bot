@@ -20,7 +20,7 @@
 const ENDPOINTS = {
   active: "/api/active",
   closed: "/api/closed",
-  shadow: "/api/shadow-decisions?limit=200",
+  shadow: "/api/shadow-active",
 };
 
 const EMPTY_MESSAGES = {
@@ -578,18 +578,16 @@ function shadowRecommendationHtml(recommendation) {
 }
 
 function shadowDecisionCardHtml(row) {
-  const snapshot = row.snapshot || {};
-  const forecast = snapshot.shadow || {};
-  const features = snapshot.features || {};
-  const quotes = snapshot.quotes || {};
   const meta = getCoinMeta(row.index_id);
-  const probability = Number(forecast.model_p_yes);
-  const marketProbability = Number(snapshot.market_p_yes);
+  const probability = Number(row.model_p_yes);
+  const marketProbability = Number(row.market_p_yes);
   const edge = probability - marketProbability;
-  const goal = Number(features.strike);
-  const price = Number(features.index_price);
+  const goal = Number(row.strike);
+  const price = Number(row.index_price);
   const result = row.result === "yes" || row.result === "no" ? row.result.toUpperCase() : "PENDING";
-  const callCorrect = row.result && ((forecast.recommendation === "BUY_YES") === (row.result === "yes"));
+  const callCorrect = row.result && ((row.recommendation === "BUY_YES") === (row.result === "yes"));
+  const diff = price - goal;
+  const diffSign = diff >= 0 ? "+" : "";
   return `
     <article class="card shadow-decision-card card--${meta.symbol.toLowerCase()}">
       <div class="shadow-decision-card__header">
@@ -599,14 +597,22 @@ function shadowDecisionCardHtml(row) {
         </div>
         <span class="shadow-result ${row.result ? (callCorrect ? "shadow-result--correct" : "shadow-result--incorrect") : ""}">${result}</span>
       </div>
-      ${shadowRecommendationHtml(forecast.recommendation)}
-      <div class="shadow-decision-metrics">
-        <div><span>SHADOW P(YES)</span><strong>${Number.isFinite(probability) ? (probability * 100).toFixed(1) + "%" : "--"}</strong></div>
-        <div><span>MARKET P(YES)</span><strong>${Number.isFinite(marketProbability) ? (marketProbability * 100).toFixed(1) + "%" : "--"}</strong></div>
-        <div><span>MODEL EDGE</span><strong class="${edge >= 0 ? "val--better" : "val--worse"}">${Number.isFinite(edge) ? (edge >= 0 ? "+" : "") + (edge * 100).toFixed(1) + " pts" : "--"}</strong></div>
+      ${shadowRecommendationHtml(row.recommendation)}
+      <div class="price-matrix">
+        <div class="price-tile"><div class="tile-header"><span class="tile-label">INDEX PRICE</span><span class="tile-tag">SNAPSHOT</span></div><div class="tile-value tile-value--price">$${formatUsd(price)}</div></div>
+        <div class="price-tile"><div class="tile-header"><span class="tile-label">GOAL PRICE</span><span class="tile-tag">TARGET</span></div><div class="tile-value">$${formatUsd(goal)}</div></div>
+        <div class="price-tile"><div class="tile-header"><span class="tile-label">GAP TO GOAL</span><span class="tile-tag ${diff >= 0 ? "tag--bull" : "tag--bear"}">${diff >= 0 ? "ABOVE" : "BELOW"}</span></div><div class="tile-value ${diff >= 0 ? "val--bull" : "val--bear"}">${diffSign}$${formatUsd(diff)}</div></div>
       </div>
-      <div class="shadow-decision-prices"><span>Decision price <strong>$${formatUsd(price)}</strong></span><span>Goal <strong>$${formatUsd(goal)}</strong></span><span>YES ask <strong>${quotes.yes_ask_dollars ?? "--"}</strong></span></div>
-      <div class="shadow-decision-card__footer"><span>${new Date(row.ts_ms).toLocaleTimeString()} snapshot</span><span>${snapshot.external_prices?.source_count ?? 0} external sources</span></div>
+      <div class="prob-section">
+        <div class="prob-row"><div class="prob-info"><span class="prob-label">Shadow Model Probability</span><span class="prob-val prob-val--model">${(probability * 100).toFixed(1)}% YES</span></div><div class="prob-bar-track"><div class="prob-bar-fill prob-bar-fill--model" style="width:${(probability * 100).toFixed(1)}%"></div></div></div>
+        <div class="prob-row"><div class="prob-info"><span class="prob-label">Kalshi Market Probability</span><span class="prob-val prob-val--market">${(marketProbability * 100).toFixed(1)}% YES</span></div><div class="prob-bar-track"><div class="prob-bar-fill prob-bar-fill--market" style="width:${(marketProbability * 100).toFixed(1)}%"></div></div></div>
+      </div>
+      <div class="shadow-decision-metrics">
+        <div><span>MODEL EDGE</span><strong class="${edge >= 0 ? "val--better" : "val--worse"}">${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)} pts</strong></div>
+        <div><span>CONFIRMATION</span><strong>${row.confirmation_agree ?? 0}/${row.confirmation_total ?? 0}</strong></div>
+        <div><span>TIME LEFT</span><strong>${formatCountdown(Number(row.close_ts_ms) - Date.now()).text}</strong></div>
+      </div>
+      <div class="shadow-decision-card__footer"><span>Updated ${new Date(row.ts_ms).toLocaleTimeString()}</span><span>Experimental forecast only</span></div>
     </article>
   `;
 }

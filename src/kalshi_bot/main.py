@@ -424,6 +424,25 @@ class BotApp:
                     slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
                 )
                 self.store.insert_signal(signal)
+                if isinstance(self.predictor, SettlementAwarePredictor):
+                    shadow_predictor = RegularizedSettlementPredictor(
+                        momentum_weight=self.predictor.momentum_weight,
+                        window_sec=self.predictor.window_sec,
+                    )
+                    shadow_signal = generate_signal(
+                        ticker=ticker, index_id=state.index_id, features=features,
+                        predictor=shadow_predictor, yes_bid_dollars=state.yes_bid_dollars,
+                        yes_ask_dollars=state.yes_ask_dollars,
+                        edge_threshold=self.settings.edge_threshold,
+                        fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
+                        slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
+                    )
+                    shadow_confirmation = check_confirmation(features, shadow_signal.model_p_yes >= 0.5)
+                    self.store.upsert_shadow_signal(
+                        shadow_signal,
+                        shadow_confirmation.agree,
+                        shadow_confirmation.total,
+                    )
 
                 # Lock in the one-shot, actionable trade call the first time this
                 # market crosses the decision lead time - this is what "dictates"
