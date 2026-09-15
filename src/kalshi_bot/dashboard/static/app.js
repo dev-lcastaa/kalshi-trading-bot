@@ -264,7 +264,7 @@ function llmReviewHtml(r) {
   };
   return `
     <div class="llm-review-banner" aria-label="Local LLM risk review">
-      <div class="llm-review-heading"><span class="llm-review-dot"></span>LOCAL AI RISK REVIEW</div>
+      <div class="llm-review-heading"><span class="llm-review-dot"></span>JETSON REVIEW</div>
       <div class="llm-review-rows">
         ${reviews.map((review) => `
           <div class="llm-review-row ${classFor(review.decision)}">

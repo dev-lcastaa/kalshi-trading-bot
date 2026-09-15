@@ -514,12 +514,6 @@ class BotApp:
                     decision_recommendation = (
                         signal.recommendation if confirmation.confirmed else "NO_EDGE"
                     )
-                    early_llm = await self._run_llm_review(
-                        "early", ticker, state, features, signal,
-                        decision_recommendation, quality_flags, ticks, now_ms,
-                    )
-                    if early_llm is not None and early_llm["decision"] == "BLOCK":
-                        decision_recommendation = "NO_EDGE"
                     # Model's conviction in its own directional call (how far its
                     # probability sits from a coin flip) - not the edge vs. market,
                     # so this matches the "confident right now" figure shown elsewhere.
@@ -563,15 +557,27 @@ class BotApp:
                         signal.market_p_yes, confirmation.agree, confirmation.total,
                     )
 
+                    # Never delay or alter the official mathematical signal for
+                    # the local LLM. The review is informational and persists
+                    # independently when the Jetson responds.
+                    asyncio.create_task(
+                        self._run_llm_review(
+                            "early", ticker, state, features, signal,
+                            decision_recommendation, quality_flags, ticks, now_ms,
+                        )
+                    )
+
                 # Late review is displayed for context but never rewrites the
                 # immutable T-6:30 decision used for performance measurement.
                 if seconds_to_expiry <= 150 and not self.store.has_llm_review(ticker, "late"):
                     late_call_up = signal.model_p_yes >= 0.5
                     late_confirmation = check_confirmation(features, late_call_up)
-                    await self._run_llm_review(
-                        "late", ticker, state, features, signal,
-                        signal.recommendation if late_confirmation.confirmed else "NO_EDGE",
-                        quality_flags, ticks, now_ms,
+                    asyncio.create_task(
+                        self._run_llm_review(
+                            "late", ticker, state, features, signal,
+                            signal.recommendation if late_confirmation.confirmed else "NO_EDGE",
+                            quality_flags, ticks, now_ms,
+                        )
                     )
 
     async def rediscovery_loop(self) -> None:
