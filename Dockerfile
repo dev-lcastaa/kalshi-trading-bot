@@ -3,15 +3,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps: none required - psycopg[binary] ships its own libpq, cryptography
-# ships its own wheel with OpenSSL bundled for this base image.
+# The Python image owns ingestion, prediction, persistence, and the API/WebSocket.
+# The React dashboard is built and served separately by frontend/Dockerfile.
 COPY pyproject.toml ./
 COPY src ./src
 
 RUN pip install --no-cache-dir .
 
-# Secrets (private key) and the local SQLite fallback db are mounted as
-# volumes at runtime, not baked into the image - see docker-compose.yml.
+# Secrets and database state are mounted at runtime, not baked into the image.
 EXPOSE 8000
 
 CMD ["python", "-m", "kalshi_bot.main"]

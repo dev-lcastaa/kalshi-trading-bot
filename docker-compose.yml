@@ -23,15 +23,21 @@ services:
     env_file:
       - .env
     environment:
-      # Overrides whatever DATABASE_URL is set to in .env - the bot always
-      # talks to the postgres service by name inside the compose network.
+      # The bot is private to the Compose network; the frontend is the public edge.
       DATABASE_URL: postgresql://kalshi:kalshi@postgres:5432/kalshi
       KALSHI_DASHBOARD_HOST: 0.0.0.0
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
-      # Mount the RSA private key read-only; never bake secrets into the image.
       - ./.secrets:/app/.secrets:ro
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - bot
+    ports:
+      - "8000:80"
 
 volumes:
   postgres-data:
