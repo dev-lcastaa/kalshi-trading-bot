@@ -14,14 +14,14 @@ function countdown(ms) { const seconds = Math.max(0, Math.floor(ms / 1000)); ret
 function Review({ market }) {
   const reviews = [["6:30 review", market.llm_early_decision, market.llm_early_reason], ["2:30 review", market.llm_late_decision, market.llm_late_reason]].filter(([, decision]) => decision);
   if (!reviews.length) return null;
-  return <section className="review" aria-label="Jetson LLM risk review"><div className="review-title"><Bot size={16} /> JETSON REVIEW</div>{reviews.map(([stage, decision, reason]) => <div className={`review-row review-${decision.toLowerCase()}`} key={stage}><span>{stage}</span><strong>{decision.replace("_", " ")}</strong><small>{reason || "No explanation returned."}</small></div>)}</section>;
+  return <section className="review" aria-label="Jetson LLM risk review"><div className="review-title"><Bot size={16} /> JETSON REVIEW</div>{reviews.map(([stage, decision, reason]) => <div className={`review-row review-${decision.toLowerCase()}`} key={stage}><span>{stage}</span><strong>{decision === "REDUCE_CONFIDENCE" ? "REDUCE BET CONFIDENCE" : decision.replace("_", " ")}</strong><small>{reason || "No explanation returned."}</small></div>)}</section>;
 }
 
 function Checks({ market }) {
   if (!market.decision_confirmation_detail) return null;
   let checks = [];
   try { checks = JSON.parse(market.decision_confirmation_detail); } catch { return null; }
-  return <div className="checks">{checks.map((check) => <span className={check.agree ? "check pass" : "check"} key={check.name}><CircleDot size={12} />{check.name}</span>)}</div>;
+  return <div className="checks">{checks.map((check) => <span className={`check ${check.agree ? "pass" : "fail"}`} key={check.name}><CircleDot size={12} />{check.name}</span>)}</div>;
 }
 
 function Outcome({ market }) {
