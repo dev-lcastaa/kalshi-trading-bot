@@ -414,6 +414,11 @@ class BotApp:
             return None
         quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
         index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
+        review_call_up = signal.model_p_yes >= 0.5
+        review_confirmation = check_confirmation(features, review_call_up)
+        external_prices = aggregate_external_prices(
+            self.store.recent_external_ticks(now_ms - 5_000), now_ms, max_age_ms=5_000
+        ).get(state.index_id)
         try:
             review = await reviewer.review(
                 stage=stage,
@@ -433,9 +438,9 @@ class BotApp:
                 yes_ask_size=state.yes_ask_size,
                 fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
                 slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
-                confirmation_agree=confirmation.agree,
-                confirmation_total=confirmation.total,
-                external_prices=external,
+                confirmation_agree=review_confirmation.agree,
+                confirmation_total=review_confirmation.total,
+                external_prices=external_prices,
             )
             self.store.record_llm_review(
                 ticker=ticker, stage=stage, ts_ms=now_ms,
@@ -527,15 +532,34 @@ class BotApp:
                     decision_recommendation = (
                         signal.recommendation if confirmation.confirmed else "NO_EDGE"
                     )
+                    decision_confidence = max(signal.model_p_yes, 1 - signal.model_p_yes)
+                    early_review = await self._run_llm_review(
+                        "early", ticker, state, features, signal,
+                        decision_recommendation, quality_flags, ticks, now_ms,
+                    )
+                    llm_decision = early_review.get("decision") if early_review else None
+                    if llm_decision == "BLOCK":
+                        decision_recommendation = "NO_EDGE"
+                    elif llm_decision == "REDUCE_CONFIDENCE":
+                        decision_confidence = max(
+                            0.5,
+                            decision_confidence + early_review["confidence_adjustment"],
+                        )
+                    llm_check = {
+                        "name": "6:30 LLM risk review",
+                        "agree": llm_decision == "ALLOW",
+                        "value": llm_decision or "UNAVAILABLE",
+                    }
+                    confirmation_agree = confirmation.agree + int(llm_check["agree"])
+                    confirmation_total = confirmation.total + 1
                     # Model's conviction in its own directional call (how far its
                     # probability sits from a coin flip) - not the edge vs. market,
                     # so this matches the "confident right now" figure shown elsewhere.
-                    decision_confidence = max(signal.model_p_yes, 1 - signal.model_p_yes)
                     confirmation_detail = json.dumps(
                         [
                             {"name": c.name, "agree": c.agree, "value": c.value}
                             for c in confirmation.checks
-                        ]
+                        ] + [llm_check]
                     )
                     decision_snapshot = self._build_decision_snapshot(
                         state, features, signal, decision_recommendation, confirmation, now_ms, ticks,
@@ -558,8 +582,8 @@ class BotApp:
                         edge=signal.edge,
                         recommendation=decision_recommendation,
                         confidence=decision_confidence,
-                        confirmation_agree=confirmation.agree,
-                        confirmation_total=confirmation.total,
+                        confirmation_agree=confirmation_agree,
+                        confirmation_total=confirmation_total,
                         confirmation_detail=confirmation_detail,
                         shadow_snapshot=shadow_snapshot,
                         decision_snapshot=decision_snapshot,
@@ -567,17 +591,7 @@ class BotApp:
                     logger.info(
                         "Decision locked for %s at T-%.0fs: %s (model=%.3f market=%.3f, confirmation=%d/%d)",
                         ticker, seconds_to_expiry, decision_recommendation, signal.model_p_yes,
-                        signal.market_p_yes, confirmation.agree, confirmation.total,
-                    )
-
-                    # Never delay or alter the official mathematical signal for
-                    # the local LLM. The review is informational and persists
-                    # independently when the Jetson responds.
-                    asyncio.create_task(
-                        self._run_llm_review(
-                            "early", ticker, state, features, signal,
-                            decision_recommendation, quality_flags, ticks, now_ms,
-                        )
+                        signal.market_p_yes, confirmation_agree, confirmation_total,
                     )
 
                 # Late review is displayed for context but never rewrites the

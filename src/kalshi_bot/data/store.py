@@ -15,7 +15,10 @@ import threading
 import time
 from pathlib import Path
 
-import psycopg
+try:
+    import psycopg
+except ImportError:  # PostgreSQL is optional for local SQLite runs.
+    psycopg = None
 
 _SCHEMA_STATEMENTS = [
     """
@@ -171,6 +174,8 @@ class Store:
     def __init__(self, database_url: str):
         self._is_postgres = database_url.startswith(("postgresql://", "postgres://"))
         if self._is_postgres:
+            if psycopg is None:
+                raise RuntimeError("PostgreSQL requires an available psycopg installation")
             self._conn = psycopg.connect(database_url)
         else:
             Path(database_url).parent.mkdir(parents=True, exist_ok=True)

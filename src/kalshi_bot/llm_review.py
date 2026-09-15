@@ -27,7 +27,8 @@ Rules:
 - Prioritize stale inputs, invalid or wide quotes, insufficient depth, conflicting confirmation votes, and a non-positive purchase edge after costs.
 - Use distance_sigma and expected_move_dollars_1sigma to judge whether the price is meaningfully separated from the strike; do not treat raw dollar distance alone as meaningful.
 - Treat market probability and order-book imbalance as context, never as proof of the settlement outcome.
-- The review is informational. It must not assume it can change the mathematical recommendation.
+- For the early stage, BLOCK suppresses the official trade call and REDUCE_CONFIDENCE lowers its stored confidence.
+- For the late stage, the review is informational only and must not change the already-locked call.
 - confidence_adjustment must be between -0.25 and 0. Use 0 for ALLOW, -0.25 for BLOCK, and a value from -0.10 to -0.25 for REDUCE_CONFIDENCE.
 - Use only the supplied values. Keep the reason under 160 characters.
 """
