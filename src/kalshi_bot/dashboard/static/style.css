@@ -1205,6 +1205,67 @@ body {
   border: 1px solid rgba(244, 63, 94, 0.3);
 }
 
+.llm-review-banner {
+  margin: -0.35rem 0 1rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid rgba(129, 140, 248, 0.28);
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.07);
+}
+
+.llm-review-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: #a5b4fc;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.llm-review-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #a5b4fc;
+  box-shadow: 0 0 8px rgba(165, 180, 252, 0.8);
+  flex: 0 0 auto;
+}
+
+.llm-review-rows {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.llm-review-row {
+  display: grid;
+  grid-template-columns: 6.5rem 8.5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.55rem;
+  min-width: 0;
+  font-size: 0.72rem;
+}
+
+.llm-review-stage,
+.llm-review-reason { color: var(--text-muted); }
+.llm-review-reason { overflow-wrap: anywhere; }
+.llm-review--allow strong { color: var(--green); }
+.llm-review--reduce strong { color: var(--amber); }
+.llm-review--block strong { color: var(--red); }
+.llm-review--unavailable strong { color: var(--text-muted); }
+
+@media (max-width: 600px) {
+  .llm-review-row {
+    grid-template-columns: 1fr auto;
+    gap: 0.2rem 0.5rem;
+  }
+  .llm-review-reason {
+    grid-column: 1 / -1;
+    line-height: 1.35;
+  }
+}
+
 /* Settlement Banner */
 .settlement-banner {
   display: flex;

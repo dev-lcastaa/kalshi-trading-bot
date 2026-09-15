@@ -79,6 +79,16 @@ function formatUsd(value) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>'"]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "'": "&#39;",
+    '"': "&quot;",
+  }[character]));
+}
+
 function formatCountdown(msRemaining) {
   if (msRemaining <= 0) return { text: "00:00", cls: "expired", rawSec: 0 };
   const totalSec = Math.floor(msRemaining / 1000);
@@ -240,6 +250,34 @@ function tradeBannerHtml(r) {
   `;
 }
 
+function llmReviewHtml(r) {
+  const reviews = [
+    { stage: "6:30 review", decision: r.llm_early_decision, reason: r.llm_early_reason },
+    { stage: "2:30 review", decision: r.llm_late_decision, reason: r.llm_late_reason },
+  ].filter((review) => review.decision);
+  if (!reviews.length) return "";
+  const classFor = (decision) => {
+    if (decision === "BLOCK") return "llm-review--block";
+    if (decision === "REDUCE_CONFIDENCE") return "llm-review--reduce";
+    if (decision === "ALLOW") return "llm-review--allow";
+    return "llm-review--unavailable";
+  };
+  return `
+    <div class="llm-review-banner" aria-label="Local LLM risk review">
+      <div class="llm-review-heading"><span class="llm-review-dot"></span>LOCAL AI RISK REVIEW</div>
+      <div class="llm-review-rows">
+        ${reviews.map((review) => `
+          <div class="llm-review-row ${classFor(review.decision)}">
+            <span class="llm-review-stage">${review.stage}</span>
+            <strong>${review.decision.replace("_", " ")}</strong>
+            <span class="llm-review-reason">${escapeHtml(review.reason || "No explanation returned.")}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
 function predictionHtml(r) {
   const hasSignal = r.model_p_yes !== null && r.model_p_yes !== undefined;
   const indexPrice = r.index_price !== null && r.index_price !== undefined ? Number(r.index_price) : null;
@@ -252,6 +290,7 @@ function predictionHtml(r) {
   if (!hasSignal) {
     return `
       ${tradeBannerHtml(r)}
+      ${llmReviewHtml(r)}
       <div class="price-matrix">
         <div class="price-tile">
           <div class="tile-header">
@@ -304,6 +343,7 @@ function predictionHtml(r) {
 
   return `
     ${tradeBannerHtml(r)}
+    ${llmReviewHtml(r)}
 
     ${outcomeHtml(r, predictedAbove)}
 

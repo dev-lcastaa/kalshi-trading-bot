@@ -132,6 +132,20 @@ _SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS llm_reviews (
+        ticker TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        decision TEXT NOT NULL,
+        confidence_adjustment DOUBLE PRECISION NOT NULL,
+        reason TEXT NOT NULL,
+        latency_ms DOUBLE PRECISION,
+        model TEXT,
+        error TEXT,
+        PRIMARY KEY (ticker, stage)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS external_ticks (
         source TEXT NOT NULL,
         symbol TEXT NOT NULL,
@@ -483,7 +497,15 @@ class Store:
                d.confidence AS decision_confidence,
                d.confirmation_agree AS decision_confirmation_agree,
                d.confirmation_total AS decision_confirmation_total,
-               d.confirmation_detail AS decision_confirmation_detail
+               d.confirmation_detail AS decision_confirmation_detail,
+               le.decision AS llm_early_decision,
+               le.confidence_adjustment AS llm_early_adjustment,
+               le.reason AS llm_early_reason,
+               le.ts_ms AS llm_early_ts_ms,
+               ll.decision AS llm_late_decision,
+               ll.confidence_adjustment AS llm_late_adjustment,
+               ll.reason AS llm_late_reason,
+               ll.ts_ms AS llm_late_ts_ms
         FROM markets m
         LEFT JOIN (
             SELECT s1.* FROM signals s1
@@ -491,6 +513,8 @@ class Store:
               ON s1.ticker = latest.ticker AND s1.ts_ms = latest.max_ts
         ) s ON s.ticker = m.ticker
         LEFT JOIN decisions d ON d.ticker = m.ticker
+        LEFT JOIN llm_reviews le ON le.ticker = m.ticker AND le.stage = 'early'
+        LEFT JOIN llm_reviews ll ON ll.ticker = m.ticker AND ll.stage = 'late'
     """
 
     def dashboard_markets(self, grace_period_sec: int) -> list[dict]:
@@ -546,6 +570,33 @@ class Store:
         self._execute(
             "UPDATE markets SET result = ?, outcome_checked_at_ms = ? WHERE ticker = ?",
             (result, checked_at_ms, ticker),
+        )
+
+    def has_llm_review(self, ticker: str, stage: str) -> bool:
+        cur = self._query(
+            "SELECT 1 FROM llm_reviews WHERE ticker = ? AND stage = ?",
+            (ticker, stage),
+        )
+        return cur.fetchone() is not None
+
+    def record_llm_review(
+        self,
+        ticker: str,
+        stage: str,
+        ts_ms: int,
+        decision: str,
+        confidence_adjustment: float,
+        reason: str,
+        latency_ms: float | None = None,
+        model: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._execute(
+            """INSERT INTO llm_reviews
+               (ticker, stage, ts_ms, decision, confidence_adjustment, reason, latency_ms, model, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (ticker, stage) DO NOTHING""",
+            (ticker, stage, ts_ms, decision, confidence_adjustment, reason, latency_ms, model, error),
         )
 
     # --- Locked-in trade-call decisions ---------------------------------------------

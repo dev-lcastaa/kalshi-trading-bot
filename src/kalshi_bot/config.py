@@ -47,6 +47,9 @@ class Settings:
     min_quote_size: float
     fee_multiplier: float
     slippage_per_contract: float
+    llm_base_url: str
+    llm_model: str
+    llm_timeout_sec: float
 
     @staticmethod
     def load() -> "Settings":
@@ -79,4 +82,7 @@ class Settings:
             min_quote_size=float(os.environ.get("KALSHI_MIN_QUOTE_SIZE", "1")),
             fee_multiplier=float(os.environ.get("KALSHI_FEE_MULTIPLIER", "1")),
             slippage_per_contract=float(os.environ.get("KALSHI_SLIPPAGE_PER_CONTRACT", "0")),
+            llm_base_url=os.environ.get("KALSHI_LLM_BASE_URL", "http://192.168.1.229:8080").strip(),
+            llm_model=os.environ.get("KALSHI_LLM_MODEL", "").strip(),
+            llm_timeout_sec=float(os.environ.get("KALSHI_LLM_TIMEOUT_SEC", "15")),
         )

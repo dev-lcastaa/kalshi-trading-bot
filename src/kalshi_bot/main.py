@@ -26,6 +26,7 @@ from .features.engine import Features, build_features
 from .kalshi_client.models import Signal
 from .kalshi_client.rest import KalshiRestClient
 from .kalshi_client.ws import KalshiWsClient
+from .llm_review import LlmReviewer
 from .market_discovery import find_15min_markets
 from .prediction.model import RandomWalkPredictor, RegularizedSettlementPredictor, SettlementAwarePredictor
 from .signals.confirmation import check_confirmation
@@ -68,6 +69,11 @@ class BotApp:
         self.store = Store(settings.database_url)
         self.predictor = (
             SettlementAwarePredictor() if settings.predictor_version == "v2" else RandomWalkPredictor()
+        )
+        self.llm_reviewer = LlmReviewer(
+            getattr(settings, "llm_base_url", ""),
+            model=getattr(settings, "llm_model", ""),
+            timeout_sec=getattr(settings, "llm_timeout_sec", 15.0),
         )
         self.markets: dict[str, MarketState] = {}
         self.index_ticks: dict[str, list[tuple[int, float]]] = {
@@ -387,6 +393,55 @@ class BotApp:
             flags.append("insufficient_quote_size")
         return flags
 
+    async def _run_llm_review(
+        self,
+        stage: str,
+        ticker: str,
+        state: MarketState,
+        features: Features,
+        signal: Signal,
+        recommendation: str,
+        quality_flags: list[str],
+        ticks: list[tuple[int, float]],
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        reviewer = getattr(self, "llm_reviewer", None)
+        if reviewer is None or not reviewer.enabled or self.store.has_llm_review(ticker, stage):
+            return None
+        quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
+        index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
+        try:
+            review = await reviewer.review(
+                stage=stage,
+                ticker=ticker,
+                index_id=state.index_id,
+                seconds_to_expiry=features.seconds_to_expiry,
+                features=features,
+                model_p_yes=signal.model_p_yes,
+                market_p_yes=signal.market_p_yes,
+                recommendation=recommendation,
+                quality_flags=quality_flags,
+                quote_age_ms=quote_age_ms,
+                index_tick_age_ms=index_tick_age_ms,
+            )
+            self.store.record_llm_review(
+                ticker=ticker, stage=stage, ts_ms=now_ms,
+                decision=review["decision"],
+                confidence_adjustment=review["confidence_adjustment"],
+                reason=review["reason"], latency_ms=review.get("latency_ms"),
+                model=review.get("model"),
+            )
+            return review
+        except Exception as exc:
+            logger.warning("LLM %s review unavailable for %s: %s", stage, ticker, exc)
+            self.store.record_llm_review(
+                ticker=ticker, stage=stage, ts_ms=now_ms,
+                decision="UNAVAILABLE", confidence_adjustment=0.0,
+                reason="Local LLM review unavailable; mathematical model retained.",
+                error=str(exc)[:240],
+            )
+            return None
+
     async def prediction_loop(self) -> None:
         while True:
             await asyncio.sleep(self.settings.poll_interval_sec)
@@ -459,6 +514,12 @@ class BotApp:
                     decision_recommendation = (
                         signal.recommendation if confirmation.confirmed else "NO_EDGE"
                     )
+                    early_llm = await self._run_llm_review(
+                        "early", ticker, state, features, signal,
+                        decision_recommendation, quality_flags, ticks, now_ms,
+                    )
+                    if early_llm is not None and early_llm["decision"] == "BLOCK":
+                        decision_recommendation = "NO_EDGE"
                     # Model's conviction in its own directional call (how far its
                     # probability sits from a coin flip) - not the edge vs. market,
                     # so this matches the "confident right now" figure shown elsewhere.
@@ -500,6 +561,17 @@ class BotApp:
                         "Decision locked for %s at T-%.0fs: %s (model=%.3f market=%.3f, confirmation=%d/%d)",
                         ticker, seconds_to_expiry, decision_recommendation, signal.model_p_yes,
                         signal.market_p_yes, confirmation.agree, confirmation.total,
+                    )
+
+                # Late review is displayed for context but never rewrites the
+                # immutable T-6:30 decision used for performance measurement.
+                if seconds_to_expiry <= 150 and not self.store.has_llm_review(ticker, "late"):
+                    late_call_up = signal.model_p_yes >= 0.5
+                    late_confirmation = check_confirmation(features, late_call_up)
+                    await self._run_llm_review(
+                        "late", ticker, state, features, signal,
+                        signal.recommendation if late_confirmation.confirmed else "NO_EDGE",
+                        quality_flags, ticks, now_ms,
                     )
 
     async def rediscovery_loop(self) -> None:

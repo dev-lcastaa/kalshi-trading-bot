@@ -531,6 +531,9 @@ modify or deploy anything to that server.
 | `KALSHI_MIN_QUOTE_SIZE` | Minimum YES bid and ask size required for a signal (default `1`) |
 | `KALSHI_CLOSED_GRACE_SEC` | How long a just-closed market stays on the Active tab |
 | `KALSHI_DECISION_LEAD_SEC` | How early (in seconds) the final BET UP/DOWN call locks in |
+| `KALSHI_LLM_BASE_URL` | Local llama.cpp URL for the live risk review (default `http://192.168.1.229:8080`) |
+| `KALSHI_LLM_MODEL` | Optional llama.cpp model ID; blank discovers the first `/v1/models` entry |
+| `KALSHI_LLM_TIMEOUT_SEC` | Maximum seconds to wait for one local risk review |
 | `KALSHI_WHALE_MIN_USD` | Minimum dollar size of a trade to count as a "big bet" |
 | `KALSHI_WHALE_POLL_INTERVAL_SEC` | How often to check for new big bets |
 | `DATABASE_URL` | A file path = SQLite; a `postgresql://` link = Postgres (Docker sets this automatically) |
