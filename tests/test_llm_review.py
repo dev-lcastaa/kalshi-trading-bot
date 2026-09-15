@@ -65,6 +65,9 @@ async def test_llm_review_uses_discovered_model_and_strict_prompt(monkeypatch):
         features=_features(), model_p_yes=0.62, market_p_yes=0.55,
         recommendation="BUY_YES", quality_flags=[], quote_age_ms=100,
         index_tick_age_ms=200,
+        yes_bid_dollars=0.54, yes_ask_dollars=0.56,
+        yes_bid_size=100, yes_ask_size=80,
+        confirmation_agree=2, confirmation_total=3,
     )
 
     assert result["decision"] == "REDUCE_CONFIDENCE"
@@ -72,6 +75,12 @@ async def test_llm_review_uses_discovered_model_and_strict_prompt(monkeypatch):
     assert client.posts[0]["model"] == "test-model"
     assert client.posts[0]["temperature"] == 0
     assert "exactly one JSON object" in client.posts[0]["messages"][0]["content"]
+    sent = json.loads(client.posts[0]["messages"][1]["content"])
+    assert sent["distance_from_strike"] == pytest.approx(-0.2)
+    assert sent["expected_move_dollars_1sigma"] > 0
+    assert sent["spread_dollars"] == pytest.approx(0.02)
+    assert sent["yes_bid_size"] == 100
+    assert sent["confirmation_agree"] == 2
 
 
 @pytest.mark.asyncio

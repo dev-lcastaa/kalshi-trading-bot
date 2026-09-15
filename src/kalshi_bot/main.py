@@ -314,6 +314,10 @@ class BotApp:
     ) -> dict:
         quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
         index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
+        external = aggregate_external_prices(
+            self.store.recent_external_ticks(now_ms - 5_000), now_ms, max_age_ms=5_000
+        ).get(state.index_id)
+        confirmation = check_confirmation(features, signal.model_p_yes >= 0.5)
         quality_flags = self._quality_flags(state, features, ticks, now_ms)
         external = aggregate_external_prices(
             self.store.recent_external_ticks(now_ms - 5_000), now_ms, max_age_ms=5_000
@@ -423,6 +427,15 @@ class BotApp:
                 quality_flags=quality_flags,
                 quote_age_ms=quote_age_ms,
                 index_tick_age_ms=index_tick_age_ms,
+                yes_bid_dollars=state.yes_bid_dollars,
+                yes_ask_dollars=state.yes_ask_dollars,
+                yes_bid_size=state.yes_bid_size,
+                yes_ask_size=state.yes_ask_size,
+                fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
+                slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
+                confirmation_agree=confirmation.agree,
+                confirmation_total=confirmation.total,
+                external_prices=external,
             )
             self.store.record_llm_review(
                 ticker=ticker, stage=stage, ts_ms=now_ms,
