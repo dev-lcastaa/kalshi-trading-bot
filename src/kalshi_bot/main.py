@@ -482,9 +482,15 @@ class BotApp:
                     close_ts_ms=state.close_ts_ms,
                 )
                 quality_flags = self._quality_flags(state, features, ticks, now_ms)
-                if quality_flags:
+                decision_window_open = seconds_to_expiry <= self.settings.decision_lead_sec
+                if quality_flags and not decision_window_open:
                     logger.info("Abstaining from %s: %s", ticker, ", ".join(quality_flags))
                     continue
+                if quality_flags and decision_window_open:
+                    logger.warning(
+                        "Decision window reached for %s with degraded inputs; locking NO_EDGE: %s",
+                        ticker, ", ".join(quality_flags),
+                    )
                 signal = generate_signal(
                     ticker=ticker,
                     index_id=state.index_id,
@@ -530,7 +536,9 @@ class BotApp:
                     # direction: downgrade to NO_EDGE ("NO TRADE") instead of locking
                     # in a shaky directional call that will dictate a real trade.
                     decision_recommendation = (
-                        signal.recommendation if confirmation.confirmed else "NO_EDGE"
+                        signal.recommendation
+                        if confirmation.confirmed and not quality_flags
+                        else "NO_EDGE"
                     )
                     decision_confidence = max(signal.model_p_yes, 1 - signal.model_p_yes)
                     early_review = await self._run_llm_review(
@@ -602,7 +610,9 @@ class BotApp:
                     asyncio.create_task(
                         self._run_llm_review(
                             "late", ticker, state, features, signal,
-                            signal.recommendation if late_confirmation.confirmed else "NO_EDGE",
+                            signal.recommendation
+                            if late_confirmation.confirmed and not quality_flags
+                            else "NO_EDGE",
                             quality_flags, ticks, now_ms,
                         )
                     )
