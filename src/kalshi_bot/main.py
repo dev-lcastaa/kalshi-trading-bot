@@ -503,6 +503,18 @@ class BotApp:
                     slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
                 )
                 self.store.insert_signal(signal)
+                for review_lead_sec, review_stage in (
+                    (510, "review_8m30"),
+                    (270, "review_4m30"),
+                    (60, "review_1m"),
+                ):
+                    if seconds_to_expiry <= review_lead_sec and not self.store.has_llm_review(ticker, review_stage):
+                        review_confirmation = check_confirmation(features, signal.model_p_yes >= 0.5)
+                        await self._run_llm_review(
+                            review_stage, ticker, state, features, signal,
+                            signal.recommendation if review_confirmation.confirmed and not quality_flags else "NO_EDGE",
+                            quality_flags, ticks, now_ms,
+                        )
                 if isinstance(self.predictor, SettlementAwarePredictor):
                     shadow_predictor = RegularizedSettlementPredictor(
                         momentum_weight=self.predictor.momentum_weight,

@@ -1391,6 +1391,20 @@ body {
   font-size: 1.05rem;
 }
 
+.closed-load-more {
+  display: block;
+  margin: 1rem auto 0;
+  padding: 0.6rem 0.9rem;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font: 700 0.75rem var(--font-sans);
+  cursor: pointer;
+}
+
+.closed-load-more:hover { color: var(--text-main); border-color: var(--border-card-hover); }
+
 .pct-sub {
   font-size: 0.72rem;
   font-weight: 600;
@@ -2081,7 +2095,7 @@ body {
   .card-header__right {
     width: 100%;
     display: grid;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.5rem;
   }
 
@@ -2098,6 +2112,11 @@ body {
   .price-tile:last-child {
     grid-column: 1 / -1;
   }
+
+  .price-tile { min-width: 0; padding: 0.65rem; }
+  .tile-value { max-width: 100%; font-size: 0.82rem; }
+  .tile-value--price { font-size: 0.9rem; }
+  .pct-sub { font-size: 0.64rem; }
 
   .trade-banner__header {
     align-items: flex-start;
@@ -2208,6 +2227,11 @@ body {
   .price-matrix {
     grid-template-columns: 1fr;
   }
+
+  .card-header__right { grid-template-columns: 1fr; }
+  .whale-toggle-btn, .countdown-badge { width: 100%; }
+  .whale-toggle-label { font-size: 0.7rem; }
+  .tile-value, .tile-value--price { font-size: 0.86rem; }
 
   .shadow-decision-metrics {
     grid-template-columns: 1fr;

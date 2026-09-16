@@ -50,7 +50,8 @@ def _features():
 
 
 @pytest.mark.asyncio
-async def test_llm_review_uses_discovered_model_and_strict_prompt(monkeypatch):
+@pytest.mark.parametrize("stage", ["review_8m30", "early", "review_4m30", "late", "review_1m"])
+async def test_llm_review_uses_discovered_model_and_strict_prompt(monkeypatch, stage):
     client = _Client({
         "choices": [{"message": {"content": json.dumps({
             "decision": "REDUCE_CONFIDENCE",
@@ -61,7 +62,7 @@ async def test_llm_review_uses_discovered_model_and_strict_prompt(monkeypatch):
     monkeypatch.setattr("kalshi_bot.llm_review.httpx.AsyncClient", lambda **_kwargs: client)
 
     result = await LlmReviewer("http://jetson:8080").review(
-        stage="early", ticker="BTC-1", index_id="BRTI", seconds_to_expiry=390,
+        stage=stage, ticker="BTC-1", index_id="BRTI", seconds_to_expiry=390,
         features=_features(), model_p_yes=0.62, market_p_yes=0.55,
         recommendation="BUY_YES", quality_flags=[], quote_age_ms=100,
         index_tick_age_ms=200,

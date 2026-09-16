@@ -35,6 +35,9 @@ let currentCoinFilter = "all";
 let searchQuery = "";
 let rawMarketRows = [];
 let decisionLeadSec = 390; // Overwritten by /api/config
+const CLOSED_PAGE_SIZE = 200;
+let closedOffset = 0;
+let closedHasMore = false;
 
 let whaleMinUsd = 100;
 try {
@@ -252,8 +255,11 @@ function tradeBannerHtml(r) {
 
 function llmReviewHtml(r) {
   const reviews = [
+    { stage: "8:30 review", decision: r.llm_8m30_decision, reason: r.llm_8m30_reason },
     { stage: "6:30 review", decision: r.llm_early_decision, reason: r.llm_early_reason },
+    { stage: "4:30 review", decision: r.llm_4m30_decision, reason: r.llm_4m30_reason },
     { stage: "2:30 review", decision: r.llm_late_decision, reason: r.llm_late_reason },
+    { stage: "1:00 review", decision: r.llm_1m_decision, reason: r.llm_1m_reason },
   ].filter((review) => review.decision);
   if (!reviews.length) return "";
   const classFor = (decision) => {
@@ -1219,6 +1225,7 @@ async function refreshShadowMonitor() {
 
 function setTab(tab) {
   currentTab = tab;
+  if (tab === "closed") closedOffset = 0;
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.tab === tab);
   });
@@ -1227,14 +1234,22 @@ function setTab(tab) {
   refresh();
 }
 
-async function refresh() {
+async function refresh(loadMoreClosed = false) {
   try {
     const endpoint = isShadowPage ? ENDPOINTS.shadow : ENDPOINTS[currentTab];
-    const res = await fetch(endpoint);
+    if (currentTab === "closed" && !loadMoreClosed) closedOffset = 0;
+    const url = currentTab === "closed" ? `${endpoint}?limit=${CLOSED_PAGE_SIZE}&offset=${closedOffset}` : endpoint;
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const rows = await res.json();
     if (currentTab === "shadow") {
       renderShadowDecisions(rows);
+    } else if (currentTab === "closed") {
+      rawMarketRows = loadMoreClosed ? [...rawMarketRows, ...rows] : rows;
+      closedHasMore = rows.length === CLOSED_PAGE_SIZE;
+      renderCards(rawMarketRows);
+      const loadMore = document.getElementById("closed-load-more");
+      if (loadMore) loadMore.hidden = !closedHasMore;
     } else {
       renderCards(rows);
     }
@@ -1359,6 +1374,14 @@ function initApp() {
         card.querySelectorAll(".preset-chip").forEach((c) => c.classList.toggle("active", Number(c.dataset.val) === value));
         loadWhaleTrades(card);
       }
+    });
+  }
+
+  const loadMore = document.getElementById("closed-load-more");
+  if (loadMore) {
+    loadMore.addEventListener("click", () => {
+      closedOffset += CLOSED_PAGE_SIZE;
+      refresh(true);
     });
   }
 

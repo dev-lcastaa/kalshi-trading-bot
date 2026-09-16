@@ -510,7 +510,13 @@ class Store:
                ll.decision AS llm_late_decision,
                ll.confidence_adjustment AS llm_late_adjustment,
                ll.reason AS llm_late_reason,
-               ll.ts_ms AS llm_late_ts_ms
+               ll.ts_ms AS llm_late_ts_ms,
+               lr830.decision AS llm_8m30_decision,
+               lr830.reason AS llm_8m30_reason,
+               lr430.decision AS llm_4m30_decision,
+               lr430.reason AS llm_4m30_reason,
+               lr100.decision AS llm_1m_decision,
+               lr100.reason AS llm_1m_reason
         FROM markets m
         LEFT JOIN (
             SELECT s1.* FROM signals s1
@@ -520,6 +526,9 @@ class Store:
         LEFT JOIN decisions d ON d.ticker = m.ticker
         LEFT JOIN llm_reviews le ON le.ticker = m.ticker AND le.stage = 'early'
         LEFT JOIN llm_reviews ll ON ll.ticker = m.ticker AND ll.stage = 'late'
+        LEFT JOIN llm_reviews lr830 ON lr830.ticker = m.ticker AND lr830.stage = 'review_8m30'
+        LEFT JOIN llm_reviews lr430 ON lr430.ticker = m.ticker AND lr430.stage = 'review_4m30'
+        LEFT JOIN llm_reviews lr100 ON lr100.ticker = m.ticker AND lr100.stage = 'review_1m'
     """
 
     def dashboard_markets(self, grace_period_sec: int) -> list[dict]:
@@ -549,11 +558,11 @@ class Store:
         columns = [column[0] for column in cur.description]
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
-    def closed_markets_history(self, limit: int = 200) -> list[dict]:
+    def closed_markets_history(self, limit: int = 200, offset: int = 0) -> list[dict]:
         cur = self._query(
             self._MARKETS_WITH_LATEST_SIGNAL_SQL
-            + " WHERE m.status = 'closed' ORDER BY m.closed_at_ms DESC LIMIT ?",
-            (limit,),
+            + " WHERE m.status = 'closed' ORDER BY m.closed_at_ms DESC LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
@@ -736,9 +745,9 @@ class Store:
             })
         return {"limit": limit, "recorded": len(rows), "groups": comparisons}
 
-    def calibration_stats(self, limit: int = 200, index_id: str | None = None) -> dict:
-        """Rolling Brier score / log loss of the model vs. the market, over the
-        last `limit` markets with a recorded yes/no settlement result.
+    def calibration_stats(self, limit: int | None = None, index_id: str | None = None) -> dict:
+        """Brier score / log loss of the model vs. the market across all settled
+        markets, or the last `limit` outcomes when a limit is supplied.
 
         Scored against the locked-in decision (made `KALSHI_DECISION_LEAD_SEC`
         before close) rather than the last live signal, since the decision is
@@ -757,8 +766,10 @@ class Store:
         if index_id is not None:
             sql += " AND m.index_id = ?"
             params.append(index_id)
-        sql += " ORDER BY m.closed_at_ms DESC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY m.closed_at_ms DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
         cur = self._query(sql, tuple(params))
         rows = cur.fetchall()
 

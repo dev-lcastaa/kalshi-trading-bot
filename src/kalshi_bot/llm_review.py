@@ -74,7 +74,7 @@ class LlmReviewer:
         confirmation_total: int | None = None,
         external_prices: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if stage not in {"early", "late"}:
+        if stage not in {"review_8m30", "early", "review_4m30", "late", "review_1m"}:
             raise ValueError(f"unsupported LLM review stage: {stage}")
         if not self.enabled:
             raise LlmReviewError("LLM review is disabled")

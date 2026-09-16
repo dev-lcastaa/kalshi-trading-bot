@@ -120,6 +120,17 @@ def test_closed_markets_history_only_includes_closed(tmp_path):
     assert [r["ticker"] for r in rows] == ["CLOSED-1"]
 
 
+def test_closed_markets_history_supports_pagination(tmp_path):
+    store = _make_store(tmp_path)
+    for offset in range(3):
+        ticker = f"CLOSED-{offset}"
+        store.upsert_active_market(ticker, "BRTI", 100.0, close_ts_ms=offset, now_ms=offset)
+        store.mark_closed(ticker, closed_at_ms=offset)
+
+    assert [row["ticker"] for row in store.closed_markets_history(limit=2)] == ["CLOSED-2", "CLOSED-1"]
+    assert [row["ticker"] for row in store.closed_markets_history(limit=2, offset=2)] == ["CLOSED-0"]
+
+
 def test_reupserting_a_closed_ticker_reactivates_it(tmp_path):
     store = _make_store(tmp_path)
     store.upsert_active_market("KXBTC15M-A", "BRTI", 100.0, close_ts_ms=1_000, now_ms=500)
@@ -227,6 +238,22 @@ def test_calibration_stats_filters_by_coin(tmp_path):
     assert sol_stats["n"] == 1
     assert sol_stats["model_brier"] == (0.2 - 0.0) ** 2
     assert overall_stats["n"] == 2
+
+
+def test_calibration_stats_counts_all_settled_markets_by_default(tmp_path):
+    store = _make_store(tmp_path)
+    for index in range(3):
+        ticker = f"SETTLED-{index}"
+        store.upsert_active_market(ticker, "BRTI", 100.0, close_ts_ms=index, now_ms=index)
+        store.record_decision(
+            ticker=ticker, ts_ms=index, seconds_to_expiry=390.0, index_price=101.0,
+            strike=100.0, model_p_yes=0.9, market_p_yes=0.55, edge=0.35,
+            recommendation="BUY_YES", confidence=0.4,
+        )
+        store.record_outcome(ticker, "yes", checked_at_ms=index)
+
+    assert store.calibration_stats()["n"] == 3
+    assert store.calibration_stats(limit=2)["n"] == 2
 
 
 def test_has_decision_false_until_recorded(tmp_path):

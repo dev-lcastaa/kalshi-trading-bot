@@ -41,8 +41,11 @@ def create_app(
         return store.dashboard_markets(grace_period_sec=closed_grace_sec)
 
     @app.get("/api/closed")
-    def get_closed(limit: int = 200) -> list[dict]:
-        return store.closed_markets_history(limit=limit)
+    def get_closed(
+        limit: int = Query(default=200, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+    ) -> list[dict]:
+        return store.closed_markets_history(limit=limit, offset=offset)
 
     @app.get("/api/price-history")
     def get_price_history(index_id: str, minutes: int = 10) -> list[dict]:
@@ -61,7 +64,9 @@ def create_app(
         return store.external_feed_status()
 
     @app.get("/api/calibration")
-    def get_calibration(limit: int = 200, index_id: str | None = None) -> dict:
+    def get_calibration(
+        limit: int | None = Query(default=None, ge=1, le=10000), index_id: str | None = None,
+    ) -> dict:
         return store.calibration_stats(limit=limit, index_id=index_id)
 
     @app.get("/api/shadow-decisions")
