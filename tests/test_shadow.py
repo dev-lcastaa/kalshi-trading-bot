@@ -83,6 +83,44 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
     app.store.close()
 
 
+@pytest.mark.asyncio
+async def test_jetson_8m30_review_runs_during_early_quality_abstention(tmp_path, monkeypatch):
+    class Reviewer:
+        enabled = True
+
+        async def review(self, **kwargs):
+            assert kwargs["stage"] == "review_8m30"
+            return {"decision": "ALLOW", "confidence_adjustment": 0.0, "reason": "Review complete."}
+
+    app = BotApp.__new__(BotApp)
+    app.store = Store(str(tmp_path / "reviews.db"))
+    app.settings = SimpleNamespace(
+        poll_interval_sec=2, decision_lead_sec=390, edge_threshold=0.05,
+        min_quote_size=1.0, min_index_history_sec=240.0,
+        min_index_history_ticks=1_000, max_input_age_ms=5_000,
+        fee_multiplier=1.0, slippage_per_contract=0.0,
+    )
+    app.predictor = SettlementAwarePredictor()
+    app.llm_reviewer = Reviewer()
+    state = MarketState("BTC-REVIEW", 100.0, 700_000, "BRTI")
+    app.markets = {state.ticker: state}
+    app.index_ticks = {"BRTI": [(timestamp * 1000, 100.0) for timestamp in range(1, 301)]}
+    app._handle_ticker({
+        "market_ticker": state.ticker, "yes_bid_dollars": "0.4", "yes_ask_dollars": "0.5",
+        "yes_bid_size_fp": "100", "yes_ask_size_fp": "100", "ts_ms": 195_000,
+        "price_dollars": "0.45", "volume_fp": "1", "open_interest_fp": "1",
+    })
+    monkeypatch.setattr("kalshi_bot.main.time.time", lambda: 195.0)
+    monkeypatch.setattr("kalshi_bot.main.asyncio.sleep", AsyncMock(side_effect=[None, asyncio.CancelledError()]))
+
+    with pytest.raises(asyncio.CancelledError):
+        await app.prediction_loop()
+
+    assert app.store.has_llm_review(state.ticker, "review_8m30")
+    assert not app.store.has_decision(state.ticker)
+    app.store.close()
+
+
 def test_shadow_api_scores_only_matched_settled_records_and_separates_experiments(tmp_path):
     store = Store(str(tmp_path / "api.db"))
     client = TestClient(create_app(store))

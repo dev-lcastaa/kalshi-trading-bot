@@ -255,13 +255,15 @@ function tradeBannerHtml(r) {
 
 function llmReviewHtml(r) {
   const reviews = [
-    { stage: "8:30 review", decision: r.llm_8m30_decision, reason: r.llm_8m30_reason },
-    { stage: "6:30 review", decision: r.llm_early_decision, reason: r.llm_early_reason },
-    { stage: "4:30 review", decision: r.llm_4m30_decision, reason: r.llm_4m30_reason },
-    { stage: "2:30 review", decision: r.llm_late_decision, reason: r.llm_late_reason },
-    { stage: "1:00 review", decision: r.llm_1m_decision, reason: r.llm_1m_reason },
-  ].filter((review) => review.decision);
-  if (!reviews.length) return "";
+    { stage: "8:30 review", leadSec: 510, decision: r.llm_8m30_decision, reason: r.llm_8m30_reason },
+    { stage: "6:30 review", leadSec: 390, decision: r.llm_early_decision, reason: r.llm_early_reason },
+    { stage: "4:30 review", leadSec: 270, decision: r.llm_4m30_decision, reason: r.llm_4m30_reason },
+    { stage: "2:30 review", leadSec: 150, decision: r.llm_late_decision, reason: r.llm_late_reason },
+    { stage: "1:00 review", leadSec: 60, decision: r.llm_1m_decision, reason: r.llm_1m_reason },
+  ].map((review) => ({
+    ...review,
+    decision: review.decision || (Number(r.seconds_to_expiry) > review.leadSec ? "SCHEDULED" : "AWAITING"),
+  }));
   const classFor = (decision) => {
     if (decision === "BLOCK") return "llm-review--block";
     if (decision === "REDUCE_CONFIDENCE") return "llm-review--reduce";
@@ -276,7 +278,7 @@ function llmReviewHtml(r) {
           <div class="llm-review-row ${classFor(review.decision)}">
             <span class="llm-review-stage">${review.stage}</span>
             <strong>${review.decision.replace("_", " ")}</strong>
-            <span class="llm-review-reason">${escapeHtml(review.reason || "No explanation returned.")}</span>
+            <span class="llm-review-reason">${escapeHtml(review.reason || (review.decision === "SCHEDULED" ? "Waiting for checkpoint." : "Review is being recorded."))}</span>
           </div>
         `).join("")}
       </div>

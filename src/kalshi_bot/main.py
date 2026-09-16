@@ -483,9 +483,6 @@ class BotApp:
                 )
                 quality_flags = self._quality_flags(state, features, ticks, now_ms)
                 decision_window_open = seconds_to_expiry <= self.settings.decision_lead_sec
-                if quality_flags and not decision_window_open:
-                    logger.info("Abstaining from %s: %s", ticker, ", ".join(quality_flags))
-                    continue
                 if quality_flags and decision_window_open:
                     logger.warning(
                         "Decision window reached for %s with degraded inputs; locking NO_EDGE: %s",
@@ -515,6 +512,9 @@ class BotApp:
                             signal.recommendation if review_confirmation.confirmed and not quality_flags else "NO_EDGE",
                             quality_flags, ticks, now_ms,
                         )
+                if quality_flags and not decision_window_open:
+                    logger.info("Abstaining from %s: %s", ticker, ", ".join(quality_flags))
+                    continue
                 if isinstance(self.predictor, SettlementAwarePredictor):
                     shadow_predictor = RegularizedSettlementPredictor(
                         momentum_weight=self.predictor.momentum_weight,
