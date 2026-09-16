@@ -65,7 +65,7 @@ def create_app(
 
     @app.get("/api/calibration")
     def get_calibration(
-        limit: int | None = Query(default=None, ge=1, le=10000), index_id: str | None = None,
+        limit: int = Query(default=200, ge=1, le=10000), index_id: str | None = None,
     ) -> dict:
         return store.calibration_stats(limit=limit, index_id=index_id)
 

@@ -165,6 +165,7 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_index_ticks_id_ts ON index_ticks (index_id, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_market_ticks_ticker_ts ON market_ticks (market_ticker, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_markets_status ON markets (status, closed_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_markets_result_closed ON markets (result, closed_at_ms)",
     "CREATE INDEX IF NOT EXISTS idx_whale_trades_ticker_ts ON whale_trades (ticker, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_external_ticks_source_symbol_received ON external_ticks (source, symbol, received_at_ms)",
 ]
@@ -295,14 +296,19 @@ class Store:
         """Return browser-safe health data for the external shadow feed."""
         now_ms = int(time.time() * 1000)
         cur = self._query("""
-            SELECT source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h
+            SELECT latest.source, latest.symbol, latest.index_id, latest.ts_ms,
+                   latest.received_at_ms, latest.price, latest.bid, latest.ask, latest.volume_24h
             FROM external_ticks latest
-            WHERE received_at_ms = (
-                SELECT MAX(received_at_ms) FROM external_ticks newer
-                WHERE newer.source = latest.source AND newer.symbol = latest.symbol
-            )
-            ORDER BY source, symbol
-        """)
+            INNER JOIN (
+                SELECT source, symbol, MAX(received_at_ms) AS max_received_at_ms
+                FROM external_ticks
+                WHERE received_at_ms >= ?
+                GROUP BY source, symbol
+            ) newest ON newest.source = latest.source
+                   AND newest.symbol = latest.symbol
+                   AND newest.max_received_at_ms = latest.received_at_ms
+            ORDER BY latest.source, latest.symbol
+        """, (now_ms - max(max_age_ms * 3, 60_000),))
         columns = [column[0] for column in cur.description]
         sources = []
         for row in cur.fetchall():
@@ -745,9 +751,8 @@ class Store:
             })
         return {"limit": limit, "recorded": len(rows), "groups": comparisons}
 
-    def calibration_stats(self, limit: int | None = None, index_id: str | None = None) -> dict:
-        """Brier score / log loss of the model vs. the market across all settled
-        markets, or the last `limit` outcomes when a limit is supplied.
+    def calibration_stats(self, limit: int = 200, index_id: str | None = None) -> dict:
+        """Rolling Brier score / log loss over the last `limit` settled decisions.
 
         Scored against the locked-in decision (made `KALSHI_DECISION_LEAD_SEC`
         before close) rather than the last live signal, since the decision is
@@ -766,10 +771,10 @@ class Store:
         if index_id is not None:
             sql += " AND m.index_id = ?"
             params.append(index_id)
-        sql += " ORDER BY m.closed_at_ms DESC"
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
+        count_sql = "SELECT COUNT(*) FROM (" + sql + ")"
+        settled_count = self._query(count_sql, tuple(params)).fetchone()[0]
+        sql += " ORDER BY m.closed_at_ms DESC LIMIT ?"
+        params.append(limit)
         cur = self._query(sql, tuple(params))
         rows = cur.fetchall()
 
@@ -777,6 +782,7 @@ class Store:
         if n == 0:
             return {
                 "n": 0,
+                "settled_count": settled_count,
                 "model_brier": None,
                 "model_log_loss": None,
                 "market_brier": None,
@@ -799,6 +805,7 @@ class Store:
 
         return {
             "n": n,
+            "settled_count": settled_count,
             "model_brier": model_sq / n,
             "model_log_loss": model_ll / n,
             "market_brier": market_sq / n,

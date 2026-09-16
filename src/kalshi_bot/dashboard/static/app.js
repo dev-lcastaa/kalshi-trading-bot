@@ -1130,7 +1130,7 @@ function renderHudCalibrationCard(title, coinSymbol, c) {
       </div>
 
       <div class="hud-card__footer">
-        <span class="sample-badge">${c.n} settled markets</span>
+        <span class="sample-badge">${c.settled_count ?? c.n} settled markets</span>
         <span class="edge-delta">${deltaSign}${delta} Brier delta</span>
       </div>
     </div>

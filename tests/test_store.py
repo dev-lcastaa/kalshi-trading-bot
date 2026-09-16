@@ -240,7 +240,7 @@ def test_calibration_stats_filters_by_coin(tmp_path):
     assert overall_stats["n"] == 2
 
 
-def test_calibration_stats_counts_all_settled_markets_by_default(tmp_path):
+def test_calibration_stats_reports_total_settled_markets_separately_from_rolling_sample(tmp_path):
     store = _make_store(tmp_path)
     for index in range(3):
         ticker = f"SETTLED-{index}"
@@ -252,8 +252,9 @@ def test_calibration_stats_counts_all_settled_markets_by_default(tmp_path):
         )
         store.record_outcome(ticker, "yes", checked_at_ms=index)
 
-    assert store.calibration_stats()["n"] == 3
-    assert store.calibration_stats(limit=2)["n"] == 2
+    stats = store.calibration_stats(limit=2)
+    assert stats["n"] == 2
+    assert stats["settled_count"] == 3
 
 
 def test_has_decision_false_until_recorded(tmp_path):
