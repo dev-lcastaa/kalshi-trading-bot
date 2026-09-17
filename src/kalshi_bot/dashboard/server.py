@@ -2,16 +2,31 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
+import threading
+from typing import Callable, TypeVar
 
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from ..data.store import Store
 from .broadcaster import Broadcaster
 
-_STATIC_DIR = Path(__file__).parent / "static"
+_T = TypeVar("_T")
+
+
+class _TtlCache:
+    def __init__(self) -> None:
+        self._values: dict[str, tuple[float, object]] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: str, ttl_sec: float, factory: Callable[[], _T]) -> _T:
+        now = time.monotonic()
+        with self._lock:
+            cached = self._values.get(key)
+            if cached is not None and now - cached[0] < ttl_sec:
+                return cached[1]  # type: ignore[return-value]
+            value = factory()
+            self._values[key] = (now, value)
+            return value
 
 
 def create_app(
@@ -22,6 +37,7 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Kalshi 15-Min Crypto Signals")
     broadcaster = broadcaster if broadcaster is not None else Broadcaster()
+    telemetry_cache = _TtlCache()
 
     @app.get("/api/config")
     def get_config() -> dict:
@@ -62,6 +78,17 @@ def create_app(
     def get_external_status() -> dict:
         """Health and latest snapshot data for the external shadow feed."""
         return store.external_feed_status()
+
+    @app.get("/api/calibration-summary")
+    def get_calibration_summary(limit: int = Query(default=200, ge=1, le=10000)) -> dict:
+        def build_summary() -> dict:
+            return {
+                "overall": store.calibration_stats(limit=limit),
+                "BRTI": store.calibration_stats(limit=limit, index_id="BRTI"),
+                "SOLUSD_RTI": store.calibration_stats(limit=limit, index_id="SOLUSD_RTI"),
+            }
+
+        return telemetry_cache.get(f"calibration-summary:{limit}", 30.0, build_summary)
 
     @app.get("/api/calibration")
     def get_calibration(
@@ -108,13 +135,4 @@ def create_app(
         finally:
             await broadcaster.unregister(websocket)
 
-    @app.get("/")
-    def index() -> FileResponse:
-        return FileResponse(_STATIC_DIR / "index.html")
-
-    @app.get("/shadow")
-    def shadow_lab() -> FileResponse:
-        return FileResponse(_STATIC_DIR / "shadow.html")
-
-    app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
     return app

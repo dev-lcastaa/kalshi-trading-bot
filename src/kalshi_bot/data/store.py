@@ -168,7 +168,28 @@ _SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_markets_result_closed ON markets (result, closed_at_ms)",
     "CREATE INDEX IF NOT EXISTS idx_whale_trades_ticker_ts ON whale_trades (ticker, ts_ms)",
     "CREATE INDEX IF NOT EXISTS idx_external_ticks_source_symbol_received ON external_ticks (source, symbol, received_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_markets_index_result_closed ON markets (index_id, result, closed_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_shadow_decisions_index_ts ON shadow_decisions (index_id, ts_ms)",
 ]
+
+
+class _BufferedResult:
+    def __init__(self, cursor):
+        self.description = cursor.description
+        self._rows = cursor.fetchall()
+        self._position = 0
+
+    def fetchone(self):
+        if self._position >= len(self._rows):
+            return None
+        row = self._rows[self._position]
+        self._position += 1
+        return row
+
+    def fetchall(self):
+        rows = self._rows[self._position:]
+        self._position = len(self._rows)
+        return rows
 
 
 class Store:
@@ -205,7 +226,7 @@ class Store:
 
     def _query(self, sql: str, params=()):
         with self._lock:
-            return self._raw_execute(sql, params)
+            return _BufferedResult(self._raw_execute(sql, params))
 
     def _migrate(self) -> None:
         """Add columns introduced after a DB may already exist on disk."""
@@ -524,11 +545,8 @@ class Store:
                lr100.decision AS llm_1m_decision,
                lr100.reason AS llm_1m_reason
         FROM markets m
-        LEFT JOIN (
-            SELECT s1.* FROM signals s1
-            INNER JOIN (SELECT ticker, MAX(ts_ms) AS max_ts FROM signals GROUP BY ticker) latest
-              ON s1.ticker = latest.ticker AND s1.ts_ms = latest.max_ts
-        ) s ON s.ticker = m.ticker
+                LEFT JOIN signals s ON s.ticker = m.ticker
+                    AND s.ts_ms = (SELECT MAX(s2.ts_ms) FROM signals s2 WHERE s2.ticker = m.ticker)
         LEFT JOIN decisions d ON d.ticker = m.ticker
         LEFT JOIN llm_reviews le ON le.ticker = m.ticker AND le.stage = 'early'
         LEFT JOIN llm_reviews ll ON ll.ticker = m.ticker AND ll.stage = 'late'

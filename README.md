@@ -55,7 +55,8 @@ retained.
 
 ### Shadow Lab
 
-`/shadow` is a separate research-only page. It receives continuously refreshed
+The React dashboard's **Shadow Lab** tab (also available directly at `/shadow`)
+receives continuously refreshed
 candidate forecasts from `/api/shadow-active`, computed on the same clean live
 inputs as the primary model. Its card layout mirrors the live dashboard but
 shows the regularized shadow model's probability, candidate recommendation,
@@ -144,12 +145,19 @@ Your data is saved in a Docker volume, so stopping and restarting
 2. Copy `.env.example` to `.env` and fill in your API key info (same as
    above). You can leave `DATABASE_URL` as-is — this option just uses a
    local file instead of a database server.
-3. Run it:
+3. Run the API and bot:
    ```
    python -m kalshi_bot.main
    ```
    Keep this terminal window open — closing it stops the bot.
-4. Open **http://127.0.0.1:8000** in your browser.
+4. In a second terminal, run the React development server:
+  ```
+  cd frontend
+  npm ci
+  npm run dev
+  ```
+5. Open **http://127.0.0.1:5173** in your browser. Vite proxies API and
+  WebSocket traffic to the Python service on port 8000.
 
 ## Reading the dashboard
 
@@ -175,13 +183,13 @@ or wrong once Kalshi reports the result.
 
 ### 🐋 Whale Tracker (who's putting in the big money?)
 
-Each card has a **🐋 Whale Tracker** button. Click it to flip that card
-from the prediction view to the live institutional order flow of the largest
-recent fills on that specific market. Use the quick filter preset chips
+Each card has a **🐋 Whale Tracker** button. On desktop it opens within the
+market card; on mobile it opens as a bottom sheet containing the largest recent
+fills for that market. Use the quick filter preset chips
 (`$50+`, `$100+`, `$250+`, `$500+`, `$1,000+`) or type a custom minimum dollar
 amount and press **Apply** to surface the latest trades meeting that threshold.
-The threshold is remembered in your browser. Click **Prediction Signal** (⚡)
-again to flip back to the signal view.
+The threshold is remembered in your browser. Use **Back to signal**, the close
+button, or Escape to return to the market decision.
 
 The filter can only search trades the bot collected. `KALSHI_WHALE_MIN_USD`
 is the collection floor (default `$100`), so lowering the dashboard filter
