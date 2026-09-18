@@ -769,6 +769,27 @@ class Store:
             })
         return {"limit": limit, "recorded": len(rows), "groups": comparisons}
 
+    def calibration_pairs(self, limit: int = 2000, index_id: str | None = None) -> list[tuple[float, float]]:
+        """Recent (decision model_p_yes, outcome) pairs, for fitting a calibrator.
+
+        Same population as `calibration_stats` (locked-in decisions with a
+        known settlement), just returned as raw pairs instead of aggregated.
+        """
+        sql = """
+            SELECT d.model_p_yes, m.result
+            FROM markets m
+            INNER JOIN decisions d ON d.ticker = m.ticker
+            WHERE m.result IN ('yes', 'no')
+        """
+        params: list = []
+        if index_id is not None:
+            sql += " AND m.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY m.closed_at_ms DESC LIMIT ?"
+        params.append(limit)
+        rows = self._query(sql, tuple(params)).fetchall()
+        return [(model_p, 1.0 if result == "yes" else 0.0) for model_p, result in rows]
+
     def calibration_stats(self, limit: int = 200, index_id: str | None = None) -> dict:
         """Rolling Brier score / log loss over the last `limit` settled decisions.
 

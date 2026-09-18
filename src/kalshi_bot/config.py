@@ -50,6 +50,11 @@ class Settings:
     llm_base_url: str
     llm_model: str
     llm_timeout_sec: float
+    market_blend_weight: float
+    min_confidence_buy_yes: float
+    calibration_min_samples: int
+    calibration_refit_interval_sec: float
+    calibration_window: int
 
     @staticmethod
     def load() -> "Settings":
@@ -70,7 +75,9 @@ class Settings:
             database_url=os.environ.get("DATABASE_URL", "./data/kalshi_bot.db"),
             dashboard_host=os.environ.get("KALSHI_DASHBOARD_HOST", "127.0.0.1"),
             dashboard_port=int(os.environ.get("KALSHI_DASHBOARD_PORT", "8000")),
-            predictor_version=os.environ.get("KALSHI_PREDICTOR_VERSION", "v2").strip().lower(),
+            # v3 (regularized-settlement) beat live v2 on both accuracy and Brier
+            # in shadow testing across ~950 settled markets; promoted as the default.
+            predictor_version=os.environ.get("KALSHI_PREDICTOR_VERSION", "v3").strip().lower(),
             closed_grace_sec=int(os.environ.get("KALSHI_CLOSED_GRACE_SEC", "10")),
             decision_lead_sec=int(os.environ.get("KALSHI_DECISION_LEAD_SEC", "390")),
             # Fills at or above this dollar size are surfaced as a "big bet".
@@ -85,4 +92,18 @@ class Settings:
             llm_base_url=os.environ.get("KALSHI_LLM_BASE_URL", "http://192.168.1.229:8080").strip(),
             llm_model=os.environ.get("KALSHI_LLM_MODEL", "").strip(),
             llm_timeout_sec=float(os.environ.get("KALSHI_LLM_TIMEOUT_SEC", "15")),
+            # Market price out-Brier'd the model overall (0.136 vs 0.163 across ~950
+            # settled markets), so blend it into the probability used for trade calls.
+            market_blend_weight=float(os.environ.get("KALSHI_MARKET_BLEND_WEIGHT", "0.4")),
+            # BUY_YES at 0.5-0.7 model confidence settled at ~48% (a losing bucket
+            # after fees); BUY_NO had no such gap, so the floor is BUY_YES-only.
+            min_confidence_buy_yes=float(os.environ.get("KALSHI_MIN_CONFIDENCE_BUY_YES", "0.7")),
+            # Isotonic recalibration (PAVA) refit periodically from the settled
+            # decision history; a cold-start below calibration_min_samples leaves
+            # predictions unchanged (identity mapping).
+            calibration_min_samples=int(os.environ.get("KALSHI_CALIBRATION_MIN_SAMPLES", "200")),
+            calibration_refit_interval_sec=float(
+                os.environ.get("KALSHI_CALIBRATION_REFIT_INTERVAL_SEC", "1800")
+            ),
+            calibration_window=int(os.environ.get("KALSHI_CALIBRATION_WINDOW", "2000")),
         )

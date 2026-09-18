@@ -9,6 +9,7 @@ import time
 
 from ..features.engine import Features
 from ..kalshi_client.models import Signal
+from ..prediction.calibration import IsotonicCalibrator
 from ..prediction.model import Predictor, market_implied_probability
 
 
@@ -31,11 +32,24 @@ def generate_signal(
     fee_multiplier: float = 1.0,
     slippage_per_contract: float = 0.0,
     ts_ms: int | None = None,
+    market_blend_weight: float = 0.0,
+    calibrator: IsotonicCalibrator | None = None,
 ) -> Signal:
     if fee_multiplier < 0 or slippage_per_contract < 0:
         raise ValueError("fee_multiplier and slippage_per_contract must be non-negative")
-    model_p = predictor.predict(features)
+    if not 0 <= market_blend_weight <= 1:
+        raise ValueError("market_blend_weight must be in [0, 1]")
+    raw_model_p = predictor.predict(features)
+    if calibrator is not None:
+        # Recalibrate the raw model output against realized outcomes (isotonic
+        # regression) before blending with the market, so both inputs to the
+        # final probability are on a calibrated footing.
+        raw_model_p = calibrator.predict(raw_model_p)
     market_p = market_implied_probability(yes_bid_dollars, yes_ask_dollars)
+    # Market price out-Brier'd the raw model overall in calibration testing, so the
+    # probability driving trade decisions blends toward it instead of using the
+    # model alone.
+    model_p = (1 - market_blend_weight) * raw_model_p + market_blend_weight * market_p
     edge = model_p - market_p
 
     # Require the recommendation to agree with the model's own directional call

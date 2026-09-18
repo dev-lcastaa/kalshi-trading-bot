@@ -10,6 +10,7 @@ from kalshi_bot.dashboard.server import create_app
 from kalshi_bot.data.store import Store
 from kalshi_bot.features.engine import Features
 from kalshi_bot.main import BotApp, MarketState
+from kalshi_bot.prediction.calibration import IsotonicCalibrator
 from kalshi_bot.prediction.model import RegularizedSettlementPredictor, SettlementAwarePredictor
 
 
@@ -23,8 +24,10 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
         min_quote_size=1.0, min_index_history_sec=240.0,
         min_index_history_ticks=120, max_input_age_ms=5000,
         fee_multiplier=1.0, slippage_per_contract=0.0,
+        market_blend_weight=0.0, min_confidence_buy_yes=0.0,
     )
     app.predictor = SettlementAwarePredictor()
+    app.calibrator = IsotonicCalibrator()
     state = MarketState("BTC-TEST", 100.0, 700000, "BRTI")
     app.markets = {state.ticker: state}
     app.index_ticks = {"BRTI": [(timestamp * 1000, 100.0 + (timestamp % 2) * 0.001) for timestamp in range(21, 322)]}
@@ -99,8 +102,10 @@ async def test_jetson_8m30_review_runs_during_early_quality_abstention(tmp_path,
         min_quote_size=1.0, min_index_history_sec=240.0,
         min_index_history_ticks=1_000, max_input_age_ms=5_000,
         fee_multiplier=1.0, slippage_per_contract=0.0,
+        market_blend_weight=0.0, min_confidence_buy_yes=0.0,
     )
     app.predictor = SettlementAwarePredictor()
+    app.calibrator = IsotonicCalibrator()
     app.llm_reviewer = Reviewer()
     state = MarketState("BTC-REVIEW", 100.0, 700_000, "BRTI")
     app.markets = {state.ticker: state}

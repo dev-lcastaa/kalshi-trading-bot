@@ -28,6 +28,7 @@ from .kalshi_client.rest import KalshiRestClient
 from .kalshi_client.ws import KalshiWsClient
 from .llm_review import LlmReviewer
 from .market_discovery import find_15min_markets
+from .prediction.calibration import IsotonicCalibrator
 from .prediction.model import RandomWalkPredictor, RegularizedSettlementPredictor, SettlementAwarePredictor
 from .signals.confirmation import check_confirmation
 from .signals.generator import generate_signal
@@ -68,7 +69,12 @@ class BotApp:
         self.rest = KalshiRestClient(settings.rest_base, self.auth)
         self.store = Store(settings.database_url)
         self.predictor = (
-            SettlementAwarePredictor() if settings.predictor_version == "v2" else RandomWalkPredictor()
+            RegularizedSettlementPredictor() if settings.predictor_version == "v3"
+            else SettlementAwarePredictor() if settings.predictor_version == "v2"
+            else RandomWalkPredictor()
+        )
+        self.calibrator = IsotonicCalibrator(
+            min_samples=getattr(settings, "calibration_min_samples", 200)
         )
         self.llm_reviewer = LlmReviewer(
             getattr(settings, "llm_base_url", ""),
@@ -154,6 +160,8 @@ class BotApp:
             fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
             slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
             ts_ms=state.close_ts_ms,
+            market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
+            calibrator=self.calibrator,
         )
         self.store.insert_signal(signal)
 
@@ -498,6 +506,8 @@ class BotApp:
                     edge_threshold=self.settings.edge_threshold,
                     fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
                     slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
+                    market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
+                    calibrator=self.calibrator,
                 )
                 self.store.insert_signal(signal)
                 for review_lead_sec, review_stage in (
@@ -515,7 +525,12 @@ class BotApp:
                 if quality_flags and not decision_window_open:
                     logger.info("Abstaining from %s: %s", ticker, ", ".join(quality_flags))
                     continue
-                if isinstance(self.predictor, SettlementAwarePredictor):
+                # regularized-settlement-v3 is now live, so it's no longer shadowed
+                # against itself; only stand up the shadow when live is on an older
+                # predictor version.
+                if isinstance(self.predictor, SettlementAwarePredictor) and not isinstance(
+                    self.predictor, RegularizedSettlementPredictor
+                ):
                     shadow_predictor = RegularizedSettlementPredictor(
                         momentum_weight=self.predictor.momentum_weight,
                         window_sec=self.predictor.window_sec,
@@ -565,6 +580,14 @@ class BotApp:
                             0.5,
                             decision_confidence + early_review["confidence_adjustment"],
                         )
+                    # BUY_YES at 0.5-0.7 model confidence settled at ~48% (a losing
+                    # bucket after fees) in calibration review; BUY_NO showed no such
+                    # gap, so this floor is intentionally asymmetric.
+                    if (
+                        decision_recommendation == "BUY_YES"
+                        and decision_confidence < self.settings.min_confidence_buy_yes
+                    ):
+                        decision_recommendation = "NO_EDGE"
                     llm_check = {
                         "name": "6:30 LLM risk review",
                         "agree": llm_decision == "ALLOW",
@@ -647,6 +670,24 @@ class BotApp:
             except Exception:
                 logger.exception("Outcome polling failed")
 
+    async def calibration_loop(self) -> None:
+        """Periodically refit the isotonic calibrator from settled decisions.
+
+        This is the "online learning" piece: no gradient descent, since the
+        underlying predictors are closed-form/rule-based, but the probability
+        they output is continuously recalibrated against realized outcomes
+        (isotonic regression / PAVA) as the bot's track record grows.
+        """
+        while True:
+            await asyncio.sleep(self.settings.calibration_refit_interval_sec)
+            try:
+                pairs = self.store.calibration_pairs(limit=self.settings.calibration_window)
+                self.calibrator.fit(pairs)
+                if self.calibrator.is_fitted:
+                    logger.info("Recalibrated model probabilities on %d settled decisions", self.calibrator.fitted_n)
+            except Exception:
+                logger.exception("Calibration refit failed")
+
     async def _poll_pending_outcomes(self) -> None:
         pending = self.store.markets_pending_outcome(max_age_ms=_OUTCOME_MAX_AGE_MS)
         for ticker in pending:
@@ -726,6 +767,10 @@ class BotApp:
 
     async def run(self) -> None:
         await self.discover_and_subscribe()
+        try:
+            self.calibrator.fit(self.store.calibration_pairs(limit=self.settings.calibration_window))
+        except Exception:
+            logger.exception("Initial calibration fit failed; predictions stay uncalibrated for now")
         external_tick_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_TICK_QUEUE_MAXSIZE)
 
         uv_config = uvicorn.Config(
@@ -745,6 +790,7 @@ class BotApp:
             self.prediction_loop(),
             self.rediscovery_loop(),
             self.outcome_polling_loop(),
+            self.calibration_loop(),
             self.whale_polling_loop(),
             collect_coinbase(external_tick_queue, asyncio.Event()),
             collect_kraken(external_tick_queue, asyncio.Event()),
