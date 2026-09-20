@@ -40,16 +40,18 @@ def generate_signal(
     if not 0 <= market_blend_weight <= 1:
         raise ValueError("market_blend_weight must be in [0, 1]")
     raw_model_p = predictor.predict(features)
-    if calibrator is not None:
-        # Recalibrate the raw model output against realized outcomes (isotonic
-        # regression) before blending with the market, so both inputs to the
-        # final probability are on a calibrated footing.
-        raw_model_p = calibrator.predict(raw_model_p)
     market_p = market_implied_probability(yes_bid_dollars, yes_ask_dollars)
     # Market price out-Brier'd the raw model overall in calibration testing, so the
     # probability driving trade decisions blends toward it instead of using the
     # model alone.
     model_p = (1 - market_blend_weight) * raw_model_p + market_blend_weight * market_p
+    if calibrator is not None:
+        # Recalibrate against realized outcomes (isotonic regression / PAVA) as the
+        # very last step. The calibrator is trained on this same final, post-blend
+        # probability (what actually gets stored as the decision's model_p_yes) -
+        # calibrating the pre-blend raw model output instead would fit a mapping
+        # for one quantity and apply it to a different one.
+        model_p = calibrator.predict(model_p)
     edge = model_p - market_p
 
     # Require the recommendation to agree with the model's own directional call

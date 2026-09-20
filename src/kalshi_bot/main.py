@@ -258,13 +258,20 @@ class BotApp:
         )
         shadow_confirmation = check_confirmation(features, shadow_signal.model_p_yes >= 0.5)
         parameters = {
-            "model_version": "settlement-v2",
+            "model_version": type(self.predictor).__name__,
             "momentum_weight": self.predictor.momentum_weight,
             "live_imbalance_weight": self.predictor.imbalance_weight,
             "shadow_imbalance_weight": 0.0,
             "shadow_model_version": "regularized-settlement-v3",
             "shadow_min_history_sec": challenger.min_history_sec,
             "shadow_min_history_ticks": challenger.min_history_ticks,
+            # The shadow challenger never blends with the market or applies
+            # calibration, so this doubles as an ongoing test of whether those two
+            # live-only adjustments actually help versus the raw model.
+            "live_market_blend_weight": getattr(self.settings, "market_blend_weight", 0.0),
+            "shadow_market_blend_weight": 0.0,
+            "live_calibrated": self.calibrator.is_fitted,
+            "shadow_calibrated": False,
             "window_sec": self.predictor.window_sec,
             "edge_threshold": self.settings.edge_threshold,
             "fee_multiplier": getattr(self.settings, "fee_multiplier", 1.0),
@@ -525,12 +532,10 @@ class BotApp:
                 if quality_flags and not decision_window_open:
                     logger.info("Abstaining from %s: %s", ticker, ", ".join(quality_flags))
                     continue
-                # regularized-settlement-v3 is now live, so it's no longer shadowed
-                # against itself; only stand up the shadow when live is on an older
-                # predictor version.
-                if isinstance(self.predictor, SettlementAwarePredictor) and not isinstance(
-                    self.predictor, RegularizedSettlementPredictor
-                ):
+                # The shadow challenger is the raw model with no market blend and no
+                # calibration - even now that v3 is live, this stays meaningful as an
+                # ongoing check of whether blending/calibration actually help.
+                if isinstance(self.predictor, SettlementAwarePredictor):
                     shadow_predictor = RegularizedSettlementPredictor(
                         momentum_weight=self.predictor.momentum_weight,
                         window_sec=self.predictor.window_sec,
