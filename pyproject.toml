@@ -1,6 +1,6 @@
 [project]
 name = "kalshi-bot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Signal-only bot that monitors Kalshi 15-minute BTC/SOL markets and predicts outcomes. Does not place orders."
 requires-python = ">=3.11"
 dependencies = [
