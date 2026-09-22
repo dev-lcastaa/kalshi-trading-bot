@@ -8,6 +8,7 @@ from typing import Callable, TypeVar
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 
 from ..data.store import Store
+from .. import __version__
 from .broadcaster import Broadcaster
 
 _T = TypeVar("_T")
@@ -38,6 +39,11 @@ def create_app(
     app = FastAPI(title="Kalshi 15-Min Crypto Signals")
     broadcaster = broadcaster if broadcaster is not None else Broadcaster()
     telemetry_cache = _TtlCache()
+
+    @app.get("/api/version")
+    def get_version() -> dict:
+        """Identifies which build is actually running behind a given deployment."""
+        return {"version": __version__}
 
     @app.get("/api/config")
     def get_config() -> dict:

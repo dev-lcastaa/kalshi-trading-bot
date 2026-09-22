@@ -2,8 +2,20 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 
+from kalshi_bot import __version__
 from kalshi_bot.dashboard.server import create_app
 from kalshi_bot.data.store import Store
+
+
+def test_version_endpoint_reports_package_version(tmp_path):
+    store = Store(str(tmp_path / "version.db"))
+    client = TestClient(create_app(store))
+
+    response = client.get("/api/version")
+
+    assert response.status_code == 200
+    assert response.json() == {"version": __version__}
+    store.close()
 
 
 def test_calibration_summary_combines_and_caches_scopes(tmp_path, monkeypatch):
