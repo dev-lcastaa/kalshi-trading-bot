@@ -29,6 +29,7 @@ from .kalshi_client.ws import KalshiWsClient
 from .llm_review import LlmReviewer
 from .market_discovery import find_15min_markets
 from .prediction.calibration import IsotonicCalibrator
+from .prediction.logistic import FEATURE_NAMES, LogisticRegressionModel, LogisticSignalPredictor, fit_logistic_model
 from .prediction.model import RandomWalkPredictor, RegularizedSettlementPredictor, SettlementAwarePredictor
 from .signals.confirmation import check_confirmation
 from .signals.generator import generate_signal
@@ -75,6 +76,10 @@ class BotApp:
         )
         self.calibrator = IsotonicCalibrator(
             min_samples=getattr(settings, "calibration_min_samples", 200)
+        )
+        self.logistic_model = LogisticRegressionModel(
+            feature_names=list(FEATURE_NAMES),
+            min_samples=getattr(settings, "logistic_min_samples", 300),
         )
         self.llm_reviewer = LlmReviewer(
             getattr(settings, "llm_base_url", ""),
@@ -243,10 +248,11 @@ class BotApp:
             return None
         if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
             return None
-        challenger = RegularizedSettlementPredictor(
+        challenger_base = RegularizedSettlementPredictor(
             momentum_weight=self.predictor.momentum_weight,
             window_sec=self.predictor.window_sec,
         )
+        challenger = LogisticSignalPredictor(challenger_base, self.logistic_model)
         shadow_signal = generate_signal(
             ticker=state.ticker, index_id=state.index_id, features=features,
             predictor=challenger, yes_bid_dollars=state.yes_bid_dollars,
@@ -262,9 +268,14 @@ class BotApp:
             "momentum_weight": self.predictor.momentum_weight,
             "live_imbalance_weight": self.predictor.imbalance_weight,
             "shadow_imbalance_weight": 0.0,
-            "shadow_model_version": "regularized-settlement-v3",
-            "shadow_min_history_sec": challenger.min_history_sec,
-            "shadow_min_history_ticks": challenger.min_history_ticks,
+            "shadow_model_version": "logistic-stacked-v1",
+            "shadow_base_model_version": "regularized-settlement-v3",
+            "shadow_min_history_sec": challenger_base.min_history_sec,
+            "shadow_min_history_ticks": challenger_base.min_history_ticks,
+            "shadow_logistic_feature_names": list(FEATURE_NAMES),
+            "shadow_logistic_min_samples": self.logistic_model.min_samples,
+            "shadow_logistic_fitted": self.logistic_model.is_fitted,
+            "shadow_logistic_fitted_n": self.logistic_model.fitted_n,
             # The shadow challenger never blends with the market or applies
             # calibration, so this doubles as an ongoing test of whether those two
             # live-only adjustments actually help versus the raw model.
@@ -283,7 +294,7 @@ class BotApp:
         fingerprint = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
         snapshot = {
             "schema_version": 1,
-            "experiment_id": "regularized-settlement-v3-" + fingerprint,
+            "experiment_id": "logistic-stacked-v1-" + fingerprint,
             "parameters": parameters,
             "index_id": state.index_id,
             "features": asdict(features),
@@ -532,14 +543,15 @@ class BotApp:
                 if quality_flags and not decision_window_open:
                     logger.info("Abstaining from %s: %s", ticker, ", ".join(quality_flags))
                     continue
-                # The shadow challenger is the raw model with no market blend and no
-                # calibration - even now that v3 is live, this stays meaningful as an
-                # ongoing check of whether blending/calibration actually help.
+                # The shadow challenger is the logistic "stacking" model (falls back
+                # to the raw rule-based model until it has enough fitted samples) -
+                # this is the ongoing check of whether it's ready for promotion.
                 if isinstance(self.predictor, SettlementAwarePredictor):
-                    shadow_predictor = RegularizedSettlementPredictor(
+                    shadow_base = RegularizedSettlementPredictor(
                         momentum_weight=self.predictor.momentum_weight,
                         window_sec=self.predictor.window_sec,
                     )
+                    shadow_predictor = LogisticSignalPredictor(shadow_base, self.logistic_model)
                     shadow_signal = generate_signal(
                         ticker=ticker, index_id=state.index_id, features=features,
                         predictor=shadow_predictor, yes_bid_dollars=state.yes_bid_dollars,
@@ -693,6 +705,26 @@ class BotApp:
             except Exception:
                 logger.exception("Calibration refit failed")
 
+    async def logistic_training_loop(self) -> None:
+        """Periodically refit the logistic "stacking" shadow model.
+
+        This is real gradient descent (see `prediction/logistic.py`), unlike
+        the isotonic calibrator. It stays a shadow challenger - never affects
+        live decisions - until it's promoted the same way v3 was: prove it
+        first via `shadow-comparison`.
+        """
+        while True:
+            await asyncio.sleep(self.settings.logistic_refit_interval_sec)
+            try:
+                rows = self.store.decision_feature_outcome_pairs(limit=self.settings.logistic_training_window)
+                fit_logistic_model(self.logistic_model, rows, RegularizedSettlementPredictor())
+                if self.logistic_model.is_fitted:
+                    logger.info(
+                        "Refit logistic shadow model on %d settled decisions", self.logistic_model.fitted_n
+                    )
+            except Exception:
+                logger.exception("Logistic shadow model refit failed")
+
     async def _poll_pending_outcomes(self) -> None:
         pending = self.store.markets_pending_outcome(max_age_ms=_OUTCOME_MAX_AGE_MS)
         for ticker in pending:
@@ -776,6 +808,14 @@ class BotApp:
             self.calibrator.fit(self.store.calibration_pairs(limit=self.settings.calibration_window))
         except Exception:
             logger.exception("Initial calibration fit failed; predictions stay uncalibrated for now")
+        try:
+            fit_logistic_model(
+                self.logistic_model,
+                self.store.decision_feature_outcome_pairs(limit=self.settings.logistic_training_window),
+                RegularizedSettlementPredictor(),
+            )
+        except Exception:
+            logger.exception("Initial logistic shadow model fit failed; it stays a passthrough for now")
         external_tick_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=_TICK_QUEUE_MAXSIZE)
 
         uv_config = uvicorn.Config(
@@ -796,6 +836,7 @@ class BotApp:
             self.rediscovery_loop(),
             self.outcome_polling_loop(),
             self.calibration_loop(),
+            self.logistic_training_loop(),
             self.whale_polling_loop(),
             collect_coinbase(external_tick_queue, asyncio.Event()),
             collect_kraken(external_tick_queue, asyncio.Event()),

@@ -11,6 +11,7 @@ from kalshi_bot.data.store import Store
 from kalshi_bot.features.engine import Features
 from kalshi_bot.main import BotApp, MarketState
 from kalshi_bot.prediction.calibration import IsotonicCalibrator
+from kalshi_bot.prediction.logistic import LogisticRegressionModel
 from kalshi_bot.prediction.model import RegularizedSettlementPredictor, SettlementAwarePredictor
 
 
@@ -28,6 +29,7 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
     )
     app.predictor = SettlementAwarePredictor()
     app.calibrator = IsotonicCalibrator()
+    app.logistic_model = LogisticRegressionModel()
     state = MarketState("BTC-TEST", 100.0, 700000, "BRTI")
     app.markets = {state.ticker: state}
     app.index_ticks = {"BRTI": [(timestamp * 1000, 100.0 + (timestamp % 2) * 0.001) for timestamp in range(21, 322)]}
@@ -69,9 +71,10 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
         assert len(rows) == 1
         snapshot = rows[0]["snapshot"]
         assert snapshot["parameters"]["recommendation_version"] == "purchase-price-v2"
-        assert snapshot["parameters"]["shadow_model_version"] == "regularized-settlement-v3"
+        assert snapshot["parameters"]["shadow_model_version"] == "logistic-stacked-v1"
+        assert snapshot["parameters"]["shadow_base_model_version"] == "regularized-settlement-v3"
         assert snapshot["parameters"]["shadow_min_history_sec"] == 240
-        assert rows[0]["experiment_id"].startswith("regularized-settlement-v3-")
+        assert rows[0]["experiment_id"].startswith("logistic-stacked-v1-")
         features = Features(**snapshot["features"])
         assert snapshot["live"]["model_p_yes"] == decision["decision_model_p_yes"]
         assert snapshot["live"]["model_p_yes"] == app.predictor.predict(features)
@@ -106,6 +109,7 @@ async def test_jetson_8m30_review_runs_during_early_quality_abstention(tmp_path,
     )
     app.predictor = SettlementAwarePredictor()
     app.calibrator = IsotonicCalibrator()
+    app.logistic_model = LogisticRegressionModel()
     app.llm_reviewer = Reviewer()
     state = MarketState("BTC-REVIEW", 100.0, 700_000, "BRTI")
     app.markets = {state.ticker: state}

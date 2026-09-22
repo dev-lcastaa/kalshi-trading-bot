@@ -209,6 +209,39 @@ def test_calibration_stats_scores_the_locked_decision_not_the_last_signal(tmp_pa
     assert stats["model_brier"] < stats["market_brier"]  # model was more accurate here
 
 
+def test_decision_feature_outcome_pairs_reads_features_from_snapshot(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+    features = {
+        "index_price": 100.0, "strike": 100.0, "seconds_to_expiry": 300.0,
+        "realized_vol_per_sqrt_sec": 0.001, "momentum_per_sec": 0.0,
+        "book_imbalance": 0.1, "momentum_ols_per_sec": 0.0,
+        "momentum_short_per_sec": 0.0, "window_ticks_observed": 0,
+        "window_avg_so_far": None, "history_span_sec": 300.0, "history_tick_count": 300,
+    }
+
+    store.upsert_active_market("BTC-1", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed("BTC-1", closed_at_ms=now_ms)
+    store.record_outcome("BTC-1", "yes", checked_at_ms=now_ms)
+    store.record_decision(
+        ticker="BTC-1", ts_ms=now_ms - 400_000, seconds_to_expiry=390.0, index_price=101.0,
+        strike=100.0, model_p_yes=0.9, market_p_yes=0.55, edge=0.35, recommendation="BUY_YES", confidence=0.35,
+        decision_snapshot={"index_id": "BRTI", "features": features},
+    )
+
+    # Unsettled market with a snapshot shouldn't show up in training pairs yet.
+    store.upsert_active_market("BTC-2", "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.record_decision(
+        ticker="BTC-2", ts_ms=now_ms - 400_000, seconds_to_expiry=390.0, index_price=101.0,
+        strike=100.0, model_p_yes=0.9, market_p_yes=0.55, edge=0.35, recommendation="BUY_YES", confidence=0.35,
+        decision_snapshot={"index_id": "BRTI", "features": features},
+    )
+
+    pairs = store.decision_feature_outcome_pairs()
+
+    assert pairs == [(features, 1.0)]
+
+
 def test_calibration_stats_filters_by_coin(tmp_path):
     store = _make_store(tmp_path)
     now_ms = int(time.time() * 1000)

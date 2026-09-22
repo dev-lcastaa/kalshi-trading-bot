@@ -769,6 +769,35 @@ class Store:
             })
         return {"limit": limit, "recorded": len(rows), "groups": comparisons}
 
+    def decision_feature_outcome_pairs(
+        self, limit: int = 2000, index_id: str | None = None
+    ) -> list[tuple[dict, float]]:
+        """Recent (features dict, outcome) pairs, for fitting the logistic shadow model.
+
+        `features` is the `asdict(Features)` blob recorded in each decision's
+        snapshot (`decision_snapshots.snapshot_json["features"]`).
+        """
+        sql = """
+            SELECT ds.snapshot_json, m.result
+            FROM decision_snapshots ds
+            INNER JOIN markets m ON m.ticker = ds.ticker
+            WHERE m.result IN ('yes', 'no')
+        """
+        params: list = []
+        if index_id is not None:
+            sql += " AND ds.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY ds.ts_ms DESC LIMIT ?"
+        params.append(limit)
+        rows = self._query(sql, tuple(params)).fetchall()
+        pairs: list[tuple[dict, float]] = []
+        for snapshot_json, result in rows:
+            snapshot = json.loads(snapshot_json)
+            features = snapshot.get("features")
+            if features is not None:
+                pairs.append((features, 1.0 if result == "yes" else 0.0))
+        return pairs
+
     def calibration_pairs(self, limit: int = 2000, index_id: str | None = None) -> list[tuple[float, float]]:
         """Recent (decision model_p_yes, outcome) pairs, for fitting a calibrator.
 

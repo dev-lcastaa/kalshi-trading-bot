@@ -55,6 +55,9 @@ class Settings:
     calibration_min_samples: int
     calibration_refit_interval_sec: float
     calibration_window: int
+    logistic_min_samples: int
+    logistic_refit_interval_sec: float
+    logistic_training_window: int
 
     @staticmethod
     def load() -> "Settings":
@@ -106,4 +109,12 @@ class Settings:
                 os.environ.get("KALSHI_CALIBRATION_REFIT_INTERVAL_SEC", "1800")
             ),
             calibration_window=int(os.environ.get("KALSHI_CALIBRATION_WINDOW", "2000")),
+            # Logistic "stacking" shadow model: learns to combine the rule-based
+            # model's own output with momentum/imbalance/vol/window-progress via
+            # gradient descent, refit periodically from settled decisions.
+            logistic_min_samples=int(os.environ.get("KALSHI_LOGISTIC_MIN_SAMPLES", "300")),
+            logistic_refit_interval_sec=float(
+                os.environ.get("KALSHI_LOGISTIC_REFIT_INTERVAL_SEC", "1800")
+            ),
+            logistic_training_window=int(os.environ.get("KALSHI_LOGISTIC_TRAINING_WINDOW", "5000")),
         )
