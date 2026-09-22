@@ -126,12 +126,17 @@ def evaluate_snapshots(rows: list[dict], predictor: Predictor, market_blend_weig
             market_blend_weight=market_blend_weight,
         )
         recommendation = signal.recommendation if check_confirmation(features, signal.model_p_yes >= 0.5).confirmed else "NO_EDGE"
+        # decision_snapshots rows (from /api/decision-snapshots) never recorded a
+        # shadow arm and nest market_p_yes under "live" instead of top-level, unlike
+        # shadow_decisions rows (from /api/shadow-decisions) - support both shapes.
+        market_p_yes = snapshot.get("market_p_yes", snapshot["live"].get("market_p_yes"))
         forecasts = {
             "live": (snapshot["live"]["model_p_yes"], snapshot["live"]["recommendation"]),
-            "recorded_shadow": (snapshot["shadow"]["model_p_yes"], snapshot["shadow"]["recommendation"]),
             "candidate": (signal.model_p_yes, recommendation),
-            "market": (snapshot["market_p_yes"], "NO_EDGE"),
+            "market": (market_p_yes, "NO_EDGE"),
         }
+        if "shadow" in snapshot:
+            forecasts["recorded_shadow"] = (snapshot["shadow"]["model_p_yes"], snapshot["shadow"]["recommendation"])
         if any(not math.isfinite(probability) or not 0 <= probability <= 1 for probability, _ in forecasts.values()):
             excluded += 1
             continue
@@ -179,8 +184,11 @@ def evaluate_snapshots(rows: list[dict], predictor: Predictor, market_blend_weig
         }
         comparisons.append({
             "experiment_id": experiment, "index_id": coin, "split_close_ts_ms": cutoff,
-            "scores": {label: {name: score(subset, name) for name in ("live", "recorded_shadow", "candidate", "market")}
-                       for label, subset in subsets.items()},
+            "scores": {
+                label: {name: score(subset, name) for name in ("live", "recorded_shadow", "candidate", "market")
+                        if all(name in subitem["forecasts"] for subitem in subset)}
+                for label, subset in subsets.items()
+            },
         })
     return {
         "evaluation": "retrospective; one contract per call; before fees/slippage; no fill guarantee",

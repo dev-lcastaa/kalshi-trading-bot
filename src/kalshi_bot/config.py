@@ -95,9 +95,13 @@ class Settings:
             llm_base_url=os.environ.get("KALSHI_LLM_BASE_URL", "http://192.168.1.229:8080").strip(),
             llm_model=os.environ.get("KALSHI_LLM_MODEL", "").strip(),
             llm_timeout_sec=float(os.environ.get("KALSHI_LLM_TIMEOUT_SEC", "15")),
-            # Market price out-Brier'd the model overall (0.136 vs 0.163 across ~950
-            # settled markets), so blend it into the probability used for trade calls.
-            market_blend_weight=float(os.environ.get("KALSHI_MARKET_BLEND_WEIGHT", "0.4")),
+            # Grid-searched offline against ~244 recent live decisions (see
+            # backtest.runner --grid-search-blend): combined Brier improved
+            # monotonically from 0.129 at weight=0.0 to 0.121 at weight=1.0, but
+            # weight=1.0 means model_p == market_p exactly, i.e. zero purchase
+            # edge ever, i.e. the bot never trades. 0.8 keeps most of that Brier
+            # gain while leaving the model room to actually generate edge.
+            market_blend_weight=float(os.environ.get("KALSHI_MARKET_BLEND_WEIGHT", "0.8")),
             # BUY_YES at 0.5-0.7 model confidence settled at ~48% (a losing bucket
             # after fees); BUY_NO had no such gap, so the floor is BUY_YES-only.
             min_confidence_buy_yes=float(os.environ.get("KALSHI_MIN_CONFIDENCE_BUY_YES", "0.7")),
