@@ -3,7 +3,12 @@ from dataclasses import asdict
 
 import pytest
 
-from kalshi_bot.backtest.runner import BacktestCase, evaluate_snapshots, run_backtest
+from kalshi_bot.backtest.runner import (
+    BacktestCase,
+    evaluate_snapshots,
+    grid_search_market_blend_weight,
+    run_backtest,
+)
 from kalshi_bot.features.engine import build_features
 from kalshi_bot.prediction.model import RandomWalkPredictor, SettlementAwarePredictor
 
@@ -146,4 +151,37 @@ def test_snapshot_evaluator_excludes_invalid_or_future_inputs(defect):
 
 def test_snapshot_evaluator_handles_empty_input():
     assert evaluate_snapshots([], RandomWalkPredictor())["groups"] == []
+
+
+def test_market_blend_weight_shifts_candidate_probability_toward_market():
+    # market_p_yes=0.5 (mid of 0.4/0.6 quotes); a fully model-driven candidate and a
+    # fully market-driven one should score the row differently since the row's
+    # actual model probability isn't 0.5.
+    row = _snapshot()
+    pure_model = evaluate_snapshots([row], RandomWalkPredictor(), market_blend_weight=0.0)
+    pure_market = evaluate_snapshots([row], RandomWalkPredictor(), market_blend_weight=1.0)
+    assert pure_model["market_blend_weight"] == 0.0
+    assert pure_market["market_blend_weight"] == 1.0
+    model_score = pure_model["groups"][0]["scores"]["all"]["candidate"]
+    market_score = pure_market["groups"][0]["scores"]["all"]["candidate"]
+    assert model_score["n"] == market_score["n"] == 1
+    assert model_score["brier"] != market_score["brier"]
+
+
+def test_grid_search_market_blend_weight_ranks_by_combined_brier():
+    rows = [_snapshot(ticker="BTC"), _snapshot(ticker="SOL", result="no")]
+
+    results = grid_search_market_blend_weight(rows, RandomWalkPredictor, weights=(0.0, 0.5, 1.0))
+
+    assert [r["market_blend_weight"] for r in results] == sorted(
+        (0.0, 0.5, 1.0), key=lambda w: next(r["combined_brier"] for r in results if r["market_blend_weight"] == w)
+    )
+    assert all(r["n"] == 2 for r in results)
+    assert all(r["combined_brier"] is not None for r in results)
+    assert set(results[0]["per_coin"]) == {"BTC", "SOL"}
+
+
+def test_grid_search_market_blend_weight_handles_no_scorable_rows():
+    results = grid_search_market_blend_weight([], RandomWalkPredictor, weights=(0.0, 1.0))
+    assert [r["combined_brier"] for r in results] == [None, None]
 

@@ -32,6 +32,28 @@ def test_shadow_decision_is_immutable_and_survives_restart(tmp_path):
     store.close()
 
 
+def test_decision_snapshots_pairs_features_with_settlement_result(tmp_path):
+    store = _make_store(tmp_path)
+    decision = dict(
+        ticker="BTC-LIVE", ts_ms=1000, seconds_to_expiry=390, index_price=101,
+        strike=100, model_p_yes=0.9, market_p_yes=0.6, edge=0.3,
+        recommendation="BUY_YES", confidence=0.9,
+    )
+    snapshot = {"index_id": "BRTI", "features": {"index_price": 101}}
+    store.record_decision(**decision, decision_snapshot=snapshot)
+    store.upsert_active_market("BTC-LIVE", "BRTI", 100, 391000, 1000)
+    store.record_outcome("BTC-LIVE", "yes")
+
+    rows = store.decision_snapshots()
+
+    assert len(rows) == 1
+    assert rows[0]["snapshot"] == snapshot
+    assert rows[0]["result"] == "yes"
+    assert rows[0]["experiment_id"] == "live"
+    assert store.decision_snapshots(index_id="SOLUSD_RTI") == []
+    store.close()
+
+
 def test_shadow_does_not_backfill_existing_decision(tmp_path):
     store = _make_store(tmp_path)
     decision = dict(

@@ -18,6 +18,25 @@ def test_version_endpoint_reports_package_version(tmp_path):
     store.close()
 
 
+def test_decision_snapshots_endpoint_validates_limit_and_returns_rows(tmp_path):
+    store = Store(str(tmp_path / "decision_snapshots.db"))
+    store.record_decision(
+        ticker="BTC-1", ts_ms=1000, seconds_to_expiry=390, index_price=101, strike=100,
+        model_p_yes=0.9, market_p_yes=0.6, edge=0.3, recommendation="BUY_YES", confidence=0.9,
+        decision_snapshot={"index_id": "BRTI", "features": {"index_price": 101}},
+    )
+    client = TestClient(create_app(store))
+
+    response = client.get("/api/decision-snapshots")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["experiment_id"] == "live"
+    assert client.get("/api/decision-snapshots?limit=0").status_code == 422
+    assert client.get("/api/decision-snapshots?limit=10001").status_code == 422
+    store.close()
+
+
 def test_calibration_summary_combines_and_caches_scopes(tmp_path, monkeypatch):
     store = Store(str(tmp_path / "summary.db"))
     calls = []

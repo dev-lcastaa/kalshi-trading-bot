@@ -29,6 +29,8 @@ FEATURE_NAMES = [
     "book_imbalance",
     "realized_vol",
     "window_progress",
+    "whale_net_flow_usd",
+    "external_price_divergence",
 ]
 
 
@@ -45,6 +47,8 @@ def extract_feature_vector(features: Features, base_model_p: float) -> list[floa
         features.book_imbalance if features.book_imbalance is not None else 0.0,
         features.realized_vol_per_sqrt_sec,
         features.window_ticks_observed / SETTLEMENT_WINDOW_SEC,
+        features.whale_net_flow_usd,
+        features.external_price_divergence,
     ]
 
 

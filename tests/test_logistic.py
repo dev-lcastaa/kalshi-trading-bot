@@ -24,6 +24,8 @@ def _features(**overrides) -> Features:
         window_avg_so_far=None,
         history_span_sec=300.0,
         history_tick_count=300,
+        whale_net_flow_usd=0.0,
+        external_price_divergence=0.0,
     )
     defaults.update(overrides)
     return Features(**defaults)
@@ -55,11 +57,11 @@ def test_fit_learns_separation_on_synthetic_data():
         # base_model_p is the dominant, well-separated signal; outcome follows it.
         p = 0.9 if i % 2 == 0 else 0.1
         y = 1.0 if i % 2 == 0 else 0.0
-        rows.append(([p, 0.0, 0.0, 0.0, 0.001, 0.0], y))
+        rows.append(([p, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0], y))
     model.fit(rows)
     assert model.is_fitted
-    assert model.predict_proba([0.9, 0.0, 0.0, 0.0, 0.001, 0.0]) > 0.7
-    assert model.predict_proba([0.1, 0.0, 0.0, 0.0, 0.001, 0.0]) < 0.3
+    assert model.predict_proba([0.9, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0]) > 0.7
+    assert model.predict_proba([0.1, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0]) < 0.3
 
 
 def test_extract_feature_vector_matches_expected_order_and_scaling():
@@ -70,9 +72,11 @@ def test_extract_feature_vector_matches_expected_order_and_scaling():
         realized_vol_per_sqrt_sec=0.002,
         window_ticks_observed=30,
         seconds_to_expiry=99.0,
+        whale_net_flow_usd=250.0,
+        external_price_divergence=0.002,
     )
     vector = extract_feature_vector(features, base_model_p=0.6)
-    assert len(vector) == len(FEATURE_NAMES) == 6
+    assert len(vector) == len(FEATURE_NAMES) == 8
     time_scale = math.sqrt(100.0)
     assert vector[0] == 0.6
     assert vector[1] == 0.01 * time_scale
@@ -80,6 +84,8 @@ def test_extract_feature_vector_matches_expected_order_and_scaling():
     assert vector[3] == 0.4
     assert vector[4] == 0.002
     assert vector[5] == 30 / 60
+    assert vector[6] == 250.0
+    assert vector[7] == 0.002
 
 
 def test_extract_feature_vector_defaults_missing_imbalance_to_zero():

@@ -60,6 +60,19 @@ async def test_poll_whale_trades_parses_modern_kalshi_schema(tmp_path):
     store.close()
 
 
+def test_recent_whale_net_flow_usd_nets_yes_and_no_and_respects_cutoff(tmp_path):
+    store = Store(str(tmp_path / "net_flow.db"))
+    store.insert_whale_trade("YES-OLD", "BTC", 500, "yes", 10, 50, 300.0)  # before cutoff, excluded
+    store.insert_whale_trade("YES-NEW", "BTC", 1_500, "yes", 10, 50, 300.0)
+    store.insert_whale_trade("NO-NEW", "BTC", 1_800, "no", 10, 50, 100.0)
+    store.insert_whale_trade("OTHER-TICKER", "SOL", 2_000, "yes", 10, 50, 999.0)
+
+    net_flow = store.recent_whale_net_flow_usd("BTC", since_ms=1_000)
+
+    assert net_flow == pytest.approx(300.0 - 100.0)
+    store.close()
+
+
 def test_whale_endpoint_filters_before_applying_limit(tmp_path):
     store = Store(str(tmp_path / "filtered_whales.db"))
     for trade_id, ts_ms, notional in (

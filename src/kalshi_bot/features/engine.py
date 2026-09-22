@@ -27,6 +27,13 @@ class Features:
     window_avg_so_far: float | None = None  # running average of those ticks
     history_span_sec: float = 0.0
     history_tick_count: int = 0
+    # Net USD flow of large ("whale") fills on this market over a trailing
+    # lookback (positive = net YES buying); 0.0 when there's no recent activity.
+    whale_net_flow_usd: float = 0.0
+    # (kalshi_index_price - external_consensus_price) / external_consensus_price,
+    # where external_consensus is the Coinbase/Kraken aggregate; 0.0 when no
+    # external quote is available.
+    external_price_divergence: float = 0.0
 
 
 def realized_vol_per_sqrt_sec(ticks: list[tuple[int, float]]) -> float:

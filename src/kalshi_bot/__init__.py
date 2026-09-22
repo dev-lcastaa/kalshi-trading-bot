@@ -7,4 +7,4 @@ try:
     __version__ = metadata.version("kalshi-bot")
 except metadata.PackageNotFoundError:
     # Not installed (e.g. running straight from source) - keep in sync with pyproject.toml.
-    __version__ = "0.3.0"
+    __version__ = "0.4.0"

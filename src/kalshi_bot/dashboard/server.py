@@ -108,6 +108,14 @@ def create_app(
     ) -> list[dict]:
         return store.shadow_decisions(limit=limit, index_id=index_id)
 
+    @app.get("/api/decision-snapshots")
+    def get_decision_snapshots(
+        limit: int = Query(default=200, ge=1, le=10000), index_id: str | None = None,
+    ) -> list[dict]:
+        """Live-decision snapshots for offline replay/analysis, e.g.
+        `backtest.runner`'s retrospective parameter grid search."""
+        return store.decision_snapshots(limit=limit, index_id=index_id)
+
     @app.get("/api/shadow-active")
     def get_shadow_active() -> list[dict]:
         return store.shadow_dashboard_markets(grace_period_sec=closed_grace_sec)

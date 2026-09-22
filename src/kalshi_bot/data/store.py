@@ -696,6 +696,31 @@ class Store:
                 self._conn.rollback()
                 raise
 
+    def decision_snapshots(self, limit: int = 200, index_id: str | None = None) -> list[dict]:
+        """Live-decision snapshots (features/quotes/ticks recorded at decision time)
+        paired with their settlement result, shaped for `backtest.runner.evaluate_snapshots`
+        - retrospective replay of what already happened, e.g. to grid-search a
+        parameter like `market_blend_weight` against real history without waiting
+        on new live data.
+        """
+        sql = """SELECT ds.ticker, ds.ts_ms, ds.index_id, ds.snapshot_json,
+                        m.close_ts_ms, m.result
+                 FROM decision_snapshots ds
+                 LEFT JOIN markets m ON m.ticker = ds.ticker"""
+        params: list = []
+        if index_id is not None:
+            sql += " WHERE ds.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY ds.ts_ms DESC, ds.ticker ASC LIMIT ?"
+        params.append(limit)
+        cursor = self._query(sql, tuple(params))
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        for row in rows:
+            row["snapshot"] = json.loads(row.pop("snapshot_json"))
+            row["experiment_id"] = "live"
+        return rows
+
     def shadow_decisions(self, limit: int = 200, index_id: str | None = None) -> list[dict]:
         sql = """SELECT s.ticker, s.ts_ms, s.index_id, s.experiment_id, s.snapshot_json,
                         m.close_ts_ms, m.result
@@ -924,4 +949,13 @@ class Store:
         )
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def recent_whale_net_flow_usd(self, ticker: str, since_ms: int) -> float:
+        """Net USD flow of large fills since `since_ms` (positive = net YES buying)."""
+        cur = self._query(
+            """SELECT side, notional_usd FROM whale_trades
+               WHERE ticker = ? AND ts_ms >= ?""",
+            (ticker, since_ms),
+        )
+        return sum(notional_usd if side == "yes" else -notional_usd for side, notional_usd in cur.fetchall())
 

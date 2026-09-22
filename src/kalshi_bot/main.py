@@ -10,7 +10,7 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Any
 
@@ -41,6 +41,8 @@ _INDEX_LOOKBACK_MS = 5 * 60 * 1000
 _REDISCOVERY_INTERVAL_SEC = 90
 _OUTCOME_POLL_INTERVAL_SEC = 60
 _OUTCOME_MAX_AGE_MS = 24 * 60 * 60 * 1000  # stop polling for a result after 24h
+_WHALE_FEATURE_LOOKBACK_MS = 5 * 60 * 1000
+_EXTERNAL_PRICE_MAX_AGE_MS = 5_000
 
 
 def _parse_ts_ms(value: str | None) -> int | None:
@@ -154,6 +156,7 @@ class BotApp:
             yes_ask_size=state.yes_ask_size,
             close_ts_ms=state.close_ts_ms,
         )
+        features = self._enrich_features(features, ticker, state.index_id, state.close_ts_ms)
         signal = generate_signal(
             ticker=ticker,
             index_id=state.index_id,
@@ -423,6 +426,20 @@ class BotApp:
             flags.append("insufficient_quote_size")
         return flags
 
+    def _enrich_features(self, features: Features, ticker: str, index_id: str, now_ms: int) -> Features:
+        """Attach whale-flow and cross-exchange-divergence signals the predictors
+        can use, computed from data the bot already collects but that
+        `build_features` (pure tick math) doesn't have access to."""
+        whale_flow = self.store.recent_whale_net_flow_usd(ticker, now_ms - _WHALE_FEATURE_LOOKBACK_MS)
+        external = aggregate_external_prices(
+            self.store.recent_external_ticks(now_ms - _EXTERNAL_PRICE_MAX_AGE_MS),
+            now_ms, max_age_ms=_EXTERNAL_PRICE_MAX_AGE_MS,
+        ).get(index_id)
+        divergence = 0.0
+        if external and external.get("price"):
+            divergence = (features.index_price - external["price"]) / external["price"]
+        return replace(features, whale_net_flow_usd=whale_flow, external_price_divergence=divergence)
+
     async def _run_llm_review(
         self,
         stage: str,
@@ -507,6 +524,7 @@ class BotApp:
                     yes_ask_size=state.yes_ask_size,
                     close_ts_ms=state.close_ts_ms,
                 )
+                features = self._enrich_features(features, ticker, state.index_id, now_ms)
                 quality_flags = self._quality_flags(state, features, ticks, now_ms)
                 decision_window_open = seconds_to_expiry <= self.settings.decision_lead_sec
                 if quality_flags and decision_window_open:

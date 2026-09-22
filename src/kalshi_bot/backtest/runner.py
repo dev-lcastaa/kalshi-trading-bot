@@ -77,7 +77,7 @@ def run_backtest(cases: list[BacktestCase], predictor: Predictor) -> ScoreResult
     return ScoreResult(n=n, brier_score=brier, log_loss=log_loss, baseline_brier_score=baseline_brier)
 
 
-def evaluate_snapshots(rows: list[dict], predictor: Predictor) -> dict:
+def evaluate_snapshots(rows: list[dict], predictor: Predictor, market_blend_weight: float = 0.0) -> dict:
     """Retrospective paired evaluation; no fitting or claim of an unseen holdout.
 
     Uses recorded features and quotes, not post-decision ticks. Gross returns
@@ -123,6 +123,7 @@ def evaluate_snapshots(rows: list[dict], predictor: Predictor) -> dict:
             ticker=row["ticker"], index_id=row["index_id"], features=features,
             predictor=predictor, yes_bid_dollars=bid, yes_ask_dollars=ask,
             edge_threshold=snapshot["parameters"]["edge_threshold"], ts_ms=row["ts_ms"],
+            market_blend_weight=market_blend_weight,
         )
         recommendation = signal.recommendation if check_confirmation(features, signal.model_p_yes >= 0.5).confirmed else "NO_EDGE"
         forecasts = {
@@ -184,8 +185,43 @@ def evaluate_snapshots(rows: list[dict], predictor: Predictor) -> dict:
     return {
         "evaluation": "retrospective; one contract per call; before fees/slippage; no fill guarantee",
         "candidate": type(predictor).__name__, "candidate_parameters": vars(predictor),
+        "market_blend_weight": market_blend_weight,
         "input_rows": len(rows), "excluded_rows": excluded, "groups": comparisons,
     }
+
+
+def grid_search_market_blend_weight(
+    rows: list[dict],
+    predictor_factory,
+    weights: tuple[float, ...] = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+) -> list[dict]:
+    """Replay `rows` once per candidate blend weight and rank by combined Brier.
+
+    Reuses `evaluate_snapshots` for each weight (a fresh predictor instance per
+    run, since predictors are stateless but shouldn't be reused across calls
+    that mutate nothing but should stay independent). Returns weights sorted
+    best (lowest combined Brier) first.
+    """
+    results = []
+    for weight in weights:
+        evaluation = evaluate_snapshots(rows, predictor_factory(), market_blend_weight=weight)
+        per_coin = {}
+        total_n = total_squared_error = 0.0
+        for group in evaluation["groups"]:
+            candidate = group["scores"]["all"]["candidate"]
+            if candidate["n"]:
+                per_coin[group["index_id"]] = {
+                    "n": candidate["n"], "brier": candidate["brier"], "accuracy": candidate["accuracy"],
+                }
+                total_n += candidate["n"]
+                total_squared_error += candidate["brier"] * candidate["n"]
+        results.append({
+            "market_blend_weight": weight,
+            "n": int(total_n),
+            "combined_brier": total_squared_error / total_n if total_n else None,
+            "per_coin": per_coin,
+        })
+    return sorted(results, key=lambda r: (r["combined_brier"] is None, r["combined_brier"]))
 
 
 if __name__ == "__main__":
@@ -197,11 +233,27 @@ if __name__ == "__main__":
     from ..prediction.model import RegularizedSettlementPredictor
 
     parser = argparse.ArgumentParser(description="Evaluate v3 on saved decision snapshots without fitting.")
-    parser.add_argument("source", help="JSON export file or /api/shadow-decisions URL")
+    parser.add_argument(
+        "source",
+        help="JSON export file or /api/shadow-decisions (or /api/decision-snapshots) URL",
+    )
+    parser.add_argument(
+        "--grid-search-blend", action="store_true",
+        help="Grid-search market_blend_weight against `source` instead of a single evaluation.",
+    )
+    parser.add_argument(
+        "--weights", type=float, nargs="+", default=None,
+        help="Candidate market_blend_weight values (default: 0.0 to 1.0 in steps of 0.1).",
+    )
     args = parser.parse_args()
     if args.source.startswith(("http://", "https://")):
         with urlopen(args.source, timeout=15) as response:
             snapshots = json.load(response)
     else:
         snapshots = json.loads(Path(args.source).read_text(encoding="utf-8"))
-    print(json.dumps(evaluate_snapshots(snapshots, RegularizedSettlementPredictor()), indent=2, allow_nan=False))
+    if args.grid_search_blend:
+        weights = tuple(args.weights) if args.weights else (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+        result = grid_search_market_blend_weight(snapshots, RegularizedSettlementPredictor, weights=weights)
+    else:
+        result = evaluate_snapshots(snapshots, RegularizedSettlementPredictor())
+    print(json.dumps(result, indent=2, allow_nan=False))
