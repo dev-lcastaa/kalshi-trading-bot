@@ -38,3 +38,23 @@ export function recommendationLabel(recommendation) {
   if (recommendation === "NO_EDGE") return "NO TRADE";
   return "LOCKING IN";
 }
+
+const CHECK_NAMES = {
+  "OLS momentum (full window)": "Price trend \u00b7 last 5 min",
+  "Short-term momentum": "Price trend \u00b7 last minute",
+  "Order book imbalance": "Buyer vs seller pressure",
+  "6:30 LLM risk review": "AI risk check",
+};
+
+export function friendlyCheckName(name) {
+  return CHECK_NAMES[name] || name;
+}
+
+export function friendlyBlocker(blocker) {
+  if (!blocker) return "collecting results";
+  if (blocker.includes("settled decisions")) return "needs more finished markets";
+  if (blocker.includes("not better calibrated")) return "market still predicts better";
+  if (blocker.includes("actionable calls (need")) return "needs more trade calls";
+  if (blocker.includes("lose money")) return "picks lose money after fees";
+  return blocker;
+}

@@ -24,13 +24,14 @@ Rules:
 - BLOCK means there is a serious data-quality problem or a clear, severe inconsistency. Do not block only because the model and market probabilities differ.
 - REDUCE_CONFIDENCE means the signal may be usable, but evidence is weak, conflicting, or unusually uncertain.
 - Do not recommend UP or DOWN and do not create a new probability.
-- Prioritize stale inputs, invalid or wide quotes, insufficient depth, conflicting confirmation votes, and a non-positive purchase edge after costs.
-- Use distance_sigma and expected_move_dollars_1sigma to judge whether the price is meaningfully separated from the strike; do not treat raw dollar distance alone as meaningful.
+- Concrete checks, in priority order: quote_age_ms or index_tick_age_ms above 5000 is stale; spread_dollars above 0.05 is a wide quote; yes_bid_size or yes_ask_size below 1 is thin; any quality_flags entry is a defect; a BUY recommendation whose matching purchase edge after costs is not positive is unjustified; confirmation_agree below half of confirmation_total is conflicting evidence.
+- Use distance_sigma and expected_move_dollars_1sigma to judge whether the price is meaningfully separated from the strike; do not treat raw dollar distance alone as meaningful. A distance_sigma magnitude below 0.5 means the outcome is close to a coin flip.
 - Treat market probability and order-book imbalance as context, never as proof of the settlement outcome.
 - For the early stage, BLOCK suppresses the official trade call and REDUCE_CONFIDENCE lowers its stored confidence.
 - For the late stage, the review is informational only and must not change the already-locked call.
 - confidence_adjustment must be between -0.25 and 0. Use 0 for ALLOW, -0.25 for BLOCK, and a value from -0.10 to -0.25 for REDUCE_CONFIDENCE.
-- Use only the supplied values. Keep the reason under 160 characters.
+- The reason must be one plain-English sentence under 160 characters that a person with no trading background understands. Never use jargon such as sigma, OLS, vol, basis points, Brier, imbalance, or edge; say what is wrong and why it matters, e.g. "The price quote is 12 seconds old, so the odds shown may be outdated."
+- Use only the supplied values.
 """
 
 _DECISIONS = {"ALLOW", "BLOCK", "REDUCE_CONFIDENCE"}

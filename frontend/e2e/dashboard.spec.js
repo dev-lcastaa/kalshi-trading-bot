@@ -41,6 +41,8 @@ async function mockApi(page) {
     else if (url.pathname === "/api/price-history") body = Array.from({ length: 50 }, (_, index) => ({ ts_ms: Date.now() - (50 - index) * 12000, value: 99870 + index * 6 + Math.sin(index / 3) * 80 }));
     else if (url.pathname === "/api/shadow-comparison") body = { groups: [{ experiment_id: "v2-no-book-drift", index_id: "BRTI", pending: 3, scores: { live: { n: 18, brier: .189 }, shadow: { n: 18, brier: .176, actionable_correct: 9, actionable_n: 12 }, market: { brier: .214 } } }] };
     else if (url.pathname === "/api/whale-trades") body = [{ trade_id: "a", ts_ms: Date.now(), side: "yes", notional_usd: 1240, price_cents: 61.5 }, { trade_id: "b", ts_ms: Date.now() - 12000, side: "no", notional_usd: 780, price_cents: 39.2 }];
+    else if (url.pathname === "/api/version") body = { version: "0.7.0" };
+    else if (url.pathname === "/api/readiness") body = { ready: false, criteria: { min_settled: 300, min_trades: 50 }, coins: { BRTI: { ready: true, blockers: [] }, SOLUSD_RTI: { ready: false, blockers: ["only 80 settled decisions (need 300)"] } } };
     else body = {};
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });

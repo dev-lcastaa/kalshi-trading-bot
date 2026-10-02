@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { useDashboardData, useTelemetry } from "./hooks/useDashboardData";
 import { useLivePrices } from "./hooks/useLivePrices";
-import { coinMeta, countdown, formatDecision, money, percent, recommendationLabel } from "./utils";
+import { coinMeta, countdown, formatDecision, friendlyBlocker, friendlyCheckName, money, percent, recommendationLabel } from "./utils";
 
 const TABS = [
   ["active", "Live Picks", Activity],
@@ -41,20 +41,31 @@ function CopyTicker({ ticker }) {
   </button>;
 }
 
-function ProbabilityBars({ modelProbability, marketProbability }) {
-  const values = [
-    ["Bot says YES", modelProbability, "model"],
-    ["Market says YES", marketProbability, "market"],
-  ];
-  return <section className="probabilities" aria-label="Bot and market chances">
-    {values.map(([label, value, kind]) => {
-      const numeric = Number(value);
-      const width = Number.isFinite(numeric) ? Math.min(100, Math.max(0, numeric * 100)) : 0;
-      return <div className="probability" key={kind}>
-        <div><span>{label}</span><strong>{percent(value)} YES</strong></div>
-        <div className="probability-track" aria-hidden="true"><span className={`probability-fill ${kind}`} style={{ width: `${width}%` }} /></div>
-      </div>;
-    })}
+function DirectionBar({ label, probability }) {
+  const numeric = Number(probability);
+  const valid = Number.isFinite(numeric);
+  // 0.5 is dead center; the fill grows right (green) for UP, left (red) for DOWN.
+  const lean = valid ? Math.min(1, Math.max(-1, (numeric - 0.5) * 2)) : 0;
+  const up = lean >= 0;
+  const widthPct = Math.abs(lean) * 50;
+  const strength = valid ? (up ? numeric : 1 - numeric) : null;
+  return <div className="direction" role="img" aria-label={valid ? `${label}: ${up ? "up" : "down"} at ${percent(strength)}` : `${label}: waiting`}>
+    <div className="direction-head"><span>{label}</span><strong className={valid ? (up ? "up" : "down") : ""}>{valid ? `${up ? "UP" : "DOWN"} \u00b7 ${percent(strength)}` : "--"}</strong></div>
+    <div className="direction-track" aria-hidden="true">
+      <i>DOWN</i>
+      <div className="direction-rail">
+        <span className="direction-center" />
+        <span className={`direction-fill ${up ? "up" : "down"}`} style={up ? { left: "50%", width: `${widthPct}%` } : { right: "50%", width: `${widthPct}%` }} />
+      </div>
+      <i>UP</i>
+    </div>
+  </div>;
+}
+
+function DirectionBars({ modelProbability, marketProbability }) {
+  return <section className="directions" aria-label="Bot and market direction">
+    <DirectionBar label="Bot leans" probability={modelProbability} />
+    <DirectionBar label="Market leans" probability={marketProbability} />
   </section>;
 }
 
@@ -66,7 +77,7 @@ function Confirmation({ market }) {
   if (!checks.length && agree == null && total == null) return null;
   return <section className="confirmation" aria-label="Safety checks">
     <div className="subsection-heading"><span>Safety checks</span><strong>{agree ?? "--"}/{total ?? "--"} passed</strong></div>
-    {checks.length > 0 && <div className="checks">{checks.map((check) => <span className={`check ${check.agree ? "pass" : "fail"}`} key={check.name}>{check.agree ? <Check size={13} /> : <X size={13} />}{check.name}</span>)}</div>}
+    {checks.length > 0 && <div className="checks">{checks.map((check) => <span className={`check ${check.agree ? "pass" : "fail"}`} key={check.name}>{check.agree ? <Check size={13} /> : <X size={13} />}{friendlyCheckName(check.name)}</span>)}</div>}
   </section>;
 }
 
@@ -77,8 +88,12 @@ function JetsonTimeline({ market, secondsRemaining }) {
       const decision = market[decisionKey];
       const status = decision || (secondsRemaining > lead ? "SCHEDULED" : "AWAITING");
       return <div className={`review-row review-${status.toLowerCase()}`} key={label}>
-        <time>T-{label}</time><strong>{formatDecision(status)}</strong>
-        <span>{decision ? market[reasonKey] || "No explanation was provided." : status === "SCHEDULED" ? `Checks again with ${label} left` : "Waiting for the next check."}</span>
+        <span className="review-dot" aria-hidden="true" />
+        <time>T-{label}</time>
+        <div className="review-body">
+          <strong>{formatDecision(status)}</strong>
+          <span>{decision ? market[reasonKey] || "No explanation was provided." : status === "SCHEDULED" ? `Checks again with ${label} left` : "Waiting for the next check."}</span>
+        </div>
       </div>;
     })}</div>
   </details>;
@@ -188,7 +203,7 @@ function MarketCard({ market, livePrice, history, now, decisionLeadSec, closed }
     {recommendation !== "PENDING" && <section className="metric-grid" aria-label="Saved pick details"><div><span>Price advantage</span><strong>{lockedEdge == null ? "--" : `${Number(lockedEdge) >= 0 ? "+" : ""}${(Number(lockedEdge) * 100).toFixed(1)} pts`}</strong></div><div><span>Chance to win</span><strong>{recommendation === "BUY_NO" ? percent(1 - Number(lockedModel)) : percent(lockedModel)}</strong></div><div><span>Price when picked</span><strong>{money(market.decision_index_price)}</strong></div></section>}
     <section className="price-grid" aria-label="Current prices"><div><span>Current price</span><strong>{money(currentPrice)}</strong></div><div><span>Price to beat</span><strong>{money(market.strike)}</strong></div><div><span>Distance</span><strong className={gap == null ? "" : gap >= 0 ? "positive" : "negative"}>{gap == null ? "--" : `${gap >= 0 ? "+" : ""}${money(gap)}`}</strong></div></section>
     <LiveGraph history={history} strike={market.strike} />
-    <ProbabilityBars modelProbability={market.model_p_yes} marketProbability={market.market_p_yes} />
+    <DirectionBars modelProbability={market.model_p_yes} marketProbability={market.market_p_yes} />
     <JetsonTimeline market={market} secondsRemaining={secondsRemaining} />
     {whalesOpen && <WhalePanel ticker={market.ticker} onClose={() => setWhalesOpen(false)} returnFocusRef={whaleButtonRef} />}
   </article>;
@@ -201,9 +216,18 @@ function ShadowCard({ market, livePrice, now }) {
   return <article className="market-card shadow-card" style={{ "--accent": meta.accent }}>
     <header className="market-header"><div className="coin-mark"><MarketIcon indexId={market.index_id} /></div><div className="market-identity"><div><h2>{meta.name}</h2><span>Test</span></div><code>{market.ticker}</code></div><div className="market-time"><span><FlaskConical size={12} />Test model</span><strong>{countdown(remaining)}</strong></div></header>
     <section className="signal signal-shadow"><span className="signal-kicker">New test model</span><strong>{recommendationLabel(market.recommendation)}</strong><span>{percent(market.model_p_yes)} chance of YES</span></section>
-    <ProbabilityBars modelProbability={market.model_p_yes} marketProbability={market.market_p_yes} />
+    <DirectionBars modelProbability={market.model_p_yes} marketProbability={market.market_p_yes} />
     <section className="price-grid"><div><span>Current price</span><strong>{money(livePrice ?? market.index_price)}</strong></div><div><span>Price to beat</span><strong>{money(market.strike)}</strong></div><div><span>Advantage</span><strong className={edge >= 0 ? "positive" : "negative"}>{Number.isFinite(edge) ? `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)} pts` : "--"}</strong></div><div><span>Checks passed</span><strong>{market.confirmation_agree ?? "--"}/{market.confirmation_total ?? "--"}</strong></div></section>
   </article>;
+}
+
+function ReadinessStrip({ readiness }) {
+  if (!readiness) return null;
+  const coins = Object.entries(readiness.coins || {});
+  return <section className="readiness glass-panel" aria-label="Real-money readiness">
+    <div className="readiness-head"><ShieldCheck size={16} /><div><strong>{readiness.ready ? "Ready for real trades" : "Not ready for real money yet"}</strong><small>{readiness.ready ? "Every coin passed all safety tests." : "The bot must prove itself on finished markets first."}</small></div></div>
+    <div className="readiness-coins">{coins.length ? coins.map(([indexId, coin]) => <span className={`readiness-chip ${coin.ready ? "ready" : ""}`} key={indexId}>{coin.ready ? <Check size={13} /> : <X size={13} />}{coinMeta(indexId).symbol}: {coin.ready ? "Ready" : friendlyBlocker(coin.blockers?.[0])}</span>) : <span className="readiness-chip">Collecting first results</span>}</div>
+  </section>;
 }
 
 function CalibrationHud({ calibration, external }) {
@@ -247,10 +271,11 @@ export default function App() {
   };
 
   return <main className="shell" id="main-content">
-    <header className="topbar"><a className="brand" href="#main-content" aria-label="AQLabs dashboard home"><span className="brand-mark">AQ</span><span><strong>AQLABS</strong><small>CRYPTO PICK TRACKER</small></span></a><div className="connection"><span className={`status-dot ${overallStatus === "LIVE" ? "live" : ""}`} /><div><strong>{overallStatus}</strong><small>{live.lastTickAt ? `Price updated ${live.lastTickAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : dashboard.lastUpdated ? `Updated ${dashboard.lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Waiting for data"}</small></div></div></header>
+    <header className="topbar"><a className="brand" href="#main-content" aria-label="AQLabs dashboard home"><span className="brand-mark">AQ</span><span><strong>AQLABS</strong><small>CRYPTO PICK TRACKER</small></span></a><div className="topbar-right">{telemetry.version && <span className="version-badge" title="App version">v{telemetry.version}</span>}<div className="connection"><span className={`status-dot ${overallStatus === "LIVE" ? "live" : ""}`} /><div><strong>{overallStatus}</strong><small>{live.lastTickAt ? `Price updated ${live.lastTickAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : dashboard.lastUpdated ? `Updated ${dashboard.lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Waiting for data"}</small></div></div></div></header>
 
     <section className="workspace-heading"><div><span className="eyebrow"><Activity size={15} /> Live tracker</span><h1>Crypto picks</h1><p>Simple 15-minute Bitcoin and Solana picks.</p></div><div className="read-only"><ShieldCheck size={18} /><span><strong>Watching only</strong><small>This app never places bets</small></span></div></section>
 
+    <ReadinessStrip readiness={telemetry.readiness} />
     <CalibrationHud calibration={telemetry.calibration} external={telemetry.external} />
     {dashboard.error && <div className="alert" role="alert"><AlertTriangle size={17} /><span><strong>Live data connection lost.</strong> Showing the last update while we reconnect.</span><button className="icon-button" type="button" onClick={() => dashboard.reload()} aria-label="Try reconnecting"><RefreshCw size={16} /></button></div>}
 

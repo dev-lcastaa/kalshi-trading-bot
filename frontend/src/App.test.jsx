@@ -51,6 +51,8 @@ beforeEach(() => {
     if (url.startsWith("/api/calibration-summary")) return json({ overall: { n: 0 }, BRTI: { n: 0 }, SOLUSD_RTI: { n: 0 } });
     if (url.startsWith("/api/external-status")) return json({ healthy: true, sources: [] });
     if (url.startsWith("/api/shadow-comparison")) return json({ groups: [] });
+    if (url.startsWith("/api/version")) return json({ version: "0.0.0-test" });
+    if (url.startsWith("/api/readiness")) return json({ ready: false, criteria: { min_settled: 300, min_trades: 50 }, coins: { BRTI: { ready: false, blockers: ["only 10 settled decisions (need 300)"] } } });
     if (url.startsWith("/api/price-history")) return json([{ ts_ms: Date.now() - 1000, value: 100000 }, { ts_ms: Date.now(), value: 100120 }]);
     if (url.startsWith("/api/whale-trades")) return json([]);
     throw new Error(`Unhandled request: ${url}`);
@@ -62,8 +64,9 @@ describe("dashboard parity", () => {
     render(<App />);
 
     expect(await screen.findByText("KXBTC15M-TEST")).toBeTruthy();
-    expect(screen.getByText("Bot says YES")).toBeTruthy();
-    expect(screen.getByText("Market says YES")).toBeTruthy();
+    expect(screen.getByText("Bot leans")).toBeTruthy();
+    expect(screen.getByText("Market leans")).toBeTruthy();
+    expect(screen.getByText("UP \u00b7 68.0%")).toBeTruthy();
     expect(screen.getByText("2/3 passed")).toBeTruthy();
     for (const label of ["T-8:30", "T-6:30", "T-4:30", "T-2:30", "T-1:00"]) {
       expect(screen.getByText(label)).toBeTruthy();

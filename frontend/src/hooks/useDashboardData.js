@@ -73,6 +73,33 @@ export function useTelemetry(tab) {
   const [calibration, setCalibration] = React.useState(null);
   const [external, setExternal] = React.useState(null);
   const [shadowComparison, setShadowComparison] = React.useState(null);
+  const [version, setVersion] = React.useState("");
+  const [readiness, setReadiness] = React.useState(null);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    getJson("/api/version", controller.signal)
+      .then((body) => setVersion(String(body.version || "")))
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+
+  React.useEffect(() => {
+    let controller;
+    const load = async () => {
+      controller?.abort();
+      controller = new AbortController();
+      try {
+        const body = await getJson("/api/readiness", controller.signal);
+        if (body && typeof body === "object" && "ready" in body) setReadiness(body);
+      } catch (error) {
+        if (error.name !== "AbortError") return;
+      }
+    };
+    void load();
+    const interval = window.setInterval(() => document.visibilityState === "visible" && void load(), 60_000);
+    return () => { window.clearInterval(interval); controller?.abort(); };
+  }, []);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -124,5 +151,5 @@ export function useTelemetry(tab) {
     return () => { window.clearInterval(interval); controller?.abort(); };
   }, [tab]);
 
-  return { decisionLeadSec, calibration, external, shadowComparison };
+  return { decisionLeadSec, calibration, external, shadowComparison, version, readiness };
 }
