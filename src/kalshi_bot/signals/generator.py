@@ -44,7 +44,8 @@ def generate_signal(
     # Market price out-Brier'd the raw model overall in calibration testing, so the
     # probability driving trade decisions blends toward it instead of using the
     # model alone.
-    model_p = (1 - market_blend_weight) * raw_model_p + market_blend_weight * market_p
+    pre_calibration_model_p = (1 - market_blend_weight) * raw_model_p + market_blend_weight * market_p
+    model_p = pre_calibration_model_p
     if calibrator is not None:
         # Recalibrate against realized outcomes (isotonic regression / PAVA) as the
         # very last step. The calibrator is trained on this same final, post-blend
@@ -80,4 +81,5 @@ def generate_signal(
         edge=edge,
         recommendation=recommendation,
         confidence=abs(edge),
+        pre_calibration_model_p_yes=pre_calibration_model_p,
     )

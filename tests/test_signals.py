@@ -36,6 +36,25 @@ def test_generate_signal_accepts_explicit_ts_ms_for_pinning_final_calls():
     assert signal.ts_ms == 1_700_000_000_000
 
 
+def test_generate_signal_preserves_blended_probability_before_calibration():
+    class FixedPredictor:
+        def predict(self, features):
+            return 0.8
+
+    class FixedCalibrator:
+        def predict(self, probability):
+            return 0.3
+
+    signal = generate_signal(
+        ticker="T", index_id="BRTI", features=_features(), predictor=FixedPredictor(),
+        yes_bid_dollars=0.4, yes_ask_dollars=0.6, edge_threshold=0.05,
+        market_blend_weight=0.5, calibrator=FixedCalibrator(),
+    )
+
+    assert signal.pre_calibration_model_p_yes == pytest.approx(0.65)
+    assert signal.model_p_yes == pytest.approx(0.3)
+
+
 def test_generate_signal_recommendation_thresholds():
     above = generate_signal(
         ticker="T", index_id="BRTI", features=_features(index_price=150.0, strike=100.0, seconds_to_expiry=300.0),

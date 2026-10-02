@@ -385,6 +385,7 @@ class BotApp:
             },
             "live": {
                 "model_p_yes": signal.model_p_yes,
+                "pre_calibration_model_p_yes": signal.pre_calibration_model_p_yes,
                 "market_p_yes": signal.market_p_yes,
                 "edge": signal.edge,
                 "raw_recommendation": signal.recommendation,

@@ -60,3 +60,4 @@ class Signal(BaseModel):
     edge: float
     recommendation: str  # "BUY_YES" | "BUY_NO" | "NO_EDGE"
     confidence: float
+    pre_calibration_model_p_yes: float | None = None

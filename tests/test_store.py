@@ -54,6 +54,28 @@ def test_decision_snapshots_pairs_features_with_settlement_result(tmp_path):
     store.close()
 
 
+def test_calibration_pairs_use_pre_calibration_probability_and_skip_legacy_rows(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+    for ticker, pre_calibration_probability in (("CALIBRATED", 0.65), ("LEGACY", None)):
+        store.upsert_active_market(ticker, "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+        store.mark_closed(ticker, closed_at_ms=now_ms)
+        store.record_outcome(ticker, "yes", checked_at_ms=now_ms)
+        live = {"model_p_yes": 0.3}
+        if pre_calibration_probability is not None:
+            live["pre_calibration_model_p_yes"] = pre_calibration_probability
+        store.record_decision(
+            ticker=ticker, ts_ms=now_ms - 400_000, seconds_to_expiry=390.0,
+            index_price=101.0, strike=100.0, model_p_yes=0.3, market_p_yes=0.55,
+            edge=-0.25, recommendation="NO_EDGE", confidence=0.7,
+            decision_snapshot={"index_id": "BRTI", "live": live},
+        )
+
+    assert store.calibration_pairs() == [(0.65, 1.0)]
+    assert store.calibration_pairs(index_id="SOLUSD_RTI") == []
+    store.close()
+
+
 def test_shadow_does_not_backfill_existing_decision(tmp_path):
     store = _make_store(tmp_path)
     decision = dict(
