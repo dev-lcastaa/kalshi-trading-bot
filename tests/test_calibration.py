@@ -1,3 +1,6 @@
+from types import SimpleNamespace
+
+from kalshi_bot.main import BotApp
 from kalshi_bot.prediction.calibration import CalibratedPredictor, IsotonicCalibrator
 
 
@@ -39,3 +42,26 @@ def test_calibrated_predictor_delegates_attributes_and_applies_mapping():
     wrapped = CalibratedPredictor(DummyPredictor(), calibrator)
     assert wrapped.momentum_weight == 0.42
     assert wrapped.predict(features=None) == 0.0
+
+
+def test_per_coin_calibrators_fit_independently():
+    app = BotApp.__new__(BotApp)
+    app.settings = SimpleNamespace(calibration_window=100, calibration_min_samples=1)
+    app.calibrators = {
+        "BRTI": IsotonicCalibrator(min_samples=2),
+        "SOLUSD_RTI": IsotonicCalibrator(min_samples=2),
+    }
+    pairs_by_coin = {
+        "BRTI": [(0.8, 0.0)] * 10,       # BTC overconfident: 0.8 should map down
+        "SOLUSD_RTI": [(0.8, 1.0)] * 10,  # SOL accurate: 0.8 should stay high
+    }
+    app.store = SimpleNamespace(
+        calibration_pairs=lambda limit, index_id=None: pairs_by_coin[index_id]
+    )
+
+    app._refit_calibrators()
+
+    assert app._calibrator("BRTI").predict(0.8) == 0.0
+    assert app._calibrator("SOLUSD_RTI").predict(0.8) == 1.0
+    # Unknown coin: falls back to a fresh identity calibrator instead of crashing.
+    assert app._calibrator("NEW_COIN").predict(0.73) == 0.73

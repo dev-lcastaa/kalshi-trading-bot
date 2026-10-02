@@ -44,6 +44,11 @@ _OUTCOME_POLL_INTERVAL_SEC = 60
 _OUTCOME_MAX_AGE_MS = 24 * 60 * 60 * 1000  # stop polling for a result after 24h
 _WHALE_FEATURE_LOOKBACK_MS = 5 * 60 * 1000
 _EXTERNAL_PRICE_MAX_AGE_MS = 5_000
+# Mutable training-progress fields; excluded from the experiment fingerprint so
+# a routine refit doesn't fragment one experiment's track record into many IDs.
+_VOLATILE_FINGERPRINT_KEYS = frozenset(
+    {"shadow_logistic_fitted", "shadow_logistic_fitted_n", "live_calibrated"}
+)
 
 
 def _parse_ts_ms(value: str | None) -> int | None:
@@ -77,9 +82,12 @@ class BotApp:
             else SettlementAwarePredictor() if settings.predictor_version == "v2"
             else RandomWalkPredictor()
         )
-        self.calibrator = IsotonicCalibrator(
-            min_samples=getattr(settings, "calibration_min_samples", 200)
-        )
+        # BTC and SOL settle with different error profiles; one shared curve
+        # would let the busier coin's miscalibration bleed into the other's.
+        self.calibrators = {
+            index_id: IsotonicCalibrator(min_samples=getattr(settings, "calibration_min_samples", 200))
+            for index_id in settings.index_ids
+        }
         self.logistic_model = LogisticRegressionModel(
             feature_names=list(FEATURE_NAMES),
             min_samples=getattr(settings, "logistic_min_samples", 300),
@@ -97,6 +105,20 @@ class BotApp:
         self.broadcaster = Broadcaster()
         self.ws: KalshiWsClient | None = None
         self._ws_task: asyncio.Task | None = None
+
+    def _calibrator(self, index_id: str) -> IsotonicCalibrator:
+        calibrator = self.calibrators.get(index_id)
+        if calibrator is None:
+            calibrator = IsotonicCalibrator(
+                min_samples=getattr(self.settings, "calibration_min_samples", 200)
+            )
+            self.calibrators[index_id] = calibrator
+        return calibrator
+
+    def _refit_calibrators(self) -> None:
+        window = self.settings.calibration_window
+        for index_id, calibrator in self.calibrators.items():
+            calibrator.fit(self.store.calibration_pairs(limit=window, index_id=index_id))
 
     def _index_for_ticker(self, ticker: str) -> str | None:
         for coin, index_id in self.coin_to_index.items():
@@ -170,7 +192,7 @@ class BotApp:
             slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
             ts_ms=state.close_ts_ms,
             market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
-            calibrator=self.calibrator,
+            calibrator=self._calibrator(state.index_id),
         )
         self.store.insert_signal(signal)
 
@@ -285,7 +307,7 @@ class BotApp:
             # live-only adjustments actually help versus the raw model.
             "live_market_blend_weight": getattr(self.settings, "market_blend_weight", 0.0),
             "shadow_market_blend_weight": 0.0,
-            "live_calibrated": self.calibrator.is_fitted,
+            "live_calibrated": self._calibrator(state.index_id).is_fitted,
             "shadow_calibrated": False,
             "window_sec": self.predictor.window_sec,
             "edge_threshold": self.settings.edge_threshold,
@@ -295,7 +317,8 @@ class BotApp:
             "confirmation_version": "majority-v1",
             "recommendation_version": "purchase-price-v2",
         }
-        fingerprint = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
+        stable_parameters = {k: v for k, v in parameters.items() if k not in _VOLATILE_FINGERPRINT_KEYS}
+        fingerprint = hashlib.sha256(json.dumps(stable_parameters, sort_keys=True).encode()).hexdigest()[:16]
         snapshot = {
             "schema_version": 1,
             "experiment_id": "logistic-stacked-v1-" + fingerprint,
@@ -546,7 +569,7 @@ class BotApp:
                     fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
                     slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
                     market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
-                    calibrator=self.calibrator,
+                    calibrator=self._calibrator(state.index_id),
                 )
                 self.store.insert_signal(signal)
                 for review_lead_sec, review_stage in (
@@ -719,10 +742,10 @@ class BotApp:
         while True:
             await asyncio.sleep(self.settings.calibration_refit_interval_sec)
             try:
-                pairs = self.store.calibration_pairs(limit=self.settings.calibration_window)
-                self.calibrator.fit(pairs)
-                if self.calibrator.is_fitted:
-                    logger.info("Recalibrated model probabilities on %d settled decisions", self.calibrator.fitted_n)
+                self._refit_calibrators()
+                fitted = {i: c.fitted_n for i, c in self.calibrators.items() if c.is_fitted}
+                if fitted:
+                    logger.info("Recalibrated per-coin model probabilities: %s", fitted)
             except Exception:
                 logger.exception("Calibration refit failed")
 
@@ -826,7 +849,7 @@ class BotApp:
     async def run(self) -> None:
         await self.discover_and_subscribe()
         try:
-            self.calibrator.fit(self.store.calibration_pairs(limit=self.settings.calibration_window))
+            self._refit_calibrators()
         except Exception:
             logger.exception("Initial calibration fit failed; predictions stay uncalibrated for now")
         try:

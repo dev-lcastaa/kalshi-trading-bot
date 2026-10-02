@@ -45,6 +45,11 @@ def create_app(
         """Identifies which build is actually running behind a given deployment."""
         return {"version": __version__}
 
+    @app.get("/api/readiness")
+    def get_readiness() -> dict:
+        """Objective go/no-go for real-money use, scored per coin from settled decisions."""
+        return telemetry_cache.get("readiness", 60.0, store.trade_readiness)
+
     @app.get("/api/config")
     def get_config() -> dict:
         return {"decision_lead_sec": decision_lead_sec}

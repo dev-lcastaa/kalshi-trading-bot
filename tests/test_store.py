@@ -76,6 +76,68 @@ def test_calibration_pairs_use_pre_calibration_probability_and_skip_legacy_rows(
     store.close()
 
 
+def _record_settled_snapshot(store, ticker, coin, model_p, market_p, recommendation, result, bid=0.55, ask=0.6):
+    now_ms = int(time.time() * 1000)
+    store.upsert_active_market(ticker, coin, 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+    store.mark_closed(ticker, closed_at_ms=now_ms)
+    store.record_outcome(ticker, result, checked_at_ms=now_ms)
+    store.record_decision(
+        ticker=ticker, ts_ms=now_ms - 400_000, seconds_to_expiry=390.0, index_price=101.0,
+        strike=100.0, model_p_yes=model_p, market_p_yes=market_p, edge=model_p - market_p,
+        recommendation=recommendation, confidence=max(model_p, 1 - model_p),
+        decision_snapshot={
+            "index_id": coin,
+            "live": {"model_p_yes": model_p, "market_p_yes": market_p, "recommendation": recommendation},
+            "quotes": {"yes_bid_dollars": bid, "yes_ask_dollars": ask},
+        },
+    )
+
+
+def test_trade_readiness_blocks_until_every_criterion_is_met(tmp_path):
+    store = _make_store(tmp_path)
+    # Model better calibrated than market and the actionable call wins after fees...
+    _record_settled_snapshot(store, "BTC-WIN", "BRTI", 0.9, 0.6, "BUY_YES", "yes")
+    # ...but sample and trade counts are far below the gate.
+    report = store.trade_readiness(min_settled=300, min_trades=50)
+
+    assert report["ready"] is False
+    coin = report["coins"]["BRTI"]
+    assert coin["ready"] is False
+    assert coin["settled"] == 1
+    assert coin["trades"] == 1
+    assert coin["net_pnl_after_fees"] == pytest.approx(1.0 - 0.6 - 0.02)
+    assert any("settled decisions" in blocker for blocker in coin["blockers"])
+    assert any("actionable calls (need" in blocker for blocker in coin["blockers"])
+    store.close()
+
+
+def test_trade_readiness_passes_when_thresholds_met_and_flags_losing_coins(tmp_path):
+    store = _make_store(tmp_path)
+    for index in range(3):
+        _record_settled_snapshot(store, f"BTC-{index}", "BRTI", 0.9, 0.6, "BUY_YES", "yes")
+    # SOL: model worse than market and its only call loses after fees.
+    _record_settled_snapshot(store, "SOL-0", "SOLUSD_RTI", 0.9, 0.6, "BUY_YES", "no")
+
+    report = store.trade_readiness(min_settled=3, min_trades=3)
+
+    assert report["coins"]["BRTI"]["ready"] is True
+    assert report["coins"]["BRTI"]["blockers"] == []
+    sol = report["coins"]["SOLUSD_RTI"]
+    assert sol["ready"] is False
+    assert "actionable calls lose money after fees" in sol["blockers"]
+    assert "model is not better calibrated than the market price" in sol["blockers"]
+    assert report["ready"] is False
+    store.close()
+
+
+def test_trade_readiness_empty_store_is_not_ready(tmp_path):
+    store = _make_store(tmp_path)
+    report = store.trade_readiness()
+    assert report["ready"] is False
+    assert report["coins"] == {}
+    store.close()
+
+
 def test_shadow_does_not_backfill_existing_decision(tmp_path):
     store = _make_store(tmp_path)
     decision = dict(

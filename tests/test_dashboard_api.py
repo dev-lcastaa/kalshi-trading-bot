@@ -18,6 +18,20 @@ def test_version_endpoint_reports_package_version(tmp_path):
     store.close()
 
 
+def test_readiness_endpoint_reports_go_no_go(tmp_path):
+    store = Store(str(tmp_path / "readiness.db"))
+    client = TestClient(create_app(store))
+
+    response = client.get("/api/readiness")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is False
+    assert body["coins"] == {}
+    assert body["criteria"]["min_settled"] == 300
+    store.close()
+
+
 def test_decision_snapshots_endpoint_validates_limit_and_returns_rows(tmp_path):
     store = Store(str(tmp_path / "decision_snapshots.db"))
     store.record_decision(

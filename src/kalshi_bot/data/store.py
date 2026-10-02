@@ -643,6 +643,83 @@ class Store:
         cur = self._query("SELECT 1 FROM decisions WHERE ticker = ?", (ticker,))
         return cur.fetchone() is not None
 
+    def trade_readiness(
+        self,
+        min_settled: int = 300,
+        min_trades: int = 50,
+        limit: int = 5000,
+    ) -> dict:
+        """Objective per-coin go/no-go report for trading real money.
+
+        A coin is "ready" only when, over its settled locked decisions:
+        its model Brier beats the market's, it has at least `min_settled`
+        settled decisions and `min_trades` actionable calls, and those calls
+        are profitable after Kalshi taker fees at the recorded quotes.
+        """
+        sql = """SELECT ds.index_id, ds.snapshot_json, m.result
+                 FROM decision_snapshots ds
+                 INNER JOIN markets m ON m.ticker = ds.ticker
+                 WHERE m.result IN ('yes', 'no')
+                 ORDER BY ds.ts_ms DESC LIMIT ?"""
+        rows = self._query(sql, (limit,)).fetchall()
+        per_coin: dict[str, dict] = {}
+        for index_id, snapshot_json, result in rows:
+            snapshot = json.loads(snapshot_json)
+            live = snapshot.get("live") or {}
+            quotes = snapshot.get("quotes") or {}
+            model_p = live.get("model_p_yes")
+            market_p = live.get("market_p_yes")
+            bid, ask = quotes.get("yes_bid_dollars"), quotes.get("yes_ask_dollars")
+            if model_p is None or market_p is None or bid is None or ask is None:
+                continue
+            stats = per_coin.setdefault(index_id, {
+                "settled": 0, "model_sq": 0.0, "market_sq": 0.0,
+                "trades": 0, "wins": 0, "net_pnl": 0.0,
+            })
+            outcome = 1.0 if result == "yes" else 0.0
+            stats["settled"] += 1
+            stats["model_sq"] += (model_p - outcome) ** 2
+            stats["market_sq"] += (market_p - outcome) ** 2
+            recommendation = live.get("recommendation")
+            if recommendation in ("BUY_YES", "BUY_NO"):
+                yes = recommendation == "BUY_YES"
+                entry = ask if yes else 1 - bid
+                fee = math.ceil(0.07 * entry * (1 - entry) * 100) / 100
+                won = yes == (outcome == 1.0)
+                stats["trades"] += 1
+                stats["wins"] += int(won)
+                stats["net_pnl"] += (1.0 if won else 0.0) - entry - fee
+
+        report: dict = {"criteria": {"min_settled": min_settled, "min_trades": min_trades}, "coins": {}}
+        overall_ready = bool(per_coin)
+        for index_id, stats in sorted(per_coin.items()):
+            n = stats["settled"]
+            model_brier = stats["model_sq"] / n
+            market_brier = stats["market_sq"] / n
+            blockers = []
+            if n < min_settled:
+                blockers.append(f"only {n} settled decisions (need {min_settled})")
+            if model_brier >= market_brier:
+                blockers.append("model is not better calibrated than the market price")
+            if stats["trades"] < min_trades:
+                blockers.append(f"only {stats['trades']} actionable calls (need {min_trades})")
+            if stats["net_pnl"] <= 0:
+                blockers.append("actionable calls lose money after fees")
+            ready = not blockers
+            overall_ready = overall_ready and ready
+            report["coins"][index_id] = {
+                "ready": ready,
+                "blockers": blockers,
+                "settled": n,
+                "model_brier": model_brier,
+                "market_brier": market_brier,
+                "trades": stats["trades"],
+                "wins": stats["wins"],
+                "net_pnl_after_fees": stats["net_pnl"],
+            }
+        report["ready"] = overall_ready
+        return report
+
     def record_decision(
         self,
         ticker: str,

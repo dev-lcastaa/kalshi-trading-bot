@@ -28,7 +28,7 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
         market_blend_weight=0.0, min_confidence_buy_yes=0.0,
     )
     app.predictor = SettlementAwarePredictor()
-    app.calibrator = IsotonicCalibrator()
+    app.calibrators = {"BRTI": IsotonicCalibrator()}
     app.logistic_model = LogisticRegressionModel()
     state = MarketState("BTC-TEST", 100.0, 700000, "BRTI")
     app.markets = {state.ticker: state}
@@ -115,7 +115,7 @@ async def test_jetson_8m30_review_runs_during_early_quality_abstention(tmp_path,
         market_blend_weight=0.0, min_confidence_buy_yes=0.0,
     )
     app.predictor = SettlementAwarePredictor()
-    app.calibrator = IsotonicCalibrator()
+    app.calibrators = {"BRTI": IsotonicCalibrator()}
     app.logistic_model = LogisticRegressionModel()
     app.llm_reviewer = Reviewer()
     state = MarketState("BTC-REVIEW", 100.0, 700_000, "BRTI")
@@ -134,6 +134,40 @@ async def test_jetson_8m30_review_runs_during_early_quality_abstention(tmp_path,
 
     assert app.store.has_llm_review(state.ticker, "review_8m30")
     assert not app.store.has_decision(state.ticker)
+    app.store.close()
+
+
+def test_shadow_experiment_id_stable_across_training_progress(tmp_path):
+    from kalshi_bot.signals.generator import generate_signal
+
+    app = BotApp.__new__(BotApp)
+    app.store = Store(str(tmp_path / "fingerprint.db"))
+    app.settings = SimpleNamespace(
+        poll_interval_sec=2, decision_lead_sec=390, edge_threshold=0.05,
+        fee_multiplier=1.0, slippage_per_contract=0.0,
+        market_blend_weight=0.0, min_confidence_buy_yes=0.0,
+        calibration_min_samples=200,
+    )
+    app.predictor = SettlementAwarePredictor()
+    app.calibrators = {"BRTI": IsotonicCalibrator()}
+    app.logistic_model = LogisticRegressionModel()
+    state = MarketState("BTC-FP", 100.0, 700000, "BRTI")
+    state.yes_bid_dollars, state.yes_ask_dollars = 0.4, 0.5
+    state.quote_ts_ms = state.quote_received_at_ms = 321000
+    ticks = [(ts * 1000, 100.0 + (ts % 2) * 0.001) for ts in range(21, 322)]
+    from kalshi_bot.features.engine import build_features
+    features = build_features(ticks, strike=100.0, seconds_to_expiry=379.0, close_ts_ms=700000)
+    signal = generate_signal(
+        ticker=state.ticker, index_id="BRTI", features=features, predictor=app.predictor,
+        yes_bid_dollars=0.4, yes_ask_dollars=0.5, edge_threshold=0.05, ts_ms=321000,
+    )
+
+    first = app._build_shadow_snapshot(state, features, signal, "BUY_YES", 321000, ticks)
+    app.logistic_model.fitted_n = 999  # training progressed between decisions
+    second = app._build_shadow_snapshot(state, features, signal, "BUY_YES", 321000, ticks)
+
+    assert first["experiment_id"] == second["experiment_id"]
+    assert first["parameters"]["shadow_logistic_fitted_n"] != second["parameters"]["shadow_logistic_fitted_n"]
     app.store.close()
 
 
