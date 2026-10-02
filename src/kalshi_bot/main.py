@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import time
+from copy import copy
 from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Any
@@ -506,11 +507,12 @@ class BotApp:
     async def prediction_loop(self) -> None:
         while True:
             await asyncio.sleep(self.settings.poll_interval_sec)
-            now_ms = int(time.time() * 1000)
-            for ticker, state in list(self.markets.items()):
+            for ticker, live_state in list(self.markets.items()):
+                state = copy(live_state)
+                ticks = list(self.index_ticks.get(state.index_id, []))
+                now_ms = int(time.time() * 1000)
                 if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
                     continue
-                ticks = self.index_ticks.get(state.index_id, [])
                 if len(ticks) < 2:
                     continue
                 seconds_to_expiry = (state.close_ts_ms - now_ms) / 1000.0

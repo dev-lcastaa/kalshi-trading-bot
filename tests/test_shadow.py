@@ -39,6 +39,13 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
         "yes_bid_size_fp": "100", "yes_ask_size_fp": "1", "ts_ms": 321000,
         "price_dollars": "0.45", "volume_fp": "1", "open_interest_fp": "1",
     })
+    async def update_live_quote(*args, **kwargs):
+        state.yes_bid_dollars = 0.55
+        state.yes_ask_dollars = 0.65
+        state.quote_ts_ms = 322000
+        state.quote_received_at_ms = 322050
+        return None
+    monkeypatch.setattr(app, "_run_llm_review", update_live_quote)
     app.store.upsert_active_market(state.ticker, "BRTI", 100, 700000, 321000)
     monkeypatch.setattr("kalshi_bot.main.asyncio.sleep", AsyncMock(side_effect=[None, None, asyncio.CancelledError()]))
     if shadow_fails:
