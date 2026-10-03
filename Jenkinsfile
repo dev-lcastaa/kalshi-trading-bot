@@ -19,6 +19,8 @@ pipeline {
         stage('Backend Lint') {
             steps {
                 sh '''
+                    python3 -m ensurepip --default-pip || true
+                    python3 -m pip install --upgrade pip --quiet
                     python3 -m pip install flake8 --quiet
                     flake8 src/kalshi_bot tests --count --select=E9,F63,F7,F82 --show-source --statistics || true
                 '''
@@ -28,6 +30,8 @@ pipeline {
         stage('Backend Tests') {
             steps {
                 sh '''
+                    python3 -m ensurepip --default-pip || true
+                    python3 -m pip install --upgrade pip --quiet
                     python3 -m pip install -e . -e ".[dev]" --quiet
                     python3 -m pytest tests/ -v --tb=short
                 '''
