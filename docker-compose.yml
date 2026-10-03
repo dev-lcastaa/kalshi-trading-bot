@@ -42,4 +42,4 @@ services:
 volumes:
   postgres-data:
     external: true
-    name: aqlabs-kalshi-trading-bot_postgres-data
+    name: kalshi-trading-bot_postgres-data
