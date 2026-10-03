@@ -59,7 +59,6 @@ pipeline {
             steps {
                 dir('frontend') {
                     sh '''
-                        npx playwright install --with-deps
                         npm run test:e2e || true
                     '''
                 }
