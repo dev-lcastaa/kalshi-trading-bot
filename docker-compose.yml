@@ -41,3 +41,5 @@ services:
 
 volumes:
   postgres-data:
+    external: true
+    name: kalshi-trading-bot_postgres-data
