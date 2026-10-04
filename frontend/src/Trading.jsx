@@ -1,54 +1,244 @@
 import React from "react";
-import { AlertTriangle, Check, ChevronDown, Power, RefreshCw, Save, X } from "lucide-react";
-import { friendlyCheckName, percent } from "./utils";
+import { AlertTriangle, Check, ChevronDown, Plus, Power, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { friendlyCheckName } from "./utils";
 
-const MODES = [["live", "Live auto trading"], ["paper", "Paper auto trading"]];
-const FIELDS = [["budget", "Budget"], ["take_profit", "Take profit"], ["stop_loss", "Stop loss"]];
-const settingsKey = (settings) => JSON.stringify(FIELDS.map(([key]) => settings?.[key]));
+const MODES = [["paper", "Practice (fake money)"], ["live", "Real money"]];
+export const MAX_BUDGET = 25;
+export const MAX_RULES = 10;
+const COINS = [["ANY", "Any coin"], ["BTC", "Bitcoin (BTC)"], ["SOL", "Solana (SOL)"]];
+const SIDES = [["model", "Follow the bot's guess"], ["yes", "Always bet UP"], ["no", "Always bet DOWN"]];
+const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss"];
+const NEW_RULE = { name: "New rule", enabled: true, coin: "ANY", side: "model", min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", max_seconds_left: "390", budget: "1.00", take_profit: "0.00", stop_loss: "0.00" };
+const WHOLE = /^\d+$/;
+const SIGNED_WHOLE = /^-?\d+$/;
+const MONEY = /^\d+(\.\d{1,2})?$/;
+
+const rulesOf = (settings) => Array.isArray(settings?.rules) ? settings.rules : [];
+const formKey = (form) => JSON.stringify(rulesOf(form).map((rule) => UI_KEYS.map((key) => rule?.[key] == null ? "" : String(rule[key]))));
+const num = (value) => Number(value);
+const centsOf = (dollars) => String(Math.round(num(dollars) * 100));
 const timestamp = (value) => value == null ? "--" : new Date(value).toLocaleString();
-const dollars = (value) => value == null ? "--" : `$${value}`;
-const modeLabel = (mode, environment) => mode === "paper" ? "Paper trading — simulated, no real money" : environment === "prod" ? "Live trading — real money" : "Live trading — demo account";
-const modeName = (mode) => mode === "paper" ? "Paper trading" : "Live trading";
+const money = (value) => value == null || value === "" || Number.isNaN(num(value)) ? "--" : `$${Math.abs(num(value)).toFixed(2)}`;
+const signedMoney = (value) => value == null || Number.isNaN(num(value)) ? "--" : `${num(value) > 0 ? "+" : num(value) < 0 ? "-" : ""}${money(value)}`;
+const clock = (secs) => { const value = Math.max(0, Math.round(num(secs) || 0)); return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`; };
+const direction = (side) => side === "no" ? "DOWN" : "UP";
+const coinOf = (ticker = "") => /^KX([A-Z]+?)15M/.exec(ticker)?.[1] ?? ticker.split("-")[0];
+const modeName = (mode) => mode === "paper" ? "Practice bot" : "Real-money bot";
+const modeLabel = (mode, environment) => mode === "paper" ? "Practice mode — pretend money, nothing real is spent"
+  : environment === "prod" ? "Real-money mode — uses your real Kalshi money" : "Real-money mode — Kalshi demo account (still not real money)";
 
-export function validateSettings(settings) {
-  if (FIELDS.some(([key]) => !/^\d+(\.\d{1,2})?$/.test(settings[key]) || !Number.isFinite(Number(settings[key])) || Number(settings[key]) <= 0)) return "Enter positive dollar amounts in whole cents.";
-  if (Number(settings.budget) > 1.99) return "Budget must be $1.99 or less.";
-  if (Number(settings.stop_loss) >= Number(settings.budget)) return "Stop loss must be less than budget.";
+export function toUi(settings) {
+  return { rules: rulesOf(settings).map((rule) => ({
+    name: String(rule.name ?? ""), enabled: Boolean(rule.enabled), coin: rule.coin ?? "ANY", side: rule.side ?? "model",
+    min_price: centsOf(rule.min_price), max_price: centsOf(rule.max_price), min_confidence: centsOf(rule.min_confidence),
+    min_edge: rule.min_edge == null || rule.min_edge === "" ? "" : centsOf(rule.min_edge),
+    min_seconds_left: String(rule.min_seconds_left), max_seconds_left: String(rule.max_seconds_left),
+    budget: num(rule.budget).toFixed(2), take_profit: num(rule.take_profit).toFixed(2), stop_loss: num(rule.stop_loss).toFixed(2),
+  })) };
+}
+
+export function fromUi(form) {
+  const dollars = (cents) => (num(cents) / 100).toFixed(2);
+  return { rules: rulesOf(form).map((rule) => ({
+    name: String(rule.name).trim(), enabled: Boolean(rule.enabled), coin: rule.coin, side: rule.side,
+    min_price: dollars(rule.min_price), max_price: dollars(rule.max_price), min_confidence: dollars(rule.min_confidence),
+    min_edge: String(rule.min_edge ?? "").trim() === "" ? null : dollars(rule.min_edge),
+    min_seconds_left: num(rule.min_seconds_left), max_seconds_left: num(rule.max_seconds_left),
+    budget: num(rule.budget).toFixed(2), take_profit: num(rule.take_profit).toFixed(2), stop_loss: num(rule.stop_loss).toFixed(2),
+  })) };
+}
+
+export function validateRule(rule) {
+  const text = (key) => String(rule[key] ?? "").trim();
+  if (!text("name") || text("name").length > 40) return "Give the rule a name (up to 40 letters).";
+  for (const key of ["min_price", "max_price"]) if (!WHOLE.test(text(key)) || num(text(key)) < 1 || num(text(key)) > 99) return "Prices must be whole cents from 1 to 99.";
+  if (num(rule.min_price) > num(rule.max_price)) return "The lowest price can't be higher than the highest price.";
+  if (!WHOLE.test(text("min_confidence")) || num(text("min_confidence")) > 100) return "\"How sure\" must be a whole number from 0 to 100.";
+  if (text("min_edge") !== "" && (!SIGNED_WHOLE.test(text("min_edge")) || Math.abs(num(text("min_edge"))) > 100)) return "Minimum expected profit must be blank or whole cents from -100 to 100.";
+  for (const key of ["min_seconds_left", "max_seconds_left"]) if (!WHOLE.test(text(key)) || num(text(key)) > 3600) return "Seconds left must be whole numbers from 0 to 3600.";
+  if (num(rule.min_seconds_left) > num(rule.max_seconds_left)) return "\"Start betting\" must be the bigger number of seconds (it comes first).";
+  for (const key of ["budget", "take_profit", "stop_loss"]) if (!MONEY.test(text(key))) return "Write money like 1.50 (dollars and cents). Use 0 for \"never\".";
+  if (num(rule.budget) <= 0 || num(rule.budget) > MAX_BUDGET) return `Most to spend must be more than $0 and no more than $${MAX_BUDGET}.`;
+  if (num(rule.stop_loss) >= num(rule.budget)) return "\"Cut losses\" must be less than the most you spend.";
   return "";
 }
 
-function Policy({ settings }) {
-  return <dl className="trading-policy">{FIELDS.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{dollars(settings?.[key])}</dd></div>)}</dl>;
+export function validateSettings(form) {
+  const rules = rulesOf(form);
+  if (!rules.length) return "Add at least one rule.";
+  if (rules.length > MAX_RULES) return `You can have up to ${MAX_RULES} rules.`;
+  for (const [index, rule] of rules.entries()) { const problem = validateRule(rule); if (problem) return `Rule ${index + 1}: ${problem}`; }
+  return "";
+}
+
+function exitPlan(policy) {
+  const up = num(policy?.take_profit) > 0, down = num(policy?.stop_loss) > 0;
+  if (!up && !down) return "Hold until the market ends";
+  return [up && `cash out when up ${money(policy.take_profit)}`, down && `sell if down ${money(policy.stop_loss)}`].filter(Boolean).join(", ").replace(/^./, (c) => c.toUpperCase());
+}
+
+function ruleSummary(rule) {
+  const coin = rule.coin === "ANY" ? "any coin" : rule.coin;
+  const side = rule.side === "model" ? "whichever way the bot guesses" : direction(rule.side);
+  const edge = String(rule.min_edge ?? "") === "" ? "" : ` and expects at least ${rule.min_edge}¢ profit`;
+  return `Bet ${side} on ${coin} when ${clock(rule.max_seconds_left)} to ${clock(rule.min_seconds_left)} is left, if it costs ${rule.min_price}¢–${rule.max_price}¢ and the bot is at least ${rule.min_confidence}% sure${edge}. Spend up to ${money(rule.budget)}. ${exitPlan(rule)}.`;
+}
+
+function RuleList({ settings }) {
+  const rules = rulesOf(toUi(settings));
+  if (!rules.length) return <p className="trading-muted">No rules saved</p>;
+  return <ol className="trading-rule-list">{rules.map((rule, index) => <li key={index}>
+    <strong>{rule.name}</strong> {!rule.enabled && <span className="trading-muted">(turned off)</span>}
+    <p className="trading-muted">{ruleSummary(rule)}</p>
+  </li>)}</ol>;
+}
+
+function Field({ label, value, disabled, onChange, hint, note, inputMode = "decimal" }) {
+  const input = <label>{label}<input type="text" inputMode={inputMode} value={value ?? ""} disabled={disabled} placeholder={hint} onChange={(event) => onChange(event.target.value)} /></label>;
+  return note ? <div className="trading-field">{input}<small>{note}</small></div> : input;
+}
+
+function Choice({ label, value, options, disabled, onChange }) {
+  return <label>{label}<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{options.map(([key, text]) => <option key={key} value={key}>{text}</option>)}</select></label>;
+}
+
+function RuleEditor({ rule, index, count, disabled, onChange, onRemove }) {
+  const set = (key) => (value) => onChange({ ...rule, [key]: value });
+  const problem = validateRule(rule);
+  return <fieldset className="trading-rule" aria-label={`Rule ${index + 1}`}>
+    <header>
+      <label className="trading-ack"><input type="checkbox" checked={Boolean(rule.enabled)} disabled={disabled} onChange={(event) => set("enabled")(event.target.checked)} />Rule is on</label>
+      <button type="button" className="icon-button" aria-label={`Remove rule ${index + 1}`} title="Remove rule" disabled={disabled || count <= 1} onClick={onRemove}><Trash2 size={16} /></button>
+    </header>
+    <div className="trading-fields">
+      <Field label="Rule name" value={rule.name} disabled={disabled} onChange={set("name")} inputMode="text" />
+      <Choice label="Which coin" value={rule.coin} options={COINS} disabled={disabled} onChange={set("coin")} />
+      <Choice label="Which way to bet" value={rule.side} options={SIDES} disabled={disabled} onChange={set("side")} />
+      <Field label="Lowest price to pay (¢)" value={rule.min_price} disabled={disabled} onChange={set("min_price")} inputMode="numeric" />
+      <Field label="Highest price to pay (¢)" value={rule.max_price} disabled={disabled} onChange={set("max_price")} inputMode="numeric" />
+      <Field label="How sure the bot must be (%)" value={rule.min_confidence} disabled={disabled} onChange={set("min_confidence")} inputMode="numeric" />
+      <Field label="Minimum expected profit (¢)" value={rule.min_edge} disabled={disabled} onChange={set("min_edge")} hint="blank = don't care" note="Blank = don't care" />
+      <Field label="Start betting at (seconds left)" value={rule.max_seconds_left} disabled={disabled} onChange={set("max_seconds_left")} inputMode="numeric" note={`= ${clock(rule.max_seconds_left)} left`} />
+      <Field label="Stop betting at (seconds left)" value={rule.min_seconds_left} disabled={disabled} onChange={set("min_seconds_left")} inputMode="numeric" note={`= ${clock(rule.min_seconds_left)} left`} />
+      <Field label="Most to spend per trade ($)" value={rule.budget} disabled={disabled} onChange={set("budget")} note={`Up to $${MAX_BUDGET}`} />
+      <Field label="Cash out when up by ($)" value={rule.take_profit} disabled={disabled} onChange={set("take_profit")} note="0 = never, hold to the end" />
+      <Field label="Cut losses when down by ($)" value={rule.stop_loss} disabled={disabled} onChange={set("stop_loss")} note="0 = never, hold to the end" />
+    </div>
+    {problem ? <p className="negative">{problem}</p> : <p className="trading-muted">{ruleSummary(rule)}</p>}
+  </fieldset>;
+}
+
+const BLOCKERS = [
+  [/not authorized/i, "This server isn't allowed to place orders (trading is switched off in its settings)."],
+  [/credentials/i, "The bot doesn't know which Kalshi account to use (login keys are missing)."],
+  [/another trading worker|not started/i, "The bot is still starting up, or another copy of it is already running."],
+  [/not healthy/i, "The bot's trading engine isn't running properly."],
+  [/reconciliation/i, "Waiting to hear back about an earlier order before placing new ones."],
+];
+const friendlyBlocker = (text) => BLOCKERS.find(([pattern]) => pattern.test(text))?.[1] ?? text;
+
+function friendlyReason(reason) {
+  let match;
+  if ((match = /^coin is not (\w+)/.exec(reason))) return `only bets on ${match[1]}`;
+  if ((match = /^(\d+)s left is outside (\d+)-(\d+)s/.exec(reason))) return `${clock(match[1])} left — waits for ${clock(match[3])} to ${clock(match[2])}`;
+  if ((match = /^(YES|NO) costs ([\d.]+), outside ([\d.]+)-([\d.]+)/.exec(reason))) return `${direction(match[1].toLowerCase())} costs ${centsOf(match[2])}¢, your range is ${centsOf(match[3])}¢–${centsOf(match[4])}¢`;
+  if ((match = /^model gives (YES|NO) ([\d.]+) < ([\d.]+)/.exec(reason))) return `bot is ${centsOf(match[2])}% sure, you want ${centsOf(match[3])}%`;
+  if ((match = /^edge (-?[\d.]+) after fees < (-?[\d.]+)/.exec(reason))) return `expected profit ${(num(match[1]) * 100).toFixed(1)}¢, you want ${centsOf(match[2])}¢`;
+  return reason;
+}
+
+export function friendlyStatus(status = "") {
+  if (status.startsWith("Matches '")) {
+    const name = /^Matches '(.*?)'/.exec(status)?.[1];
+    return status.includes("(waiting") ? `Matches "${name}" — waiting, already betting on this coin` : `Betting now — matches "${name}"`;
+  }
+  if (status.startsWith("No match - ")) return `Not yet: ${status.slice(11).split("; ").map((part) => { const at = part.indexOf(": "); return at < 0 ? part : `${part.slice(0, at)}: ${friendlyReason(part.slice(at + 2))}`; }).join("; ")}`;
+  if (status.startsWith("Degraded inputs")) return "Skipping — some price data is missing";
+  if (status === "Live read is stale") return "Skipping — price data is out of date";
+  if (status === "No live price") return "Skipping — no price yet";
+  if (status.startsWith("Bot position")) return "The bot already has a bet here";
+  if (status === "No enabled rules") return "None of your rules are turned on";
+  return status;
+}
+
+function WatchTable({ watch }) {
+  if (!watch?.length) return <p className="trading-muted">No markets open right now</p>;
+  return <div className="trading-watch"><table>
+    <thead><tr><th>Coin</th><th>Time left</th><th>Bot says UP</th><th>Crowd says UP</th><th>Bet</th><th>What's happening</th></tr></thead>
+    <tbody>{watch.map((row) => <tr key={row.ticker} className={row.rule ? "match" : ""} title={row.ticker}>
+      <td><strong>{coinOf(row.ticker)}</strong></td><td>{clock(row.seconds_left)}</td>
+      <td>{row.model_p_yes == null ? "--" : `${Math.round(row.model_p_yes * 100)}%`}</td><td>{row.market_p_yes == null ? "--" : `${Math.round(row.market_p_yes * 100)}%`}</td>
+      <td>{row.side ? `${direction(row.side)} at ${centsOf(row.price)}¢` : "--"}</td><td>{friendlyStatus(row.status)}</td>
+    </tr>)}</tbody>
+  </table></div>;
+}
+
+const EVENT_NAMES = {
+  buy_submitted: "Placed a bet", sell_submitted: "Tried to sell", filled: "Order went through", unfilled: "Order didn't go through",
+  rejected: "Kalshi refused the order", settled: "Market ended", waiting_for_liquidity: "Wants to sell, but nobody is buying yet",
+  skipped: "Skipped a market", enabled: "Bot turned on", paused: "Bot turned off", started_paused: "Bot restarted (left off for safety)",
+  settings_saved: "Rules saved", error: "Something went wrong",
+};
+
+function Diary({ events }) {
+  return <ol className="trading-actions">{events.map((event) => <li key={event.id}><time>{timestamp(event.ts_ms)}</time><strong>{EVENT_NAMES[event.action] ?? event.action}</strong>{event.ticker && <small className="trading-muted">{coinOf(event.ticker)}</small>}<span>{event.reason}</span></li>)}</ol>;
 }
 
 function DecisionChecks({ detail }) {
   let checks;
-  try { checks = JSON.parse(detail); } catch { return <p className="trading-muted">Checks unavailable</p>; }
-  if (!Array.isArray(checks) || !checks.length) return <p className="trading-muted">No checks recorded</p>;
-  return <div className="checks">{checks.map((check, index) => <span className={`check ${check.agree ? "pass" : "fail"}`} key={`${check.name}-${index}`}>{check.agree ? <Check size={13} /> : <X size={13} />}{friendlyCheckName(check.name)}{check.detail ? `: ${check.detail}` : ""}</span>)}</div>;
+  try { checks = JSON.parse(detail); } catch { return null; }
+  if (!Array.isArray(checks) || !checks.length) return null;
+  return <div className="checks">{checks.map((check, index) => <span className={`check ${check.agree ? "pass" : "fail"}`} key={`${check.name}-${index}`}>{check.agree ? <Check size={13} /> : <X size={13} />}{friendlyCheckName(check.name)}</span>)}</div>;
 }
 
-function DecisionBody({ decision }) {
+function Why({ decision }) {
+  if (!decision) return <p className="trading-muted">No notes from the bot for this market</p>;
+  const pick = { BUY_YES: "it would go UP", BUY_NO: "it would go DOWN" }[decision.recommendation] ?? "no clear winner";
   return <div className="trading-decision-body">
-    <p><strong>{decision.recommendation}</strong> | Confidence {percent(decision.confidence)} | Result {decision.result ?? "Pending"}</p>
-    <p className="trading-muted">Decision {timestamp(decision.ts_ms)} | Close {timestamp(decision.close_ts_ms)}</p>
-    <details className="trading-decision"><summary><span>Confirmation checks</span><ChevronDown size={16} /></summary><DecisionChecks detail={decision.confirmation_detail} /></details>
+    <p>The bot's guess: <strong>{pick}</strong> ({Math.round(num(decision.confidence) * 100)}% sure)</p>
+    <DecisionChecks detail={decision.confirmation_detail} />
   </div>;
 }
 
-function ActionList({ events }) {
-  return <ol className="trading-actions">{events.map((event) => <li key={event.id}><time>{timestamp(event.ts_ms)}</time><strong>{event.action}</strong>{event.ticker && <code>{event.ticker}</code>}<span>{event.reason}</span></li>)}</ol>;
+function Stat({ label, value, tone }) {
+  return <div><dt>{label}</dt><dd className={tone}>{value}</dd></div>;
 }
 
-function PositionCard({ position, events, decision }) {
-  return <article className="trading-card" aria-label={`Position ${position.ticker}`}>
-    <header><code>{position.ticker}</code><strong>{position.side.toUpperCase()} / {position.status}</strong></header>
-    <dl className="trading-policy">{[["Quantity", position.quantity], ["Entry cost", dollars(position.entry_cost)], ["Exit credit", dollars(position.exit_credit)], ["Net P/L", dollars(position.net_pnl)]].map(([text, value]) => <div key={text}><dt>{text}</dt><dd>{value}</dd></div>)}</dl>
-    <h4>Position policy</h4><Policy settings={position.policy} />
-    {position.pending && <p className="trading-muted">Pending {position.pending.action}: <code>{position.pending.client_order_id}</code>{position.pending.order_id && <> / <code>{position.pending.order_id}</code></>}</p>}
-    <h4>Actions</h4>{events.length ? <ActionList events={events} /> : <p className="trading-muted">No actions yet</p>}
-    <h4>Decision</h4>{decision ? <DecisionBody decision={decision} /> : <p className="trading-muted">No decision recorded</p>}
+function LiveCard({ position, events, decision, now }) {
+  const quantity = num(position.quantity);
+  const each = quantity > 0 ? `${Math.round((num(position.entry_cost) / quantity) * 100)}¢` : "--";
+  const left = position.close_ts_ms ? clock((position.close_ts_ms - now) / 1000) : "--";
+  const state = position.status === "pending" ? (position.pending?.action === "sell" ? "Selling…" : "Placing order…") : position.pending?.action === "sell" ? "Selling…" : "Running";
+  const worth = position.net_pnl == null ? "--" : signedMoney(position.net_pnl);
+  return <article className="trading-card" aria-label={`Trade ${position.ticker}`}>
+    <header><strong className="trading-coin">{coinOf(position.ticker)}</strong><span className={`trading-bet ${position.side === "no" ? "down" : "up"}`}>Bet {direction(position.side)}</span><span className="trading-chip">{state}</span></header>
+    <dl className="trading-policy">
+      <Stat label="You paid" value={money(position.entry_cost)} />
+      <Stat label="Contracts" value={position.quantity} />
+      <Stat label="Cost each" value={each} />
+      <Stat label="If it wins you get" value={money(quantity)} tone="positive" />
+      <Stat label="If you sold now" value={worth} tone={num(position.net_pnl) > 0 ? "positive" : num(position.net_pnl) < 0 ? "negative" : ""} />
+      <Stat label="Market ends in" value={left} />
+    </dl>
+    <p className="trading-muted">Rule used: <strong>{position.rule ?? "--"}</strong> · Plan: {exitPlan(position.policy)}</p>
+    {position.liquidity_warning && <p className="negative">Nobody is buying right now, so the bot can't sell yet.</p>}
+    <details className="trading-decision"><summary><span>What the bot did</span><ChevronDown size={16} /></summary>{events.length ? <Diary events={events} /> : <p className="trading-muted">Nothing yet</p>}</details>
+    <details className="trading-decision"><summary><span>Why the bot made this bet</span><ChevronDown size={16} /></summary><Why decision={decision} /></details>
   </article>;
+}
+
+const ENDINGS = { settled: "Market ended", take_profit: "Cashed out early", stop_loss: "Sold to cut losses" };
+
+function FinishedRow({ position }) {
+  const pnl = num(position.net_pnl);
+  const outcome = position.net_pnl == null ? "Closed" : pnl > 0 ? "Won" : pnl < 0 ? "Lost" : "Broke even";
+  return <li className="trading-finished" aria-label={`Finished trade ${position.ticker}`}>
+    <span className={`trading-outcome ${pnl > 0 ? "win" : pnl < 0 ? "loss" : ""}`}>{outcome}</span>
+    <span><strong>{coinOf(position.ticker)}</strong> · Bet {direction(position.side)}<small className="trading-muted">{timestamp(position.closed_ms ?? position.opened_ms)}</small></span>
+    <span>Paid {money(position.entry_cost)}<small className="trading-muted">Got back {money(position.exit_credit)}</small></span>
+    <span>{ENDINGS[position.closed_by] ?? "Closed"}<small className="trading-muted">Rule: {position.rule ?? "--"}</small></span>
+    <strong className={pnl > 0 ? "positive" : pnl < 0 ? "negative" : ""}>{signedMoney(position.net_pnl)}</strong>
+  </li>;
 }
 
 function EnableDialog({ snapshot, blocked, busy, onCancel, onConfirm }) {
@@ -60,20 +250,20 @@ function EnableDialog({ snapshot, blocked, busy, onCancel, onConfirm }) {
     else dialog.setAttribute("open", "");
   }, []);
   return <dialog ref={dialogRef} className="trading-dialog" aria-labelledby="enable-title" onCancel={(event) => { event.preventDefault(); if (!busy) onCancel(); }}>
-    <header><h2 id="enable-title">Enable live trading?</h2><button className="icon-button" aria-label="Cancel enabling" title="Cancel enabling" disabled={busy} onClick={onCancel}><X size={18} /></button></header>
-    <h3>Saved settings</h3><Policy settings={snapshot.settings} />
-    <p>{snapshot.environment === "demo" ? "Demo orders only. No real money." : "Real-money orders will be placed."}</p>
-    <p>Stops are not guaranteed. Disabling does not close positions; threshold exits continue.</p>
-    <label className="trading-ack"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />I acknowledge the trading risks.</label>
-    {blocked && <p role="alert">Status or saved settings changed. Cancel and review before enabling.</p>}
-    <div className="trading-buttons"><button className="secondary-button" disabled={busy} onClick={onCancel}>Cancel</button><button className="secondary-button" disabled={!acknowledged || blocked || busy} onClick={onConfirm}><Power size={16} />Confirm enable</button></div>
+    <header><h2 id="enable-title">Turn on the real-money bot?</h2><button className="icon-button" aria-label="Cancel" title="Cancel" disabled={busy} onClick={onCancel}><X size={18} /></button></header>
+    <p>{snapshot.environment === "demo" ? "This is a Kalshi demo account, so no real money is used." : "The bot will spend your real money."}</p>
+    <h3>It will follow these rules</h3><RuleList settings={snapshot.settings} />
+    <p>Every time a market matches one of your rules, the bot bets on its own (one bet per coin at a time). You can lose the money you bet. Turning the bot off later stops new bets, but bets already made keep going until the market ends.</p>
+    <label className="trading-ack"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />I understand the bot bets on its own and I could lose money.</label>
+    {blocked && <p role="alert">Something changed. Close this and check again before turning the bot on.</p>}
+    <div className="trading-buttons"><button className="secondary-button" disabled={busy} onClick={onCancel}>Cancel</button><button className="secondary-button" disabled={!acknowledged || blocked || busy} onClick={onConfirm}><Power size={16} />Yes, turn it on</button></div>
   </dialog>;
 }
 
 export default function Trading() {
   const [data, setData] = React.useState(null);
   const [forms, setForms] = React.useState({ live: null, paper: null });
-  const [mode, setMode] = React.useState("live");
+  const [mode, setMode] = React.useState("paper");
   const [loading, setLoading] = React.useState(true);
   const [stale, setStale] = React.useState(true);
   const [readError, setReadError] = React.useState("");
@@ -93,14 +283,14 @@ export default function Trading() {
     const response = await fetch(path, { cache: "no-store", ...options, signal: controller.signal });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
-    if (MODES.some(([key]) => !body?.[key] || typeof body[key] !== "object" || !body[key].settings || typeof body[key].settings !== "object" || typeof body[key].enabled !== "boolean")) throw new Error("Trading status unavailable");
+    if (MODES.some(([key]) => !body?.[key] || typeof body[key] !== "object" || !body[key].settings || typeof body[key].settings !== "object" || typeof body[key].enabled !== "boolean")) throw new Error("Couldn't read the bot's status");
     if (controller.signal.aborted || !mountedRef.current) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
     return body;
   };
 
   const accept = (body, resetMode = null) => {
     setData(body);
-    setForms((current) => Object.fromEntries(MODES.map(([key]) => [key, resetMode === key || current[key] === null ? { ...body[key].settings } : current[key]])));
+    setForms((current) => Object.fromEntries(MODES.map(([key]) => [key, resetMode === key || current[key] === null ? toUi(body[key].settings) : current[key]])));
     setStale(false); setReadError(""); setUpdatedAt(Date.now());
   };
 
@@ -122,11 +312,10 @@ export default function Trading() {
   const snap = data?.[mode];
   const form = forms[mode];
   const blockers = snap?.blockers ?? [];
-  const dirty = Boolean(form) && Boolean(snap) && settingsKey(form) !== settingsKey(snap.settings);
+  const dirty = Boolean(form) && Boolean(snap) && formKey(form) !== formKey(toUi(snap.settings));
   const validation = form ? validateSettings(form) : "";
-  const label = snap ? modeLabel(mode, snap.environment) : "Trading";
   const enableBlocked = !snap || stale || busy || dirty || blockers.length > 0 || Boolean(snap.error);
-  const snapshotChanged = snapshot && (settingsKey(snapshot.settings) !== settingsKey(data?.live?.settings) || snapshot.environment !== data?.live?.environment);
+  const snapshotChanged = snapshot && (formKey(toUi(snapshot.settings)) !== formKey(toUi(data?.live?.settings)) || snapshot.environment !== data?.live?.environment);
 
   const mutate = async (kind, body) => {
     if (busyRef.current) return;
@@ -134,63 +323,93 @@ export default function Trading() {
     try {
       const next = await request(`/api/trading/${kind}`, { method: kind === "settings" ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       accept(next, kind === "settings" ? body.mode : null);
-      setSuccess(kind === "settings" ? "Settings saved." : `${modeName(body.mode)} ${next[body.mode].enabled ? "enabled" : "disabled"}.`);
+      setSuccess(kind === "settings" ? "Rules saved." : `${modeName(body.mode)} turned ${next[body.mode].enabled ? "on" : "off"}.`);
       setSnapshot(null);
     } catch (nextError) {
       if (mountedRef.current && nextError.name !== "AbortError") { setError(nextError.message); setStale(true); setSnapshot(null); }
     } finally { busyRef.current = false; if (mountedRef.current) { setBusy(false); setLoading(false); } }
   };
 
+  const updateRules = (rules) => { setForms({ ...forms, [mode]: { ...form, rules } }); setSuccess(""); setError(""); };
+
   const toggle = () => {
     if (!snap) return;
     if (snap.enabled) return void mutate("control", { mode, enabled: false, confirm: false });
-    if (mode === "paper") return void mutate("control", { mode: "paper", enabled: true, confirm: true, settings: { ...snap.settings } });
-    setSnapshot({ settings: { ...snap.settings }, environment: snap.environment });
+    if (mode === "paper") return void mutate("control", { mode: "paper", enabled: true, confirm: true, settings: structuredClone(snap.settings) });
+    setSnapshot({ settings: structuredClone(snap.settings), environment: snap.environment });
   };
 
+  const now = Date.now();
   const events = [...(snap?.events ?? [])].sort((a, b) => b.ts_ms - a.ts_ms);
   const positions = snap?.positions ?? [];
   const decisions = snap?.decisions ?? [];
-  const positionTickers = new Set(positions.map((position) => position.ticker));
-  const modeEvents = events.filter((event) => !event.ticker);
-  const otherDecisions = decisions.filter((decision) => !positionTickers.has(decision.ticker));
+  const running = positions.filter((position) => position.status === "pending" || position.status === "open");
+  const finished = positions.filter((position) => position.status === "closed").sort((a, b) => (b.closed_ms ?? b.opened_ms ?? 0) - (a.closed_ms ?? a.opened_ms ?? 0));
+  const scored = finished.filter((position) => position.net_pnl != null);
+  const total = scored.reduce((sum, position) => sum + num(position.net_pnl), 0);
+  const wins = scored.filter((position) => num(position.net_pnl) > 0).length;
   const decisionFor = (ticker) => decisions.filter((decision) => decision.ticker === ticker).sort((a, b) => b.ts_ms - a.ts_ms)[0];
+  const title = snap ? modeLabel(mode, snap.environment) : "Trading";
 
   return <section className="trading" aria-label="Trading control">
-    <header className="trading-heading"><div><h2>Trading</h2><p className="trading-muted">{!snap ? "Status unknown" : stale ? `Stale status: last reported ${snap.enabled ? "enabled" : "paused"}` : snap.enabled ? "Enabled" : "Paused"} | Updated {timestamp(updatedAt)}</p></div><button className="icon-button" title="Refresh trading" aria-label="Refresh trading" disabled={busy} onClick={() => void reload()}><RefreshCw size={18} className={loading ? "spin" : ""} /></button></header>
-    <fieldset className="trading-modes" role="radiogroup" aria-label="Trading mode">{MODES.map(([key, text]) => <label key={key}><input type="radio" name="trading-mode" value={key} checked={mode === key} onChange={() => { setMode(key); setError(""); setSuccess(""); }} />{text}</label>)}</fieldset>
-    {loading && !data && <p role="status">Loading trading status...</p>}
-    {readError && <div className="alert" role="alert"><AlertTriangle size={17} /><span>{readError}. {data ? "Last data retained; status is stale." : "Status unknown."}</span><button className="secondary-button" disabled={busy} onClick={() => void reload()}>Retry</button></div>}
+    <header className="trading-heading"><div><h2>Auto trading</h2><p className="trading-muted">{!snap ? "Status unknown" : stale ? `Might be out of date — last seen ${snap.enabled ? "ON" : "OFF"}` : `Bot is ${snap.enabled ? "ON" : "OFF"}`} · Updated {timestamp(updatedAt)}</p></div><button className="icon-button" title="Refresh" aria-label="Refresh" disabled={busy} onClick={() => void reload()}><RefreshCw size={18} className={loading ? "spin" : ""} /></button></header>
+    <fieldset className="trading-modes" role="radiogroup" aria-label="Money type">{MODES.map(([key, text]) => <label key={key}><input type="radio" name="trading-mode" value={key} checked={mode === key} onChange={() => { setMode(key); setError(""); setSuccess(""); }} />{text}</label>)}</fieldset>
+    {loading && !data && <p role="status">Loading the bot's status...</p>}
+    {readError && <div className="alert" role="alert"><AlertTriangle size={17} /><span>{readError}. {data ? "Showing the last info we got — it may be out of date." : "Status unknown."}</span><button className="secondary-button" disabled={busy} onClick={() => void reload()}>Try again</button></div>}
     {error && <div className="alert" role="alert"><span>{error}</span><button className="icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={16} /></button></div>}
-    {success && <div className="trading-success" role="status"><Check size={16} />{success}<button className="icon-button" aria-label="Dismiss success" onClick={() => setSuccess("")}><X size={16} /></button></div>}
+    {success && <div className="trading-success" role="status"><Check size={16} />{success}<button className="icon-button" aria-label="Dismiss message" onClick={() => setSuccess("")}><X size={16} /></button></div>}
     {snap && <>
-      <section className="trading-section" aria-label="Order controls">
+      <section className={`trading-status ${snap.enabled ? "on" : "off"}`} aria-label="Bot status">
         <div className="trading-control">
-          <div><h3>{label}</h3><p className="trading-risk">{mode === "paper" ? "Simulated fills only. No real money." : snap.environment === "demo" ? "Demo orders only. No real money." : "Real-money orders."} Stops are not guaranteed. Disabling does not close positions; threshold exits continue.</p></div>
-          <label className="trading-switch"><input type="checkbox" role="switch" aria-label={label} checked={snap.enabled} disabled={snap.enabled ? busy : enableBlocked} onChange={toggle} /><Power size={17} />{snap.enabled ? "Enabled" : "Paused"}</label>
+          <div>
+            <p className="trading-muted">{title}</p>
+            <h3>{snap.enabled ? "The bot is ON" : "The bot is OFF"}</h3>
+            <p className="trading-muted">{snap.enabled ? "It places bets by itself whenever a market matches one of your rules." : "It won't place any new bets. Flip the switch to let it trade with your rules."}</p>
+          </div>
+          <label className="trading-switch"><input type="checkbox" role="switch" aria-label={modeName(mode)} checked={snap.enabled} disabled={snap.enabled ? busy : enableBlocked} onChange={toggle} /><Power size={17} />{snap.enabled ? "ON" : "OFF"}</label>
         </div>
-        {blockers.length > 0 && <ul className="trading-blockers">{blockers.map((blocker, index) => <li key={index}>{blocker}</li>)}</ul>}
+        {blockers.length > 0 && <div className="trading-blockers"><strong>Why the bot can't bet right now:</strong><ul>{blockers.map((blocker, index) => <li key={index}>{friendlyBlocker(blocker)}</li>)}</ul></div>}
+        {!snap.enabled && dirty && <p className="trading-muted">Save your rule changes before turning the bot on.</p>}
         {snap.error && <p className="negative" role="alert">{snap.error}</p>}
-        <p className="trading-muted">Last cycle: {timestamp(snap.last_cycle_ms)}</p>
+        <p className="trading-muted">Turning the bot off stops new bets only — bets already made keep going until the market ends (or your cash-out / cut-loss amount is hit). Last market check: {timestamp(snap.last_cycle_ms)}</p>
       </section>
-      <section className="trading-section" aria-label="Trading settings"><h3>Settings</h3>
-        <form onSubmit={(event) => { event.preventDefault(); if (!validation && dirty && !snap.enabled && !busy && !stale) void mutate("settings", { mode, ...Object.fromEntries(FIELDS.map(([key]) => [key, Number(form[key]).toFixed(2)])) }); }}>
-          <div className="trading-fields">{FIELDS.map(([key, text]) => <label key={key}>{text} ($)<input type="text" inputMode="decimal" value={form?.[key] ?? ""} disabled={snap.enabled || busy} onChange={(event) => { setForms({ ...forms, [mode]: { ...form, [key]: event.target.value } }); setSuccess(""); setError(""); }} /></label>)}</div>
+      <section className="trading-section" aria-label="Scoreboard"><dl className="trading-score">
+        <Stat label="Bets running now" value={running.length} />
+        <Stat label="Finished bets" value={finished.length} />
+        <Stat label="Total won / lost" value={scored.length ? signedMoney(total) : "--"} tone={total > 0 ? "positive" : total < 0 ? "negative" : ""} />
+        <Stat label="Win rate" value={scored.length ? `${Math.round((wins / scored.length) * 100)}% (${wins} of ${scored.length})` : "--"} />
+      </dl></section>
+      <section className="trading-section" aria-label="Bets happening now"><h3>Bets happening now</h3>
+        {running.length ? <div className="trading-cards">{running.map((position, index) => <LiveCard key={`${position.ticker}-${index}`} position={position} now={now} events={events.filter((event) => event.ticker === position.ticker)} decision={decisionFor(position.ticker)} />)}</div>
+          : <p className="trading-muted">No bets running right now</p>}
+      </section>
+      <section className="trading-section" aria-label="Finished bets"><h3>Finished bets</h3>
+        {finished.length ? <ol className="trading-finished-list">{finished.map((position, index) => <FinishedRow key={`${position.ticker}-${index}`} position={position} />)}</ol>
+          : <p className="trading-muted">No finished bets yet</p>}
+      </section>
+      <section className="trading-section" aria-label="Markets the bot is watching"><h3>Markets the bot is watching</h3>
+        <p className="trading-muted">Each 15-minute market, checked against your rules. "Bot says UP" is how likely the bot thinks the price ends higher; "Crowd says UP" is what other traders think.{snap.enabled ? "" : " The bot is OFF, so this is just a preview."}</p>
+        <WatchTable watch={snap.watch} />
+      </section>
+      <section className="trading-section" aria-label="Your betting rules"><h3>Your betting rules</h3>
+        <p className="trading-muted">The bot checks your rules from top to bottom; the first one that matches is used. Each contract pays $1 if your bet wins and $0 if it loses, so a 70¢ price means you win 30¢ or lose 70¢ per contract. The bot holds one bet per coin at a time.</p>
+        <form onSubmit={(event) => { event.preventDefault(); if (!validation && dirty && !snap.enabled && !busy && !stale) void mutate("settings", { mode, ...fromUi(form) }); }}>
+          {rulesOf(form).map((rule, index) => <RuleEditor key={index} rule={rule} index={index} count={rulesOf(form).length} disabled={snap.enabled || busy}
+            onChange={(next) => updateRules(rulesOf(form).map((item, position) => position === index ? next : item))}
+            onRemove={() => updateRules(rulesOf(form).filter((_, position) => position !== index))} />)}
           {validation && <p className="negative" role="alert">{validation}</p>}
-          <div className="trading-buttons"><button className="secondary-button" type="submit" disabled={snap.enabled || busy || stale || !dirty || !!validation}><Save size={16} />Save settings</button><span className="trading-muted">{snap.enabled ? "Pause trading to change settings." : dirty ? "Unsaved changes" : "Saved"}</span></div>
-        </form><h4>Saved settings</h4><Policy settings={snap.settings} />
+          <div className="trading-buttons">
+            <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...NEW_RULE, name: `Rule ${rulesOf(form).length + 1}` }])}><Plus size={16} />Add a rule</button>
+            <button className="secondary-button" type="submit" disabled={snap.enabled || busy || stale || !dirty || !!validation}><Save size={16} />Save rules</button>
+            <span className="trading-muted">{snap.enabled ? "Turn the bot off to change rules." : dirty ? "You have unsaved changes" : "All changes saved"}</span>
+          </div>
+        </form>
       </section>
-      <section className="trading-section" aria-label="Trading positions"><h3>Positions</h3>
-        {positions.length ? <div className="trading-cards">{positions.map((position, index) => <PositionCard key={`${position.ticker}-${index}`} position={position} events={events.filter((event) => event.ticker === position.ticker)} decision={decisionFor(position.ticker)} />)}</div> : <p className="trading-muted">No positions</p>}
-      </section>
-      <section className="trading-section" aria-label="Activity"><h3>Activity</h3>
-        {modeEvents.length ? <ActionList events={modeEvents} /> : <p className="trading-muted">No activity recorded</p>}
-      </section>
-      {otherDecisions.length > 0 && <section className="trading-section" aria-label="Other decisions">
-        <details className="trading-decision"><summary><span>Other decisions ({otherDecisions.length})</span><ChevronDown size={16} /></summary>
-          {otherDecisions.map((decision, index) => <div className="trading-other-decision" key={`${decision.ticker}-${decision.ts_ms}-${index}`}><code>{decision.ticker}</code><DecisionBody decision={decision} /></div>)}
+      <section className="trading-section" aria-label="Bot diary">
+        <details className="trading-decision"><summary><span>Bot diary ({events.length})</span><ChevronDown size={16} /></summary>
+          {events.length ? <Diary events={events} /> : <p className="trading-muted">Nothing has happened yet</p>}
         </details>
-      </section>}
+      </section>
     </>}
     {snapshot && <EnableDialog snapshot={snapshot} busy={busy} blocked={enableBlocked || snapshotChanged || data?.live?.enabled} onCancel={() => setSnapshot(null)} onConfirm={() => { if (!enableBlocked && !snapshotChanged && !data.live.enabled) void mutate("control", { mode: "live", enabled: true, confirm: true, settings: snapshot.settings }); }} />}
   </section>;

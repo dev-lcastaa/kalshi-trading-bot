@@ -16,11 +16,26 @@ from .broadcaster import Broadcaster
 _T = TypeVar("_T")
 
 
+class TradingRuleBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=40)
+    enabled: StrictBool = True
+    coin: str = Field(default="ANY", min_length=1, max_length=10)
+    side: Literal["model", "yes", "no"] = "model"
+    min_price: str = Field(min_length=1, max_length=24)
+    max_price: str = Field(min_length=1, max_length=24)
+    min_confidence: str = Field(default="0", max_length=24)
+    min_edge: str | None = Field(default=None, max_length=24)
+    min_seconds_left: int = Field(default=0, ge=0, le=3600)
+    max_seconds_left: int = Field(default=900, ge=0, le=3600)
+    budget: str = Field(min_length=1, max_length=24)
+    take_profit: str = Field(default="0", max_length=24)
+    stop_loss: str = Field(default="0", max_length=24)
+
+
 class TradingSettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    budget: str = Field(min_length=1, max_length=24)
-    take_profit: str = Field(min_length=1, max_length=24)
-    stop_loss: str = Field(min_length=1, max_length=24)
+    rules: list[TradingRuleBody] = Field(min_length=1, max_length=10)
 
 
 class TradingSettingsUpdateBody(TradingSettingsBody):

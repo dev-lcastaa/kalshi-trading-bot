@@ -76,6 +76,26 @@ def test_calibration_pairs_use_pre_calibration_probability_and_skip_legacy_rows(
     store.close()
 
 
+def test_market_outcome_pairs_skip_degraded_and_unsettled_decisions(tmp_path):
+    store = _make_store(tmp_path)
+    now_ms = int(time.time() * 1000)
+    for ticker, market_p, flags, result in (("CLEAN", 0.8, [], "no"), ("DEGRADED", 0.7, ["stale_quote"], "yes"),
+                                            ("MISSING", None, [], "yes"), ("OPEN", 0.6, [], None)):
+        store.upsert_active_market(ticker, "BRTI", 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)
+        if result:
+            store.mark_closed(ticker, closed_at_ms=now_ms)
+            store.record_outcome(ticker, result, checked_at_ms=now_ms)
+        store.record_decision(
+            ticker=ticker, ts_ms=now_ms - 400_000, seconds_to_expiry=390.0,
+            index_price=101.0, strike=100.0, model_p_yes=0.3, market_p_yes=market_p or 0.5,
+            edge=0.0, recommendation="NO_EDGE", confidence=0.7,
+            decision_snapshot={"index_id": "BRTI", "quality_flags": flags, "live": {"market_p_yes": market_p}},
+        )
+
+    assert store.market_outcome_pairs() == [(0.8, 0.0)]
+    store.close()
+
+
 def _record_settled_snapshot(store, ticker, coin, model_p, market_p, recommendation, result, bid=0.55, ask=0.6):
     now_ms = int(time.time() * 1000)
     store.upsert_active_market(ticker, coin, 100.0, close_ts_ms=now_ms - 60_000, now_ms=now_ms)

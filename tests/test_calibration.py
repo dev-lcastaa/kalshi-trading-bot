@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from kalshi_bot.main import BotApp
 from kalshi_bot.prediction.calibration import CalibratedPredictor, IsotonicCalibrator
+from kalshi_bot.prediction.market_recal import MarketRecalibrator
 
 
 def test_identity_before_enough_samples():
@@ -56,8 +57,10 @@ def test_per_coin_calibrators_fit_independently():
         "SOLUSD_RTI": [(0.8, 1.0)] * 10,  # SOL accurate: 0.8 should stay high
     }
     app.store = SimpleNamespace(
-        calibration_pairs=lambda limit, index_id=None: pairs_by_coin[index_id]
+        calibration_pairs=lambda limit, index_id=None: pairs_by_coin[index_id],
+        market_outcome_pairs=lambda limit: [],
     )
+    app.market_recalibrator = MarketRecalibrator(min_samples=10)
 
     app._refit_calibrators()
 

@@ -33,6 +33,7 @@ from .market_discovery import find_15min_markets
 from .paper import PaperExchange
 from .prediction.calibration import IsotonicCalibrator
 from .prediction.logistic import FEATURE_NAMES, LogisticRegressionModel, LogisticSignalPredictor, fit_logistic_model
+from .prediction.market_recal import MarketRecalibrator
 from .prediction.model import RandomWalkPredictor, RegularizedSettlementPredictor, SettlementAwarePredictor
 from .signals.confirmation import check_confirmation
 from .signals.generator import generate_signal
@@ -85,12 +86,16 @@ class BotApp:
             environment=settings.env,
             execution_allowed=settings.order_execution_enabled and bool(settings.key_id),
             account_identity=hashlib.sha256(settings.key_id.encode()).hexdigest() if settings.key_id else "",
-            worker_id=worker_id,
+            worker_id=worker_id, market_feed=self.market_feed,
         )
         self.paper_trader = AutoTrader(
             self.store, PaperExchange(self.store, self.rest), defaults=settings.trading_policy,
             environment=settings.env, execution_allowed=True, mode="paper",
-            account_identity="paper", worker_id=worker_id,
+            account_identity="paper", worker_id=worker_id, market_feed=self.market_feed,
+        )
+        self.live_market: dict[str, dict] = {}
+        self.market_recalibrator = MarketRecalibrator(
+            min_samples=getattr(settings, "market_recal_min_samples", 300)
         )
         self.predictor = (
             RegularizedSettlementPredictor() if settings.predictor_version == "v3"
@@ -134,6 +139,22 @@ class BotApp:
         window = self.settings.calibration_window
         for index_id, calibrator in self.calibrators.items():
             calibrator.fit(self.store.calibration_pairs(limit=window, index_id=index_id))
+        self.market_recalibrator.fit(
+            self.store.market_outcome_pairs(limit=getattr(self.settings, "market_recal_window", 5000))
+        )
+        if self.market_recalibrator.is_fitted:
+            logger.info(
+                "Market recalibrator fit on %d settled markets: logit(p) = %.3f + %.3f*logit(market)",
+                self.market_recalibrator.fitted_n, self.market_recalibrator.intercept,
+                self.market_recalibrator.slope,
+            )
+
+    def _uses_market_recal(self) -> bool:
+        return getattr(self.settings, "decision_model", "market-recal") != "legacy"
+
+    def market_feed(self) -> list[dict]:
+        """Latest live read per active market, consumed by the rule-based auto-traders."""
+        return [row for ticker, row in list(self.live_market.items()) if ticker in self.markets]
 
     def _index_for_ticker(self, ticker: str) -> str | None:
         for coin, index_id in self.coin_to_index.items():
@@ -400,6 +421,11 @@ class BotApp:
             "confirmation_version": "majority-v1",
             "recommendation_version": "purchase-price-v2",
         }
+        recal = getattr(self, "market_recalibrator", None)
+        if self._uses_market_recal() and recal is not None and recal.is_fitted:
+            parameters["decision_model"] = "market-recal-v1"
+            parameters["edge_threshold"] = getattr(self.settings, "market_recal_edge_threshold", 0.0)
+            parameters["confirmation_gate"] = getattr(self.settings, "confirmation_gate", False)
         fingerprint = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
         return {
             "schema_version": 1,
@@ -430,6 +456,10 @@ class BotApp:
                 "recommendation": decision_recommendation,
                 "confidence": max(signal.model_p_yes, 1 - signal.model_p_yes),
                 "confirmation": asdict(confirmation),
+                "market_recal": (
+                    {"intercept": recal.intercept, "slope": recal.slope, "fitted_n": recal.fitted_n}
+                    if "decision_model" in parameters else None
+                ),
             },
             "parameters": parameters,
             "quality_flags": quality_flags,
@@ -573,6 +603,7 @@ class BotApp:
                         "Decision window reached for %s with degraded inputs; locking NO_EDGE: %s",
                         ticker, ", ".join(quality_flags),
                     )
+                use_recal = self._uses_market_recal()
                 signal = generate_signal(
                     ticker=ticker,
                     index_id=state.index_id,
@@ -580,13 +611,30 @@ class BotApp:
                     predictor=self.predictor,
                     yes_bid_dollars=state.yes_bid_dollars,
                     yes_ask_dollars=state.yes_ask_dollars,
-                    edge_threshold=self.settings.edge_threshold,
+                    edge_threshold=(
+                        getattr(self.settings, "market_recal_edge_threshold", 0.0)
+                        if use_recal and self.market_recalibrator.is_fitted
+                        else self.settings.edge_threshold
+                    ),
                     fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
                     slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
                     market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
                     calibrator=self._calibrator(state.index_id),
+                    market_recalibrator=self.market_recalibrator if use_recal else None,
                 )
                 self.store.insert_signal(signal)
+                self.live_market[ticker] = {
+                    "ticker": ticker,
+                    "index_id": state.index_id,
+                    "ts_ms": signal.ts_ms,
+                    "close_ts_ms": state.close_ts_ms,
+                    "model_p_yes": signal.model_p_yes,
+                    "market_p_yes": signal.market_p_yes,
+                    "yes_bid": state.yes_bid_dollars,
+                    "yes_ask": state.yes_ask_dollars,
+                    "recommendation": signal.recommendation,
+                    "quality_flags": list(quality_flags),
+                }
                 for review_lead_sec, review_stage in (
                     (510, "review_8m30"),
                     (270, "review_4m30"),
@@ -640,7 +688,8 @@ class BotApp:
                     # in a shaky directional call that will dictate a real trade.
                     decision_recommendation = (
                         signal.recommendation
-                        if confirmation.confirmed and not quality_flags
+                        if (confirmation.confirmed or not getattr(self.settings, "confirmation_gate", False))
+                        and not quality_flags
                         else "NO_EDGE"
                     )
                     decision_confidence = max(signal.model_p_yes, 1 - signal.model_p_yes)

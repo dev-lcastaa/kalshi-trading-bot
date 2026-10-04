@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from decimal import Decimal, ROUND_CEILING
 from typing import Any
@@ -11,7 +12,20 @@ from uuid import uuid4
 import httpx
 
 from .data.store import Store
-from .trading import CENT, ONE, TradingPolicy, dollars, fee_reserve
+from .trading import (
+    CENT, ONE, EntryRule, TradingPolicy, default_rules, dollars, fee_reserve, parse_rules, rules_json,
+    taker_fee,
+)
+
+MarketFeed = Callable[[], list[dict]]
+# A live read older than this is not acted on.
+_MAX_FEED_AGE_MS = 10_000
+# After a transient entry failure (price moved, thin book) wait before re-checking the market.
+_RETRY_AFTER_MS = 6_000
+
+
+def series_of(ticker: str) -> str:
+    return ticker.split("-")[0].upper()
 
 
 def policy_json(policy: TradingPolicy) -> dict[str, str]:
@@ -40,7 +54,7 @@ class AutoTrader:
     def __init__(
         self, store: Store, rest: Any, defaults: TradingPolicy | None = None,
         environment: str = "demo", execution_allowed: bool = False, mode: str = "live",
-        account_identity: str = "", worker_id: str | None = None,
+        account_identity: str = "", worker_id: str | None = None, market_feed: MarketFeed | None = None,
     ):
         if mode not in ("live", "paper"):
             raise ValueError("mode must be 'live' or 'paper'")
@@ -51,6 +65,7 @@ class AutoTrader:
         self.mode = mode
         self.account_identity = account_identity
         self.worker_id = worker_id or str(uuid4())
+        self.market_feed = market_feed
         self.worker_claimed = False
         self.control_revision = 0
         self.enabled = False
@@ -58,18 +73,28 @@ class AutoTrader:
         self.last_cycle_ms: int | None = None
         self.error: str | None = None
         self.lock = asyncio.Lock()
+        self.watch: list[dict] = []
+        self.retry_after_ms: dict[str, int] = {}
+        self.last_skip_reason: dict[str, str] = {}
+        self.eligible_markets: set[str] = set()
         self.settings_key = f"settings:{mode}"
         self.position_kind = "position:paper" if mode == "paper" else f"position:{environment}"
         if store.trading_record(self.settings_key) is None:
             inherited = store.trading_record("settings") if mode == "live" else None
-            store.save_trading_record(self.settings_key, "settings",
-                                      inherited or policy_json(defaults or TradingPolicy()))
+            first_run = (default_rules(dollars(inherited["budget"])) if inherited and "budget" in inherited
+                         else default_rules(policy=defaults or TradingPolicy()))
+            store.save_trading_record(self.settings_key, "settings", rules_json(first_run))
+        else:
+            # Pre-rules records (budget/take_profit/stop_loss) migrate to one default rule.
+            stored = store.trading_record(self.settings_key)
+            if "rules" not in stored:
+                store.save_trading_record(self.settings_key, "settings", rules_json(parse_rules(stored)))
         if rest is not None:
             store.record_trading_event("started_paused", "Bot restarted with new entries paused",
                                        environment=environment, mode=mode)
 
-    def policy(self) -> TradingPolicy:
-        return parse_policy(self.store.trading_record(self.settings_key))
+    def rules(self) -> list[EntryRule]:
+        return parse_rules(self.store.trading_record(self.settings_key))
 
     def positions(self) -> list[dict]:
         return self.store.trading_records(self.position_kind)
@@ -95,21 +120,22 @@ class AutoTrader:
                   if event.get("mode", "live") == self.mode][:100]
         return {
             "mode": self.mode,
-            "settings": policy_json(self.policy()), "enabled": self.enabled,
+            "settings": rules_json(self.rules()), "enabled": self.enabled,
             "environment": self.environment,
             "blockers": self.blockers(), "last_cycle_ms": self.last_cycle_ms, "error": self.error,
             "positions": self.positions()[-100:], "events": events,
             "decisions": self.store.trading_decisions(),
+            "watch": self.watch,
         }
 
     async def save_settings(self, values: dict) -> dict:
-        policy = parse_policy(values)
+        rules = parse_rules(values)
         async with self.lock:
             if self.enabled:
                 raise ValueError("Pause trading before changing settings")
-            self.store.save_trading_record(self.settings_key, "settings", policy_json(policy))
-            self.store.record_trading_event("settings_saved", "Trading targets saved",
-                                            settings=policy_json(policy), mode=self.mode)
+            self.store.save_trading_record(self.settings_key, "settings", rules_json(rules))
+            self.store.record_trading_event("settings_saved", f"{len(rules)} trading rule(s) saved",
+                                            settings=rules_json(rules), mode=self.mode)
             return self.snapshot()
 
     async def control(self, enabled: bool, confirm: bool, expected_settings: dict | None = None) -> dict:
@@ -125,20 +151,26 @@ class AutoTrader:
                 raise ValueError("Enable request superseded by a newer trading control request")
             if not confirm:
                 raise ValueError("Confirm the saved settings and trading risk before enabling")
-            if expected_settings is not None and parse_policy(expected_settings) != self.policy():
+            if expected_settings is not None and parse_rules(expected_settings) != self.rules():
                 raise ValueError("Saved settings changed; review and confirm again")
+            if not any(rule.enabled for rule in self.rules()):
+                raise ValueError("Enable at least one rule before starting auto trading")
             blockers = self.blockers()
             if blockers:
                 raise ValueError("; ".join(blockers))
             self.enabled_since_ms = int(time.time() * 1000)
             self.enabled = True
             self.store.record_trading_event(
-                "enabled", "Trading enabled for new decisions", environment=self.environment,
-                settings=policy_json(self.policy()), mode=self.mode,
+                "enabled", "Auto trading enabled; entering every market that matches a rule",
+                environment=self.environment, settings=rules_json(self.rules()), mode=self.mode,
             )
             return self.snapshot()
 
     def save_position(self, position: dict) -> None:
+        now_ms = int(time.time() * 1000)
+        position.setdefault("opened_ms", now_ms)
+        if position.get("status") in ("closed", "skipped"):
+            position.setdefault("closed_ms", now_ms)
         self.store.save_trading_record(f"{self.position_kind}:{position['ticker']}", self.position_kind, position)
 
     def event(self, action: str, reason: str, position: dict) -> None:
@@ -148,6 +180,7 @@ class AutoTrader:
     async def cycle(self) -> None:
         async with self.lock:
             try:
+                candidates = self.evaluate_rules()
                 if self.execution_allowed and self.rest is not None:
                     if not self.account_identity:
                         raise ValueError("Trading credentials are not identified")
@@ -162,7 +195,7 @@ class AutoTrader:
                         if position["status"] == "open" and not position.get("pending"):
                             await self.monitor(position)
                     if self.enabled and not self.blockers():
-                        await self.enter_new_decision()
+                        await self.enter_by_rules(candidates)
                 self.error = None
             except Exception as exc:
                 self.enabled = False
@@ -199,71 +232,159 @@ class AutoTrader:
             raise ValueError("Incomplete portfolio response")
         return sum((dollars(row["position_fp"]) for row in data["market_positions"] if row["ticker"] == ticker), Decimal("0"))
 
-    async def enter_new_decision(self) -> None:
-        existing = {position["ticker"] for position in self.positions()}
-        busy = any(position["status"] in ("pending", "open") for position in self.positions())
+    def evaluate_rules(self) -> list[dict]:
+        """Check every live market against the rules; refreshes the dashboard watch list.
+
+        Returns candidates (market + first matching rule) whose quoted price
+        satisfies a rule. Runs even while paused so the user can preview matches.
+        """
         now_ms = int(time.time() * 1000)
-        for decision in reversed(self.store.trading_decisions()):
-            if decision["ticker"] in existing or decision["ts_ms"] <= self.enabled_since_ms:
+        feed = self.market_feed() if self.market_feed is not None else []
+        rules = [rule for rule in self.rules() if rule.enabled]
+        positions = {position["ticker"]: position for position in self.positions()}
+        busy_series = {series_of(p["ticker"]) for p in positions.values() if p["status"] in ("pending", "open")}
+        watch, candidates = [], []
+        for market in sorted(feed, key=lambda row: row.get("close_ts_ms") or 0):
+            ticker = market["ticker"]
+            seconds_left = ((market.get("close_ts_ms") or 0) - now_ms) / 1000
+            if seconds_left <= 0:
                 continue
-            if now_ms - decision["ts_ms"] > 30_000:
+            row = {"ticker": ticker, "seconds_left": int(seconds_left),
+                   "model_p_yes": market.get("model_p_yes"), "market_p_yes": market.get("market_p_yes"),
+                   "side": None, "price": None, "rule": None, "status": "watching"}
+            watch.append(row)
+            try:
+                model_p_yes = Decimal(str(round(float(market["model_p_yes"]), 4)))
+                yes_bid = Decimal(str(market["yes_bid"]))
+                yes_ask = Decimal(str(market["yes_ask"]))
+            except (KeyError, TypeError, ValueError, ArithmeticError):
+                row["status"] = "No live price"
                 continue
-            policy = self.policy()
+            if ticker in positions:
+                row["status"] = f"Bot position {positions[ticker]['status']}"
+                continue
+            if now_ms - int(market.get("ts_ms") or 0) > _MAX_FEED_AGE_MS:
+                row["status"] = "Live read is stale"
+                continue
+            if market.get("quality_flags"):
+                row["status"] = "Degraded inputs: " + ", ".join(market["quality_flags"])
+                continue
+            if not rules:
+                row["status"] = "No enabled rules"
+                continue
+            reasons = []
+            for rule in rules:
+                side = rule.pick_side(model_p_yes)
+                ask = yes_ask if side == "yes" else ONE - yes_bid
+                reason = rule.check(ticker, seconds_left, model_p_yes, side, ask)
+                if reason is None:
+                    row.update(side=side, price=f"{ask:.2f}", rule=rule.name, status=f"Matches '{rule.name}'")
+                    if series_of(ticker) in busy_series:
+                        row["status"] += " (waiting: a position on this coin is already open)"
+                    else:
+                        candidates.append({"market": market, "rule": rule, "side": side,
+                                           "model_p_yes": model_p_yes})
+                    break
+                reasons.append(f"{rule.name}: {reason}")
+            else:
+                row["status"] = "No match - " + "; ".join(reasons)
+        self.watch = watch
+        return candidates
+
+    def skip(self, ticker: str, reason: str, permanent: bool = False, position: dict | None = None) -> None:
+        """Log why a matched market was not traded, without flooding the event log."""
+        if permanent and position is not None:
+            self.save_position(position)
+        else:
+            self.retry_after_ms[ticker] = int(time.time() * 1000) + _RETRY_AFTER_MS
+        if self.last_skip_reason.get(ticker) != reason:
+            self.last_skip_reason[ticker] = reason
+            self.store.record_trading_event("skipped", reason, ticker=ticker,
+                                            environment=self.environment, mode=self.mode)
+
+    async def market_supported(self, ticker: str) -> bool:
+        if ticker in self.eligible_markets:
+            return True
+        market = (await self.rest.get_market(ticker))["market"]
+        event = (await self.rest.get_event(market["event_ticker"]))["event"]
+        series = (await self.rest.get_series(event["series_ticker"]))["series"]
+        fee_types = ("quadratic", "quadratic_with_maker_fees", "quadratic_with_combo_maker_fees")
+        supported = not (
+            market["status"] != "active" or series.get("fee_type") not in fee_types
+            or market.get("market_type") != "binary"
+            or dollars(market.get("notional_value_dollars", "0")) != ONE
+            or market.get("settlement_bounds_type") != "default"
+            or dollars(series.get("fee_multiplier", "1")) > ONE
+            or event.get("fee_type_override") not in (None, *fee_types)
+            or dollars(event.get("fee_multiplier_override") or "1") > ONE
+        )
+        if supported:
+            self.eligible_markets.add(ticker)
+        return supported
+
+    async def enter_by_rules(self, candidates: list[dict]) -> None:
+        busy_series = {series_of(p["ticker"]) for p in self.positions() if p["status"] in ("pending", "open")}
+        for candidate in candidates:
+            market, rule, side = candidate["market"], candidate["rule"], candidate["side"]
+            ticker = market["ticker"]
+            now_ms = int(time.time() * 1000)
+            if series_of(ticker) in busy_series or self.retry_after_ms.get(ticker, 0) > now_ms:
+                continue
+            if not self.enabled or (market.get("close_ts_ms") or 0) <= now_ms:
+                return
+            policy = rule.policy
             position = {
-                "ticker": decision["ticker"], "side": "yes" if decision["recommendation"] == "BUY_YES" else "no",
+                "ticker": ticker, "side": side, "rule": rule.name,
+                "close_ts_ms": market.get("close_ts_ms"), "opened_ms": now_ms,
                 "status": "skipped", "quantity": "0", "entry_cost": "0", "exit_credit": "0",
                 "policy": policy_json(policy), "pending": None, "net_pnl": None,
                 "account_identity": self.account_identity,
             }
-            reason = None
-            if decision["recommendation"] not in ("BUY_YES", "BUY_NO"):
-                reason = "Model chose no trade"
-            elif busy:
-                reason = "One bot position is already open or pending"
-            elif not decision["close_ts_ms"] or decision["close_ts_ms"] <= now_ms:
-                reason = "Market is closed"
-            if reason is None:
-                market = (await self.rest.get_market(position["ticker"]))["market"]
-                event = (await self.rest.get_event(market["event_ticker"]))["event"]
-                series = (await self.rest.get_series(event["series_ticker"]))["series"]
-                fee_types = ("quadratic", "quadratic_with_maker_fees", "quadratic_with_combo_maker_fees")
-                if (market["status"] != "active" or series.get("fee_type") not in fee_types
-                    or market.get("market_type") != "binary"
-                    or dollars(market.get("notional_value_dollars", "0")) != ONE
-                    or market.get("settlement_bounds_type") != "default"
-                    or dollars(series.get("fee_multiplier", "1")) > ONE
-                    or event.get("fee_type_override") not in (None, *fee_types)
-                    or dollars(event.get("fee_multiplier_override") or "1") > ONE):
-                    reason = "Market is not open or uses an unsupported fee schedule"
-                elif await self.account_quantity(position["ticker"]) != 0:
-                    reason = "Existing account holdings in this market; bot will not mix positions"
-                else:
-                    orders = await self.rest.get_orders(position["ticker"])
-                    if orders.get("cursor") or any(order["status"] == "resting" for order in orders["orders"]):
-                        reason = "Existing or incompletely checked account orders in this market"
-            if reason is None:
-                opposite = "no" if position["side"] == "yes" else "yes"
-                asks = await self.levels(position["ticker"], opposite)
-                if not asks:
-                    reason = "No entry liquidity"
-                else:
-                    ask = ONE - asks[0][0]
-                    count = policy.entry_count(ask)
-                    if count == 0 or asks[0][1] < count:
-                        reason = "Budget, profit target, or entry liquidity does not permit this trade"
-                    else:
-                        bids = await self.levels(position["ticker"], position["side"])
-                        if not bids or bids[0][1] < count:
-                            reason = "Insufficient initial sell liquidity"
-                        elif (ask - bids[0][0]) * count + 2 * fee_reserve(count) >= policy.stop_loss:
-                            reason = "Quoted spread and reserved fees already reach the loss limit"
-                        else:
-                            if not self.enabled or int(time.time() * 1000) - decision["ts_ms"] > 30_000:
-                                return
-                            await self.submit(position, "buy", Decimal(count), ask, "Locked model decision")
-                            return
-            self.save_position(position)
-            self.event("skipped", reason, position)
+            if not await self.market_supported(ticker):
+                self.skip(ticker, "Market is not open or uses an unsupported fee schedule", True, position)
+                continue
+            if await self.account_quantity(ticker) != 0:
+                self.skip(ticker, "Existing account holdings in this market; bot will not mix positions",
+                          True, position)
+                continue
+            orders = await self.rest.get_orders(ticker)
+            if orders.get("cursor") or any(order["status"] == "resting" for order in orders["orders"]):
+                self.skip(ticker, "Existing or incompletely checked account orders in this market")
+                continue
+            opposite = "no" if side == "yes" else "yes"
+            asks = await self.levels(ticker, opposite)
+            if not asks:
+                self.skip(ticker, f"Rule '{rule.name}' matched but there is no {side.upper()} liquidity")
+                continue
+            ask = ONE - asks[0][0]
+            seconds_left = ((market.get("close_ts_ms") or 0) - int(time.time() * 1000)) / 1000
+            reason = rule.check(ticker, seconds_left, candidate["model_p_yes"], side, ask)
+            if reason:
+                self.skip(ticker, f"Rule '{rule.name}' no longer matches at the live price: {reason}")
+                continue
+            count = min(policy.entry_count(ask), int(asks[0][1]))
+            if count == 0:
+                self.skip(ticker, f"Bet ${policy.budget} buys no whole {side.upper()} contract at {ask}"
+                          if policy.entry_count(ask) == 0 else "Not enough contracts offered at the best price")
+                continue
+            if policy.has_exits:
+                bids = await self.levels(ticker, side)
+                if not bids or bids[0][1] < count:
+                    self.skip(ticker, "Insufficient sell liquidity for the take-profit/stop-loss exits")
+                    continue
+                if policy.stop_loss > 0 and (ask - bids[0][0]) * count + 2 * fee_reserve(count) >= policy.stop_loss:
+                    self.skip(ticker, "Quoted spread and reserved fees already reach the stop loss")
+                    continue
+            if not self.enabled:
+                return
+            confidence = candidate["model_p_yes"] if side == "yes" else ONE - candidate["model_p_yes"]
+            await self.submit(position, "buy", Decimal(count), ask,
+                              f"Rule '{rule.name}': {side.upper()} at {ask}, model {confidence:.2f}, "
+                              f"fee {taker_fee(ask, count)}")
+            busy_series.add(series_of(ticker))
+            self.last_skip_reason.pop(ticker, None)
+            if self.blockers():
+                return
 
     async def submit(self, position: dict, action: str, quantity: Decimal, price: Decimal, reason: str) -> None:
         client_id = str(uuid4())
@@ -355,6 +476,8 @@ class AutoTrader:
         position["status"] = "open" if dollars(position["quantity"]) > 0 else "closed"
         position["net_pnl"] = (str(dollars(position["exit_credit"]) - dollars(position["entry_cost"]))
                                if position["status"] == "closed" else None)
+        if position["status"] == "closed" and pending["action"] == "sell":
+            position["closed_by"] = pending["reason"]
         self.save_position(position)
         self.event("filled" if filled else "unfilled", f"{pending['action']} filled {filled} contracts: {pending['reason']}", position)
         if dollars(position["entry_cost"]) > parse_policy(position["policy"]).budget:
@@ -370,6 +493,8 @@ class AutoTrader:
             position["exit_credit"] = str(dollars(position["exit_credit"]) + payout)
             position["quantity"] = "0"
             position["status"] = "closed"
+            position["closed_by"] = "settled"
+            position["result"] = market["result"]
             position["net_pnl"] = str(dollars(position["exit_credit"]) - dollars(position["entry_cost"]))
             self.save_position(position)
             self.event("settled", f"Market settled {market['result']}", position)
@@ -391,7 +516,7 @@ class AutoTrader:
             if remaining == 0:
                 break
         if worst_price is None:
-            if not position.get("liquidity_warning"):
+            if not position.get("liquidity_warning") and parse_policy(position["policy"]).has_exits:
                 position["liquidity_warning"] = True
                 self.save_position(position)
                 self.event("waiting_for_liquidity", "No sell liquidity; exit cannot be filled yet", position)
@@ -404,7 +529,8 @@ class AutoTrader:
         policy = parse_policy(position["policy"])
         mark = dollars(position["exit_credit"]) + levels[0][0] * quantity - reserve - dollars(position["entry_cost"])
         reason = position.get("exit_trigger") or (
-            policy.exit_reason(net) if remaining == 0 else "stop_loss" if mark <= -policy.stop_loss else None
+            policy.exit_reason(net) if remaining == 0
+            else "stop_loss" if policy.stop_loss > 0 and mark <= -policy.stop_loss else None
         )
         if reason:
             if reason == "stop_loss":

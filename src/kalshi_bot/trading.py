@@ -1,12 +1,14 @@
 """Opt-in trading policy; money is represented as decimal dollars."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 
 
 CENT = Decimal("0.01")
 ONE = Decimal("1")
+MAX_BUDGET = Decimal("25")
 
 
 def dollars(value: object) -> Decimal:
@@ -22,33 +24,204 @@ def fee_reserve(count: int) -> Decimal:
 
 @dataclass(frozen=True)
 class TradingPolicy:
+    """Per-trade bet size and optional early exits.
+
+    A take_profit or stop_loss of 0 disables that exit; with both disabled the
+    position is held to settlement.
+    """
+
     budget: Decimal = Decimal("1.00")
-    take_profit: Decimal = Decimal("0.50")
-    stop_loss: Decimal = Decimal("0.10")
+    take_profit: Decimal = Decimal("0")
+    stop_loss: Decimal = Decimal("0")
 
     def __post_init__(self) -> None:
         for name in ("budget", "take_profit", "stop_loss"):
             amount = getattr(self, name)
-            if not amount.is_finite() or amount <= 0 or amount != amount.quantize(CENT):
-                raise ValueError(f"{name} must be positive dollars with at most two decimals")
-        if self.budget >= Decimal("2"):
-            raise ValueError("The small-money trader requires a budget below $2")
+            if not amount.is_finite() or amount < 0 or amount != amount.quantize(CENT):
+                raise ValueError(f"{name} must be non-negative dollars with at most two decimals")
+        if self.budget <= 0:
+            raise ValueError("budget must be positive")
+        if self.budget > MAX_BUDGET:
+            raise ValueError(f"budget must be at most ${MAX_BUDGET}")
         if self.stop_loss >= self.budget:
             raise ValueError("stop_loss must be less than the budget")
 
+    @property
+    def has_exits(self) -> bool:
+        return self.take_profit > 0 or self.stop_loss > 0
+
     def entry_count(self, ask: Decimal) -> int:
+        """Whole contracts affordable at `ask` with fees reserved, within budget."""
         if not ask.is_finite() or not CENT <= ask < ONE:
             return 0
         count = int(self.budget / ask)
         while count and ask * count + fee_reserve(count) > self.budget:
             count -= 1
-        if not count or (ONE - ask) * count - 2 * fee_reserve(count) < self.take_profit:
-            return 0
         return count
 
     def exit_reason(self, net_pnl: Decimal) -> str | None:
-        if net_pnl >= self.take_profit:
+        if self.take_profit > 0 and net_pnl >= self.take_profit:
             return "take_profit"
-        if net_pnl <= -self.stop_loss:
+        if self.stop_loss > 0 and net_pnl <= -self.stop_loss:
             return "stop_loss"
         return None
+
+
+def taker_fee(price: Decimal, count: int = 1) -> Decimal:
+    """Kalshi quadratic taker fee for an order, rounded up to the cent."""
+    raw = Decimal("0.07") * count * price * (ONE - price)
+    return (raw / CENT).to_integral_value(rounding=ROUND_CEILING) * CENT
+
+
+MAX_RULES = 10
+RULE_SIDES = ("model", "yes", "no")
+_COIN_RE = re.compile(r"^(ANY|[A-Z0-9]{2,10})$")
+
+
+def _prob(values: dict, name: str, default: str) -> Decimal:
+    raw = values.get(name)
+    amount = dollars(default if raw in (None, "") else raw)
+    if not Decimal("0") <= amount <= ONE or amount != amount.quantize(CENT):
+        raise ValueError(f"{name} must be between 0 and 1 with at most two decimals")
+    return amount
+
+
+def _seconds(values: dict, name: str, default: int) -> int:
+    raw = values.get(name)
+    try:
+        seconds = int(str(default if raw in (None, "") else raw))
+    except ValueError:
+        raise ValueError(f"{name} must be whole seconds") from None
+    if not 0 <= seconds <= 3600:
+        raise ValueError(f"{name} must be between 0 and 3600 seconds")
+    return seconds
+
+
+@dataclass(frozen=True)
+class EntryRule:
+    """A user-defined entry rule: when a live market matches, the bot buys.
+
+    The bot does not second-guess a matching rule; every check here is
+    something the user chose. Prices are the cost of one contract of the side
+    being bought; confidence is the model's probability that side wins; edge is
+    that probability minus the price and the taker fee.
+    """
+
+    name: str = "Rule"
+    enabled: bool = True
+    coin: str = "ANY"
+    side: str = "model"
+    min_price: Decimal = Decimal("0.50")
+    max_price: Decimal = Decimal("0.95")
+    min_confidence: Decimal = Decimal("0.50")
+    min_edge: Decimal | None = Decimal("0")
+    min_seconds_left: int = 330
+    max_seconds_left: int = 390
+    policy: TradingPolicy = TradingPolicy()
+
+    def __post_init__(self) -> None:
+        if not self.name or len(self.name) > 40:
+            raise ValueError("Rule name must be 1-40 characters")
+        if not _COIN_RE.match(self.coin):
+            raise ValueError("coin must be ANY or a ticker symbol such as BTC")
+        if self.side not in RULE_SIDES:
+            raise ValueError("side must be model, yes, or no")
+        if not CENT <= self.min_price <= self.max_price <= Decimal("0.99"):
+            raise ValueError("Price range must satisfy 0.01 <= min_price <= max_price <= 0.99")
+        if self.min_edge is not None and not Decimal("-1") <= self.min_edge <= ONE:
+            raise ValueError("min_edge must be between -1 and 1")
+        if self.min_seconds_left > self.max_seconds_left:
+            raise ValueError("min_seconds_left must not exceed max_seconds_left")
+
+    @staticmethod
+    def parse(values: dict) -> "EntryRule":
+        if not isinstance(values, dict):
+            raise ValueError("Each rule must be an object")
+        raw_edge = values.get("min_edge")
+        min_edge = None if raw_edge in (None, "") else dollars(raw_edge)
+        if min_edge is not None and min_edge != min_edge.quantize(CENT):
+            raise ValueError("min_edge must have at most two decimals")
+        enabled = values.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be true or false")
+        return EntryRule(
+            name=str(values.get("name") or "Rule").strip()[:40] or "Rule",
+            enabled=enabled,
+            coin=str(values.get("coin") or "ANY").strip().upper(),
+            side=str(values.get("side") or "model").strip().lower(),
+            min_price=_prob(values, "min_price", "0.50"),
+            max_price=_prob(values, "max_price", "0.95"),
+            min_confidence=_prob(values, "min_confidence", "0"),
+            min_edge=min_edge,
+            min_seconds_left=_seconds(values, "min_seconds_left", 0),
+            max_seconds_left=_seconds(values, "max_seconds_left", 900),
+            policy=TradingPolicy(
+                budget=dollars(values.get("budget") or "1.00"),
+                take_profit=dollars(values.get("take_profit") or "0"),
+                stop_loss=dollars(values.get("stop_loss") or "0"),
+            ),
+        )
+
+    def to_json(self) -> dict:
+        return {
+            "name": self.name, "enabled": self.enabled, "coin": self.coin, "side": self.side,
+            "min_price": str(self.min_price), "max_price": str(self.max_price),
+            "min_confidence": str(self.min_confidence),
+            "min_edge": None if self.min_edge is None else str(self.min_edge),
+            "min_seconds_left": self.min_seconds_left, "max_seconds_left": self.max_seconds_left,
+            "budget": str(self.policy.budget), "take_profit": str(self.policy.take_profit),
+            "stop_loss": str(self.policy.stop_loss),
+        }
+
+    def coin_matches(self, ticker: str) -> bool:
+        return self.coin == "ANY" or self.coin in ticker.split("-")[0].upper()
+
+    def pick_side(self, model_p_yes: Decimal) -> str:
+        if self.side != "model":
+            return self.side
+        return "yes" if model_p_yes >= Decimal("0.5") else "no"
+
+    def check(self, ticker: str, seconds_left: float, model_p_yes: Decimal, side: str, ask: Decimal) -> str | None:
+        """None when the market satisfies this rule at `ask`, else the first failing condition."""
+        if not self.coin_matches(ticker):
+            return f"coin is not {self.coin}"
+        if not self.min_seconds_left <= seconds_left <= self.max_seconds_left:
+            return f"{int(seconds_left)}s left is outside {self.min_seconds_left}-{self.max_seconds_left}s"
+        if not self.min_price <= ask <= self.max_price:
+            return f"{side.upper()} costs {ask}, outside {self.min_price}-{self.max_price}"
+        confidence = model_p_yes if side == "yes" else ONE - model_p_yes
+        if confidence < self.min_confidence:
+            return f"model gives {side.upper()} {confidence:.2f} < {self.min_confidence}"
+        if self.min_edge is not None:
+            edge = confidence - ask - taker_fee(ask)
+            if edge < self.min_edge:
+                return f"edge {edge:.3f} after fees < {self.min_edge}"
+        return None
+
+
+def default_rules(budget: Decimal = Decimal("1.00"), policy: TradingPolicy | None = None) -> list[EntryRule]:
+    """Mirrors the walk-forward backtest: follow the model's side whenever it shows
+    any after-fee edge at the T-6:30 decision point, held to settlement."""
+    return [EntryRule(
+        name="Model edge at T-6:30", policy=policy or TradingPolicy(budget=min(budget, MAX_BUDGET)),
+    )]
+
+
+def parse_rules(values: dict) -> list[EntryRule]:
+    """Parse a settings record; legacy budget/take_profit/stop_loss records migrate to one rule."""
+    if not isinstance(values, dict):
+        raise ValueError("Settings must be an object")
+    if "rules" not in values:
+        if "budget" not in values:
+            raise ValueError("Settings must contain rules")
+        return default_rules(dollars(values["budget"]))
+    rules = values["rules"]
+    if not isinstance(rules, list) or not rules:
+        raise ValueError("Add at least one rule")
+    if len(rules) > MAX_RULES:
+        raise ValueError(f"At most {MAX_RULES} rules are supported")
+    return [EntryRule.parse(rule) for rule in rules]
+
+
+def rules_json(rules: list[EntryRule]) -> dict:
+    return {"rules": [rule.to_json() for rule in rules]}

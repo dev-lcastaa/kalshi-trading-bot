@@ -12,6 +12,7 @@ from kalshi_bot.features.engine import Features
 from kalshi_bot.main import BotApp, MarketState
 from kalshi_bot.prediction.calibration import IsotonicCalibrator
 from kalshi_bot.prediction.logistic import LogisticRegressionModel
+from kalshi_bot.prediction.market_recal import MarketRecalibrator
 from kalshi_bot.prediction.model import RegularizedSettlementPredictor, SettlementAwarePredictor
 
 
@@ -29,6 +30,8 @@ async def test_shadow_records_same_inputs_without_changing_live_decision(tmp_pat
     )
     app.predictor = SettlementAwarePredictor()
     app.calibrators = {"BRTI": IsotonicCalibrator()}
+    app.market_recalibrator = MarketRecalibrator()
+    app.live_market = {}
     app.logistic_model = LogisticRegressionModel()
     state = MarketState("BTC-TEST", 100.0, 700000, "BRTI")
     app.markets = {state.ticker: state}
@@ -116,6 +119,8 @@ async def test_jetson_8m30_review_runs_during_early_quality_abstention(tmp_path,
     )
     app.predictor = SettlementAwarePredictor()
     app.calibrators = {"BRTI": IsotonicCalibrator()}
+    app.market_recalibrator = MarketRecalibrator()
+    app.live_market = {}
     app.logistic_model = LogisticRegressionModel()
     app.llm_reviewer = Reviewer()
     state = MarketState("BTC-REVIEW", 100.0, 700_000, "BRTI")
@@ -150,6 +155,8 @@ def test_shadow_experiment_id_stable_across_training_progress(tmp_path):
     )
     app.predictor = SettlementAwarePredictor()
     app.calibrators = {"BRTI": IsotonicCalibrator()}
+    app.market_recalibrator = MarketRecalibrator()
+    app.live_market = {}
     app.logistic_model = LogisticRegressionModel()
     state = MarketState("BTC-FP", 100.0, 700000, "BRTI")
     state.yes_bid_dollars, state.yes_ask_dollars = 0.4, 0.5

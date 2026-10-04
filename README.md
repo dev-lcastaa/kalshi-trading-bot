@@ -9,32 +9,80 @@ opt-in automatic trading, saved dollar thresholds, and an activity journal.
 
 ## Dashboard trading
 
-The **Trading** tab (or `/trading`) has two independent journeys:
+The **Trading** tab (or `/trading`) is written in plain language and has two
+independent modes (it opens on Practice):
 
-- **Live auto trading** — places real orders on your Kalshi account
-  (demo or production, depending on `KALSHI_ENV`).
-- **Paper auto trading** — simulates fills against the live order books and
-  tracks a simulated account. No orders are ever sent. Paper results are
+- **Practice (fake money)** — simulates fills against the live order books and
+  tracks a pretend account. No orders are ever sent. Practice results are
   estimates: they ignore queue position and your order's market impact,
   so real fills can be worse.
+- **Real money** — places real orders on your Kalshi account
+  (demo or production, depending on `KALSHI_ENV`; the tab says which).
 
-Each journey has its own saved **Budget**, **Take profit**, and **Stop loss**,
-its own on/off switch, and its own position cards with that position's actions
-and decision. Save settings before enabling the switch. Settings are stored in
-the bot database, not the browser; they survive refreshes and restarts and do
-not require a bot restart to change. Environment values provide first-run
-defaults only:
+Each mode has its own saved rules and its own page:
+
+- **Bot status** — a big ON/OFF card with the switch and a plain list of
+  anything stopping the bot from betting. Turning Real money on requires a
+  confirmation box.
+- **Scoreboard** — bets running now, finished bets, total won/lost, win rate.
+- **Bets happening now** — one card per open bet: coin, UP/DOWN, amount paid,
+  cost per contract, payout if it wins, value if sold now, time left, the rule
+  that triggered it, its exit plan, what the bot did, and why.
+- **Finished bets** — closed bets only, newest first: Won/Lost, profit, and
+  how it ended (market ended / cashed out early / sold to cut losses).
+- **Markets the bot is watching** — every live market with the bot's and the
+  crowd's odds and a plain reason it is or isn't betting.
+- **Your betting rules** — the rule editor (prices in cents, confidence in %).
+- **Bot diary** — a collapsible log of everything the bot did.
+
+Save rules before turning the bot on. Rules are stored in the bot database,
+not the browser; they survive refreshes and restarts and do not require a bot
+restart to change.
+
+### Entry rules (rules-driven trading)
+
+Trading is rule-driven: you decide in advance exactly what the bot buys, and it
+executes without second-guessing. Every few seconds the bot checks each live
+market against your enabled rules (top to bottom, first match wins). A rule
+matches when **all** of its conditions hold:
+
+| Rule field | Meaning |
+|---|---|
+| Coin | `ANY`, `BTC`, or `SOL` |
+| Which way to bet | **Follow the bot's guess** (UP/YES if the model gives YES ≥ 50%, else DOWN/NO), **Always bet UP**, or **Always bet DOWN** |
+| Lowest/Highest price to pay | Price of one contract of the side being bought, in cents (1–99¢) |
+| How sure the bot must be | Model probability that the bought side wins (0–100%) |
+| Minimum expected profit | Confidence minus price minus taker fee, in cents; blank turns the check off |
+| Start/Stop betting at (seconds left) | Time window before market close (e.g. 390→330 = around T-6:30) |
+| Most to spend per trade | Dollars per trade, at most **$25** (fees are reserved from it) |
+| Cash out when up by / Cut losses when down by | Net-P/L exit thresholds in dollars; **0 = never (hold to the end)** |
+
+On a match the bot re-checks the rule against the **real order book** (not the
+quote), sizes the order to the budget and top-of-book size, and submits a
+price-limited immediate-or-cancel buy. It holds **at most one open position per
+coin** (a BTC and a SOL position can run concurrently). The "Markets the bot is watching" table
+shows every live market, the side/price a rule would buy, and why other markets
+don't match; it also previews matches while trading is paused.
+
+The default rule (`Model edge at T-6:30`) mirrors the walk-forward backtest:
+follow the model's side whenever it shows any after-fee edge, price 0.50–0.95,
+held to settlement. **Rules that ignore edge (blank Min edge, Always YES/NO)
+trade more often but can lose money steadily after fees — test them in Paper
+mode first.** Older saved settings (budget/take profit/stop loss only) migrate
+automatically to this default rule.
+
+Environment values seed the first-run default rule only:
 
 ```dotenv
 KALSHI_TRADE_BUDGET_USD=1.00
-KALSHI_TAKE_PROFIT_USD=0.50
-KALSHI_STOP_LOSS_USD=0.10
+KALSHI_TAKE_PROFIT_USD=0
+KALSHI_STOP_LOSS_USD=0
 ```
 
-Use positive dollar amounts with at most two decimals. The budget must be
-below $2, and the loss limit must be below the budget. Amounts are **per trade**,
-not percentages or daily/session totals. Repeated trades can cumulatively spend
-or lose more than $2. No accuracy or profitability is guaranteed.
+Dollar amounts use at most two decimals; the loss limit must be below the
+budget. Amounts are **per trade**, not percentages or daily/session totals.
+Repeated trades can cumulatively spend or lose much more than one budget.
+No accuracy or profitability is guaranteed.
 
 To set up:
 
@@ -63,15 +111,15 @@ If the server authorization flag is false, **all** live order execution,
 including exits, stops. Do not disable that flag or stop the process while
 relying on exits. Compose already reads these variables from `.env`.
 
-The policy triggers an exit at net profit **at or above** the profit target,
-or net loss **at or above** the loss limit. Entry sizing reserves fees and
-skips quotes where the profit target cannot be reached even at a $1 payout.
-It also skips entries whose quoted spread and fee reserve already reach the
-configured loss limit, or whose initial sell liquidity is insufficient.
-Net P/L uses confirmed fill costs/fees and available sell liquidity, not the
-underlying crypto price. Entries use fresh, newly locked live-model decisions
-made after enabling; historical or Test Lab decisions never trigger trades.
-Only one bot position is allowed at a time, with one entry attempt per market.
+When enabled, the policy triggers an exit at net profit **at or above** the
+profit target, or net loss **at or above** the loss limit; a threshold of 0 is
+off. Entry sizing reserves fees. With a stop loss set, entries are skipped when
+the quoted spread and fee reserve already reach the loss limit; with any exit
+set, entries need initial sell liquidity. Net P/L uses confirmed fill
+costs/fees and available sell liquidity, not the underlying crypto price.
+Entries use the fresh live market feed (reads older than 10 seconds or with
+degraded inputs are never traded); historical or Test Lab decisions never
+trigger trades. One open bot position per coin, one entry per market.
 The worker refuses to mix an entry with existing holdings/resting orders in that
 market. Avoid manual trading in bot-managed markets; a holdings mismatch pauses
 automation rather than risking unrelated holdings. Only ordinary $1 binary
@@ -94,11 +142,38 @@ responses; authenticated demo/production execution has not been verified here.
 
 ## 📍 Where we are right now
 
-The live model remains unchanged. With `v2` selected, new locked decisions
+### Market-anchored recalibration (v0.8.0, decision model `market-recal-v1`)
+
+After 300+ settled markets, a walk-forward review (fit on the past, test on
+the next unseen markets, ~2,500 test markets) showed the blended model's
+Brier score was **worse than the market price alone**, which is why the old
+pipeline said NO_EDGE ~88% of the time. The only variant that beat the market
+after taker fees was a Platt recalibration of the market price itself:
+
+```
+P(yes) = sigmoid(a + b * logit(market mid))   # fitted a ≈ 0.03, b ≈ 1.11
+```
+
+`b > 1` captures the favorite–longshot bias in these markets (favorites win a
+bit more often than their price implies). In walk-forward testing, following
+it whenever after-fee edge ≥ 0 made +$17.36 over 833 one-contract trades
+(about +2¢/contract, 86% win rate), positive in both halves of the history and
+on both BTC and SOL (bootstrap P(profit > 0) ≈ 0.97). Adding the model's own
+features, per-coin fits, or isotonic curves all did worse, and the old
+confirmation gate reduced profit, so it is now off by default.
+
+The live bot refits this recalibrator from settled decision snapshots every
+calibration cycle once `KALSHI_MARKET_RECAL_MIN_SAMPLES` (default 300) clean
+samples exist; until then the previous calibrated model is used. Decision
+snapshots record `decision_model`, the coefficients, and the edge threshold so
+results stay auditable. **The edge is thin**: it can disappear with fee or
+market changes, so watch Paper results before committing real money.
+
+The previous blended model is still computed and recorded as the
+pre-calibration probability. With `v2` selected, new locked decisions
 also record a shadow model with its order-book drift weight set to zero.
 The shadow model never changes the live recommendation or places an order.
-We are collecting prospective comparisons before deciding whether to
-replace the model; no sample count guarantees accuracy or profitability.
+No sample count guarantees accuracy or profitability.
 
 ### Shadow comparison
 
@@ -614,7 +689,13 @@ modify or deploy anything to that server.
 | `KALSHI_INDEX_IDS` | Which price feeds to track (default `BRTI,SOLUSD_RTI`) |
 | `KALSHI_COIN_TICKS` | Which coins to find markets for (default `BTC,SOL`) |
 | `KALSHI_POLL_INTERVAL_SEC` | How often the bot recalculates its guess |
-| `KALSHI_EDGE_THRESHOLD` | Minimum model probability minus purchase price, before fees/slippage |
+| `KALSHI_EDGE_THRESHOLD` | Minimum model probability minus purchase price, before fees/slippage (legacy model) |
+| `KALSHI_DECISION_MODEL` | `market-recal` (default: market-anchored recalibration once fitted) or `legacy` |
+| `KALSHI_MARKET_RECAL_MIN_SAMPLES` | Clean settled decisions required before the recalibrator is used (default `300`) |
+| `KALSHI_MARKET_RECAL_WINDOW` | Most recent settled decisions used to fit it (default `5000`) |
+| `KALSHI_MARKET_RECAL_EDGE_THRESHOLD` | Edge threshold used with the recalibrator (default `0`; fees are already deducted) |
+| `KALSHI_CONFIRMATION_GATE` | `true` re-enables the momentum/book confirmation gate on locked decisions (default `false`) |
+| `KALSHI_TRADE_BUDGET_USD` / `KALSHI_TAKE_PROFIT_USD` / `KALSHI_STOP_LOSS_USD` | First-run default rule only (budget ≤ $25; 0 = exit off) |
 | `KALSHI_FEE_MULTIPLIER` | Kalshi taker-fee multiplier used in `ceil(M * 0.07 * P * (1-P) * 100) / 100` (default `1`) |
 | `KALSHI_SLIPPAGE_PER_CONTRACT` | Conservative slippage in dollars deducted from executable edge (default `0`) |
 | `KALSHI_PREDICTOR_VERSION` | `v1` (simple) or `v2` (default, settlement-aware; accuracy must be validated) |
@@ -640,6 +721,8 @@ modify or deploy anything to that server.
 - `src/kalshi_bot/data/store.py` — saves everything (SQLite or Postgres).
 - `src/kalshi_bot/features/engine.py` — turns raw prices into volatility/momentum numbers.
 - `src/kalshi_bot/prediction/model.py` — the actual v1/v2 prediction math.
+- `src/kalshi_bot/prediction/market_recal.py` — market-anchored Platt recalibration used for live decisions.
+- `src/kalshi_bot/trading.py` / `auto_trader.py` — entry rules, sizing/exits, and the auto-trading worker.
 - `src/kalshi_bot/signals/generator.py` — compares the model's guess to the market's price.
 - `src/kalshi_bot/signals/confirmation.py` — the cross-check before locking in a trade call.
 - `src/kalshi_bot/backtest/runner.py` — tests the model against made-up historical data.

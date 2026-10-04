@@ -1007,6 +1007,32 @@ class Store:
                 pairs.append((features, 1.0 if result == "yes" else 0.0))
         return pairs
 
+    def market_outcome_pairs(self, limit: int = 5000) -> list[tuple[float, float]]:
+        """Recent (market-implied P(yes) at decision time, outcome) pairs.
+
+        Trains the market recalibrator. Decisions taken on degraded inputs
+        (non-empty quality_flags) are excluded because their quotes are unreliable.
+        """
+        rows = self._query(
+            """
+            SELECT ds.snapshot_json, m.result
+            FROM decision_snapshots ds
+            INNER JOIN markets m ON m.ticker = ds.ticker
+            WHERE m.result IN ('yes', 'no')
+            ORDER BY m.closed_at_ms DESC, ds.ts_ms DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        pairs = []
+        for snapshot_json, result in rows:
+            snapshot = json.loads(snapshot_json)
+            if snapshot.get("quality_flags"):
+                continue
+            probability = snapshot.get("live", {}).get("market_p_yes")
+            if isinstance(probability, (int, float)) and math.isfinite(probability) and 0 < probability < 1:
+                pairs.append((float(probability), 1.0 if result == "yes" else 0.0))
+        return pairs
+
     def calibration_pairs(self, limit: int = 2000, index_id: str | None = None) -> list[tuple[float, float]]:
         """Recent pre-calibration probabilities paired with settled outcomes.
 

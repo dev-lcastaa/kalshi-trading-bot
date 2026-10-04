@@ -6,16 +6,32 @@ from kalshi_bot.trading import TradingPolicy, dollars, fee_reserve
 from kalshi_bot.config import Settings
 
 
-def test_one_dollar_budget_includes_fees_and_target_is_reachable():
+def test_one_dollar_budget_includes_fees_without_requiring_a_reachable_target():
     policy = TradingPolicy()
     assert policy.entry_count(Decimal("0.45")) == 2
     assert Decimal("0.45") * 2 + fee_reserve(2) <= policy.budget
-    assert policy.entry_count(Decimal("0.75")) == 0
-    assert policy.entry_count(Decimal("0.50")) == 0
+    # Favorites are allowed: entry no longer requires the take-profit to be reachable.
+    assert policy.entry_count(Decimal("0.75")) == 1
+    assert policy.entry_count(Decimal("0.50")) == 1
+    assert policy.entry_count(Decimal("0.99")) == 0
+
+
+def test_larger_budget_up_to_25_dollars():
+    policy = TradingPolicy(budget=Decimal("25"))
+    assert policy.entry_count(Decimal("0.80")) == 30
+    assert Decimal("0.80") * 30 + fee_reserve(30) <= Decimal("25")
+
+
+def test_zero_thresholds_disable_exits_and_hold_to_settlement():
+    policy = TradingPolicy()
+    assert not policy.has_exits
+    assert policy.exit_reason(Decimal("5")) is None
+    assert policy.exit_reason(Decimal("-0.99")) is None
+    assert TradingPolicy(stop_loss=Decimal("0.10")).exit_reason(Decimal("-0.10")) == "stop_loss"
 
 
 def test_thresholds_are_net_dollars_not_percentages():
-    policy = TradingPolicy()
+    policy = TradingPolicy(take_profit=Decimal("0.50"), stop_loss=Decimal("0.10"))
     assert policy.exit_reason(Decimal("0.49")) is None
     assert policy.exit_reason(Decimal("0.50")) == "take_profit"
     assert policy.exit_reason(Decimal("-0.09")) is None
@@ -29,7 +45,7 @@ def test_nonfinite_money_rejected(value):
 
 
 @pytest.mark.parametrize("kwargs", [
-    {"budget": Decimal("2")}, {"budget": Decimal("0")},
+    {"budget": Decimal("25.01")}, {"budget": Decimal("0")}, {"take_profit": Decimal("-0.10")},
     {"take_profit": Decimal("0.001")}, {"stop_loss": Decimal("1")},
 ])
 def test_unsafe_policy_rejected(kwargs):
@@ -58,7 +74,7 @@ def test_custom_thresholds_loaded_from_environment(monkeypatch, profit, loss):
     assert policy.exit_reason(-Decimal(loss)) == "stop_loss"
 
 
-@pytest.mark.parametrize("value", ["0", "-0.10", "0.001", "NaN", "Infinity", "abc"])
+@pytest.mark.parametrize("value", ["-0.10", "0.001", "NaN", "Infinity", "abc"])
 def test_invalid_custom_threshold_rejected_on_load(monkeypatch, value):
     monkeypatch.setenv("KALSHI_ENV", "demo")
     monkeypatch.setenv("KALSHI_TRADE_BUDGET_USD", "1.00")
@@ -66,3 +82,9 @@ def test_invalid_custom_threshold_rejected_on_load(monkeypatch, value):
     monkeypatch.setenv("KALSHI_TAKE_PROFIT_USD", value)
     with pytest.raises((ValueError, ArithmeticError)):
         Settings.load()
+
+def test_zero_threshold_loads_as_disabled(monkeypatch):
+    monkeypatch.setenv("KALSHI_ENV", "demo")
+    monkeypatch.setenv("KALSHI_TAKE_PROFIT_USD", "0")
+    monkeypatch.setenv("KALSHI_STOP_LOSS_USD", "0")
+    assert not Settings.load().trading_policy.has_exits

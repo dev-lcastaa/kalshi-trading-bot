@@ -117,7 +117,6 @@ code,.eyebrow,dt,.signal-kicker,.market-time,.connection,.loading-label { font-f
 .trading-switch,.trading-ack { display:flex;align-items:center;gap:10px;min-height:44px;font-size:13px; }
 .trading-switch { flex-shrink:0; }.trading input[type=checkbox],.trading-dialog input[type=checkbox] { width:20px;height:20px;flex:none;accent-color:var(--green); }
 .trading-risk { max-width:760px;color:var(--gold);font-size:12px;line-height:1.6; }
-.trading-blockers { padding-left:20px;color:var(--red);font-size:13px;line-height:1.7; }
 .trading-policy { display:flex;flex-wrap:wrap;gap:18px 36px;margin:12px 0; }
 .trading-policy dt { font-size:10px;color:var(--muted); }.trading-policy dd { margin:6px 0 0;font:14px "Space Mono",monospace; }
 .trading-position { padding:16px 0;border-top:1px solid var(--line); }.trading-position header { flex-wrap:wrap;font-size:12px; }
@@ -142,4 +141,34 @@ code,.eyebrow,dt,.signal-kicker,.market-time,.connection,.loading-label { font-f
 .trading-actions span { flex-basis:100%;overflow-wrap:anywhere; }
 .trading-decision-body p { margin:6px 0;font-size:12px; }
 .trading-other-decision { padding:10px 0;border-top:1px solid var(--line); }
-@media (max-width:560px) { .tabs { grid-template-columns:repeat(4,minmax(0,1fr));width:100%; }.tabs button { display:flex;align-items:center;justify-content:center;gap:4px;font-size:10px; }.tabs button svg { width:13px;flex:none; }.trading-control { align-items:stretch;flex-direction:column;gap:12px; }.trading-fields { gap:10px; }.trading-fields label { font-size:11px; }.trading input:not([type=checkbox]):not([type=radio]) { padding:10px 8px; }.trading-events li { grid-template-columns:1fr auto; }.trading-events code,.trading-events span { grid-column:1/-1; }.trading-dialog { padding:18px; }.trading-policy { gap:16px 24px; }.trading-cards { grid-template-columns:1fr; }.trading-card { padding:14px; }.trading-modes label { font-size:12px;padding:8px 6px; } }
+.trading select { min-width:0;width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line-strong);border-radius:6px;background:rgba(5,9,15,.45);color:var(--text); }
+.trading-rule { min-width:0;margin:0 0 16px;padding:16px;border:1px solid var(--line);border-radius:var(--radius);background:rgba(5,9,15,.25); }
+.trading-rule header { display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px; }
+.trading-rule .trading-fields { max-width:none; }
+.trading-rule p { margin:12px 0 0;font-size:12px; }
+.trading-rule-list { padding-left:20px;margin:0; }.trading-rule-list li { padding:8px 0;font-size:13px; }.trading-rule-list p { margin:4px 0; }
+.trading-watch { overflow-x:auto; }
+.trading-watch table { width:100%;border-collapse:collapse;font-size:12px; }
+.trading-watch th { padding:8px;color:var(--muted);font-size:10px;font-weight:500;text-align:left;white-space:nowrap; }
+.trading-watch td { padding:8px;border-top:1px solid var(--line);vertical-align:top; }
+.trading-watch td:last-child { min-width:220px;overflow-wrap:anywhere; }
+.trading-watch tr.match td { color:var(--green); }
+.trading-field { display:grid;gap:4px;min-width:0; }.trading-fields small { color:var(--dim);font-size:10px; }
+.trading-status { margin:18px 0 0;padding:20px;border:1px solid var(--line-strong);border-left:4px solid var(--muted);border-radius:var(--radius);background:rgba(5,9,15,.35); }
+.trading-status.on { border-left-color:var(--green);background:rgba(48,209,88,.06); }
+.trading-status h3 { margin:4px 0 6px;font-size:22px; }.trading-status.on h3 { color:var(--green); }
+.trading-status p { margin:6px 0; }
+.trading-blockers { margin:12px 0;padding:12px 14px;border:1px solid rgba(255,105,97,.35);border-radius:8px;background:rgba(255,105,97,.08);color:var(--red);font-size:13px; }.trading-blockers ul { margin:6px 0 0;padding-left:20px;line-height:1.7; }
+.trading-score { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:0; }
+.trading-score>div { min-width:0;padding:14px;border:1px solid var(--line);border-radius:var(--radius-sm);background:rgba(5,9,15,.3); }
+.trading-score dt { color:var(--muted);font-size:11px; }.trading-score dd { margin:6px 0 0;font:18px "Space Mono",monospace;overflow-wrap:anywhere; }
+.trading-coin { font-size:18px; }
+.trading-bet { padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700; }.trading-bet.up { color:var(--green);background:rgba(48,209,88,.12); }.trading-bet.down { color:var(--red);background:rgba(255,105,97,.12); }
+.trading-chip { margin-left:auto;padding:4px 10px;border:1px solid var(--line-strong);border-radius:999px;color:var(--gold);font-size:11px; }
+.trading-finished-list { padding:0;margin:0;list-style:none; }
+.trading-finished { display:grid;grid-template-columns:90px minmax(0,1.2fr) minmax(0,1fr) minmax(0,1.2fr) auto;align-items:center;gap:8px 16px;padding:12px 0;border-top:1px solid var(--line);font-size:13px; }
+.trading-finished small { display:block;margin-top:2px;font-size:11px; }
+.trading-finished>strong { font:15px "Space Mono",monospace;text-align:right; }
+.trading-outcome { justify-self:start;padding:4px 10px;border-radius:999px;background:rgba(255,255,255,.06);font-size:12px;font-weight:700; }.trading-outcome.win { color:var(--green);background:rgba(48,209,88,.12); }.trading-outcome.loss { color:var(--red);background:rgba(255,105,97,.12); }
+@media (max-width:560px) { .trading-score { grid-template-columns:repeat(2,minmax(0,1fr)); }.trading-score dd { font-size:15px; }.trading-status { padding:14px; }.trading-finished { grid-template-columns:auto minmax(0,1fr) auto; }.trading-finished>span:nth-child(3),.trading-finished>span:nth-child(4) { grid-column:2/-1; }.trading-finished>strong { grid-row:1;grid-column:3; } }
+@media (max-width:560px) { .tabs { grid-template-columns:repeat(4,minmax(0,1fr));width:100%; }.tabs button { display:flex;align-items:center;justify-content:center;gap:4px;font-size:10px; }.tabs button svg { width:13px;flex:none; }.trading-control { align-items:stretch;flex-direction:column;gap:12px; }.trading-fields { gap:10px; }.trading-fields label { font-size:11px; }.trading input:not([type=checkbox]):not([type=radio]) { padding:10px 8px; }.trading-events li { grid-template-columns:1fr auto; }.trading-events code,.trading-events span { grid-column:1/-1; }.trading-dialog { padding:18px; }.trading-policy { gap:16px 24px; }.trading-cards { grid-template-columns:1fr; }.trading-card { padding:14px; }.trading-rule { padding:12px; }.trading-rule .trading-fields { grid-template-columns:repeat(2,minmax(0,1fr)); }.trading-modes label { font-size:12px;padding:8px 6px; } }

@@ -28,15 +28,15 @@ async def test_controls_save_thresholds_and_restart_paused(tmp_path):
     store = Store(str(tmp_path / "trader.db"))
     trader = AutoTrader(store, AsyncMock(), execution_allowed=True, account_identity="test-account")
     await trader.cycle()
-    await trader.save_settings({"budget": "1.25", "take_profit": "0.25", "stop_loss": "0.05"})
+    await trader.save_settings(rules(budget="1.25", take_profit="0.25", stop_loss="0.05"))
     with pytest.raises(ValueError, match="Confirm"):
         await trader.control(True, False)
     assert (await trader.control(True, True))["enabled"]
     with pytest.raises(ValueError, match="Pause"):
-        await trader.save_settings({"budget": "1", "take_profit": "0.25", "stop_loss": "0.05"})
+        await trader.save_settings(rules(budget="1"))
     assert not (await trader.control(False, False))["enabled"]
     restarted = AutoTrader(store, AsyncMock(), execution_allowed=True, account_identity="test-account")
-    assert restarted.snapshot()["settings"]["take_profit"] == "0.25"
+    assert restarted.snapshot()["settings"]["rules"][0]["take_profit"] == "0.25"
     assert not restarted.enabled
     store.close()
 
@@ -190,24 +190,39 @@ def entry_rest():
     return rest
 
 
-def record_fresh_decision(store, recommendation="BUY_YES"):
+def live_market(ticker="BTC", model_p_yes=0.9, yes_bid=0.44, yes_ask=0.45, seconds_left=360, **extra):
     now_ms = int(time.time() * 1000)
-    store.upsert_active_market("BTC", "BRTI", 100, now_ms + 300000, now_ms)
-    store.record_decision(ticker="BTC", ts_ms=now_ms, seconds_to_expiry=300,
-        index_price=101, strike=100, model_p_yes=0.9, market_p_yes=0.5,
-        edge=0.4, recommendation=recommendation, confidence=0.9)
+    row = {"ticker": ticker, "index_id": "BRTI", "ts_ms": now_ms, "close_ts_ms": now_ms + seconds_left * 1000,
+           "model_p_yes": model_p_yes, "market_p_yes": (yes_bid + yes_ask) / 2,
+           "yes_bid": yes_bid, "yes_ask": yes_ask, "recommendation": "BUY_YES", "quality_flags": []}
+    row.update(extra)
+    return row
+
+
+def rules(**overrides):
+    rule = {"name": "Test", "side": "model", "min_price": "0.01", "max_price": "0.99", "min_confidence": "0",
+            "min_edge": None, "min_seconds_left": 0, "max_seconds_left": 900,
+            "budget": "1.00", "take_profit": "0", "stop_loss": "0"}
+    rule.update(overrides)
+    return {"rules": [rule]}
+
+
+def feed_trader(store, rest, markets=None, **kwargs):
+    feed = markets if markets is not None else [live_market()]
+    kwargs.setdefault("execution_allowed", True)
+    kwargs.setdefault("account_identity", "test-account")
+    return AutoTrader(store, rest, market_feed=lambda: [dict(row, ts_ms=int(time.time() * 1000)) for row in feed],
+                      **kwargs)
 
 
 @pytest.mark.asyncio
 async def test_fresh_entry_uses_saved_settings_partial_fills_and_no_duplicates(tmp_path):
     store = Store(str(tmp_path / "entry.db"))
     rest = entry_rest()
-    trader = AutoTrader(store, rest, execution_allowed=True, account_identity="test-account")
+    trader = feed_trader(store, rest)
     await trader.cycle()
-    await trader.save_settings({"budget": "1.25", "take_profit": "0.25", "stop_loss": "0.10"})
+    await trader.save_settings(rules(budget="1.25", take_profit="0.25", stop_loss="0.10"))
     await trader.control(True, True)
-    trader.enabled_since_ms -= 1
-    record_fresh_decision(store)
 
     async def submit(payload):
         rest.get_order.return_value = {"order": {"ticker": "BTC", "order_id": "buy", "status": "canceled",
@@ -288,11 +303,10 @@ async def test_delayed_fill_history_keeps_pending_and_recovery_is_not_double_cou
 async def test_disable_during_entry_checks_prevents_submission(tmp_path):
     store = Store(str(tmp_path / "stop_entry.db"))
     rest = entry_rest()
-    trader = AutoTrader(store, rest, execution_allowed=True, account_identity="test-account")
+    trader = feed_trader(store, rest)
     await trader.cycle()
+    await trader.save_settings(rules())
     await trader.control(True, True)
-    trader.enabled_since_ms -= 1
-    record_fresh_decision(store)
 
     async def orderbook(ticker):
         await trader.control(False, False)
@@ -348,15 +362,14 @@ async def test_entry_is_skipped_if_fees_and_spread_already_reach_loss_limit(tmp_
     store = Store(str(tmp_path / "entry_costs.db"))
     rest = entry_rest()
     rest.get_market_orderbook.return_value["orderbook_fp"]["yes_dollars"] = [["0.40", "10"]]
-    trader = AutoTrader(store, rest, execution_allowed=True, account_identity="test-account")
+    trader = feed_trader(store, rest)
     await trader.cycle()
+    await trader.save_settings(rules(take_profit="0.50", stop_loss="0.10"))
     await trader.control(True, True)
-    trader.enabled_since_ms -= 1
-    record_fresh_decision(store)
     await trader.cycle()
     rest.create_event_order.assert_not_called()
-    assert trader.positions()[0]["status"] == "skipped"
-    assert any("already reach the loss limit" in event["reason"] for event in trader.snapshot()["events"])
+    assert trader.positions() == []
+    assert any("already reach the stop loss" in event["reason"] for event in trader.snapshot()["events"])
     store.close()
 
 
@@ -364,11 +377,10 @@ async def test_entry_is_skipped_if_fees_and_spread_already_reach_loss_limit(tmp_
 async def test_accepted_entry_lost_response_reconciles_without_second_post(tmp_path):
     store = Store(str(tmp_path / "lost_response.db"))
     rest = entry_rest()
-    trader = AutoTrader(store, rest, execution_allowed=True, account_identity="test-account")
+    trader = feed_trader(store, rest)
     await trader.cycle()
+    await trader.save_settings(rules())
     await trader.control(True, True)
-    trader.enabled_since_ms -= 1
-    record_fresh_decision(store)
 
     async def lost_response(payload):
         rest.get_orders.return_value = {"orders": [{"order_id": "accepted", "client_order_id": payload["client_order_id"]}], "cursor": ""}
@@ -433,12 +445,10 @@ async def test_partial_exit_continues_after_restart_without_double_cost(tmp_path
 async def test_paper_mode_simulates_fees_and_take_profit_without_real_orders(tmp_path):
     store = Store(str(tmp_path / "paper.db"))
     rest = entry_rest()
-    trader = AutoTrader(store, PaperExchange(store, rest), execution_allowed=True,
-                        mode="paper", account_identity="paper")
+    trader = feed_trader(store, PaperExchange(store, rest), mode="paper", account_identity="paper")
     await trader.cycle()
+    await trader.save_settings(rules(take_profit="0.50", stop_loss="0.10"))
     await trader.control(True, True)
-    trader.enabled_since_ms -= 1
-    record_fresh_decision(store)
     await trader.cycle()
     held = trader.positions()[0]
     assert held["status"] == "open"
@@ -450,6 +460,7 @@ async def test_paper_mode_simulates_fees_and_take_profit_without_real_orders(tmp
     held = trader.positions()[0]
     assert held["status"] == "closed"
     assert Decimal(held["net_pnl"]) == Decimal("0.53")
+    assert held["closed_by"] == "take_profit" and "result" not in held
     assert store.trading_record("paper_account")["BTC"] == "0"
     rest.create_event_order.assert_not_called()
     snapshot = trader.snapshot()
@@ -467,9 +478,9 @@ async def test_paper_and_live_settings_are_independent(tmp_path):
                        account_identity="paper", worker_id=live.worker_id)
     await live.cycle()
     await paper.cycle()
-    await paper.save_settings({"budget": "1.50", "take_profit": "0.75", "stop_loss": "0.20"})
-    assert live.snapshot()["settings"]["budget"] == "1.00"
-    assert paper.snapshot()["settings"]["budget"] == "1.50"
+    await paper.save_settings(rules(budget="1.50", take_profit="0.75", stop_loss="0.20"))
+    assert live.snapshot()["settings"]["rules"][0]["budget"] == "1.00"
+    assert paper.snapshot()["settings"]["rules"][0]["budget"] == "1.50"
     assert not live.blockers()
     assert not paper.blockers()
     store.close()

@@ -14,18 +14,26 @@ def test_dashboard_modes_have_independent_settings_and_controls(tmp_path):
     asyncio.run(live.cycle())
     asyncio.run(paper.cycle())
     client = TestClient(create_app(store, traders={"live": live, "paper": paper}))
-    settings = {"budget": "1.25", "take_profit": "0.25", "stop_loss": "0.05"}
+    rule = {"name": "Favorites", "enabled": True, "coin": "BTC", "side": "model", "min_price": "0.60",
+            "max_price": "0.90", "min_confidence": "0.65", "min_edge": "0.01", "min_seconds_left": 300,
+            "max_seconds_left": 420, "budget": "12.50", "take_profit": "0.25", "stop_loss": "0.05"}
+    settings = {"rules": [rule]}
     body = client.get("/api/trading").json()
     assert body["live"]["enabled"] is False
     assert body["paper"]["mode"] == "paper"
+    assert body["paper"]["watch"] == []
     response = client.put("/api/trading/settings", json={"mode": "paper", **settings})
     assert response.status_code == 200
     assert response.json()["paper"]["settings"] == settings
-    assert response.json()["live"]["settings"]["budget"] == "1.00"
-    assert client.put("/api/trading/settings", json={"mode": "live", **settings, "budget": "2.00"}).status_code == 422
+    assert response.json()["live"]["settings"]["rules"][0]["budget"] == "1.00"
+    too_big = {"rules": [{**rule, "budget": "25.01"}]}
+    assert client.put("/api/trading/settings", json={"mode": "live", **too_big}).status_code == 422
+    bad_range = {"rules": [{**rule, "min_price": "0.95", "max_price": "0.60"}]}
+    assert client.put("/api/trading/settings", json={"mode": "live", **bad_range}).status_code == 422
+    assert client.put("/api/trading/settings", json={"mode": "live", "rules": []}).status_code == 422
     assert client.put("/api/trading/settings", json=settings).status_code == 422
     assert client.post("/api/trading/control", json={"mode": "paper", "enabled": True, "settings": settings}).status_code == 409
-    stale = {**settings, "take_profit": "0.50"}
+    stale = {"rules": [{**rule, "take_profit": "0.50"}]}
     assert client.post("/api/trading/control", json={"mode": "paper", "enabled": True, "confirm": True, "settings": stale}).status_code == 409
     assert not paper.enabled
     response = client.post("/api/trading/control", json={"mode": "paper", "enabled": True, "confirm": True, "settings": settings})

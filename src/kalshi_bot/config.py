@@ -62,6 +62,11 @@ class Settings:
     logistic_training_window: int
     trading_policy: TradingPolicy = field(default_factory=TradingPolicy)
     order_execution_enabled: bool = False
+    decision_model: str = "market-recal"
+    market_recal_min_samples: int = 300
+    market_recal_window: int = 5000
+    market_recal_edge_threshold: float = 0.0
+    confirmation_gate: bool = False
 
     @staticmethod
     def load() -> "Settings":
@@ -127,8 +132,18 @@ class Settings:
             logistic_training_window=int(os.environ.get("KALSHI_LOGISTIC_TRAINING_WINDOW", "5000")),
             trading_policy=TradingPolicy(
                 budget=dollars(os.environ.get("KALSHI_TRADE_BUDGET_USD", "1.00")),
-                take_profit=dollars(os.environ.get("KALSHI_TAKE_PROFIT_USD", "0.50")),
-                stop_loss=dollars(os.environ.get("KALSHI_STOP_LOSS_USD", "0.10")),
+                # 0 disables the exit; with both 0 positions are held to settlement.
+                take_profit=dollars(os.environ.get("KALSHI_TAKE_PROFIT_USD", "0")),
+                stop_loss=dollars(os.environ.get("KALSHI_STOP_LOSS_USD", "0")),
             ),
             order_execution_enabled=os.environ.get("KALSHI_ORDER_EXECUTION_ENABLED", "false").strip().lower() == "true",
+            # "market-recal": decision probability is the market price recalibrated
+            # against settled outcomes (the only variant that beat the market after
+            # fees in walk-forward tests). "legacy": blended model + isotonic.
+            decision_model=os.environ.get("KALSHI_DECISION_MODEL", "market-recal").strip().lower(),
+            market_recal_min_samples=int(os.environ.get("KALSHI_MARKET_RECAL_MIN_SAMPLES", "300")),
+            market_recal_window=int(os.environ.get("KALSHI_MARKET_RECAL_WINDOW", "5000")),
+            market_recal_edge_threshold=float(os.environ.get("KALSHI_MARKET_RECAL_EDGE_THRESHOLD", "0")),
+            # Momentum/book confirmation lowered after-fee PnL in walk-forward tests.
+            confirmation_gate=os.environ.get("KALSHI_CONFIRMATION_GATE", "false").strip().lower() == "true",
         )
