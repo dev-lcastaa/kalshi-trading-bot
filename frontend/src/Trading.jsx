@@ -7,8 +7,8 @@ export const MAX_BUDGET = 25;
 export const MAX_RULES = 10;
 const COINS = [["ANY", "Any coin"], ["BTC", "Bitcoin (BTC)"], ["SOL", "Solana (SOL)"]];
 const SIDES = [["model", "Follow the bot's guess"], ["yes", "Always bet UP"], ["no", "Always bet DOWN"]];
-const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss"];
-const NEW_RULE = { name: "New rule", enabled: true, coin: "ANY", side: "model", min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", max_seconds_left: "390", budget: "1.00", take_profit: "0.00", stop_loss: "0.00" };
+const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss", "max_entries", "reentry_gap_sec"];
+const NEW_RULE = { name: "New rule", enabled: true, coin: "ANY", side: "model", min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", max_seconds_left: "390", budget: "1.00", take_profit: "0.00", stop_loss: "0.00", max_entries: "1", reentry_gap_sec: "60" };
 const WHOLE = /^\d+$/;
 const SIGNED_WHOLE = /^-?\d+$/;
 const MONEY = /^\d+(\.\d{1,2})?$/;
@@ -34,6 +34,7 @@ export function toUi(settings) {
     min_edge: rule.min_edge == null || rule.min_edge === "" ? "" : centsOf(rule.min_edge),
     min_seconds_left: String(rule.min_seconds_left), max_seconds_left: String(rule.max_seconds_left),
     budget: num(rule.budget).toFixed(2), take_profit: num(rule.take_profit).toFixed(2), stop_loss: num(rule.stop_loss).toFixed(2),
+    max_entries: String(rule.max_entries ?? 1), reentry_gap_sec: String(rule.reentry_gap_sec ?? 60),
   })) };
 }
 
@@ -45,6 +46,7 @@ export function fromUi(form) {
     min_edge: String(rule.min_edge ?? "").trim() === "" ? null : dollars(rule.min_edge),
     min_seconds_left: num(rule.min_seconds_left), max_seconds_left: num(rule.max_seconds_left),
     budget: num(rule.budget).toFixed(2), take_profit: num(rule.take_profit).toFixed(2), stop_loss: num(rule.stop_loss).toFixed(2),
+    max_entries: num(rule.max_entries), reentry_gap_sec: num(rule.reentry_gap_sec),
   })) };
 }
 
@@ -60,6 +62,8 @@ export function validateRule(rule) {
   for (const key of ["budget", "take_profit", "stop_loss"]) if (!MONEY.test(text(key))) return "Write money like 1.50 (dollars and cents). Use 0 for \"never\".";
   if (num(rule.budget) <= 0 || num(rule.budget) > MAX_BUDGET) return `Most to spend must be more than $0 and no more than $${MAX_BUDGET}.`;
   if (num(rule.stop_loss) >= num(rule.budget)) return "\"Cut losses\" must be less than the most you spend.";
+  if (!WHOLE.test(text("max_entries")) || num(text("max_entries")) < 1 || num(text("max_entries")) > 10) return "\"Buys per market\" must be a whole number from 1 to 10.";
+  if (!WHOLE.test(text("reentry_gap_sec")) || num(text("reentry_gap_sec")) > 900) return "\"Wait between buys\" must be whole seconds from 0 to 900.";
   return "";
 }
 
@@ -77,11 +81,17 @@ function exitPlan(policy) {
   return [up && `cash out when up ${money(policy.take_profit)}`, down && `sell if down ${money(policy.stop_loss)}`].filter(Boolean).join(", ").replace(/^./, (c) => c.toUpperCase());
 }
 
+function repeats(rule) {
+  const times = num(rule.max_entries) || 1;
+  if (times <= 1) return " once per market";
+  return ` each time, up to ${times} times per market (at least ${num(rule.reentry_gap_sec) || 0}s apart, only while the deal is still good) — so up to ${money(num(rule.budget) * times)} in one market`;
+}
+
 function ruleSummary(rule) {
   const coin = rule.coin === "ANY" ? "any coin" : rule.coin;
   const side = rule.side === "model" ? "whichever way the bot guesses" : direction(rule.side);
   const edge = String(rule.min_edge ?? "") === "" ? "" : ` and expects at least ${rule.min_edge}¢ profit`;
-  return `Bet ${side} on ${coin} when ${clock(rule.max_seconds_left)} to ${clock(rule.min_seconds_left)} is left, if it costs ${rule.min_price}¢–${rule.max_price}¢ and the bot is at least ${rule.min_confidence}% sure${edge}. Spend up to ${money(rule.budget)}. ${exitPlan(rule)}.`;
+  return `Bet ${side} on ${coin} when ${clock(rule.max_seconds_left)} to ${clock(rule.min_seconds_left)} is left, if it costs ${rule.min_price}¢–${rule.max_price}¢ and the bot is at least ${rule.min_confidence}% sure${edge}. Spend up to ${money(rule.budget)}${repeats(rule)}. ${exitPlan(rule)}.`;
 }
 
 function RuleList({ settings }) {
@@ -120,7 +130,9 @@ function RuleEditor({ rule, index, count, disabled, onChange, onRemove }) {
       <Field label="Minimum expected profit (¢)" value={rule.min_edge} disabled={disabled} onChange={set("min_edge")} hint="blank = don't care" note="Blank = don't care" />
       <Field label="Start betting at (seconds left)" value={rule.max_seconds_left} disabled={disabled} onChange={set("max_seconds_left")} inputMode="numeric" note={`= ${clock(rule.max_seconds_left)} left`} />
       <Field label="Stop betting at (seconds left)" value={rule.min_seconds_left} disabled={disabled} onChange={set("min_seconds_left")} inputMode="numeric" note={`= ${clock(rule.min_seconds_left)} left`} />
-      <Field label="Most to spend per trade ($)" value={rule.budget} disabled={disabled} onChange={set("budget")} note={`Up to $${MAX_BUDGET}`} />
+      <Field label="Most to spend per buy ($)" value={rule.budget} disabled={disabled} onChange={set("budget")} note={`Up to $${MAX_BUDGET}`} />
+      <Field label="Buys per market" value={rule.max_entries} disabled={disabled} onChange={set("max_entries")} inputMode="numeric" note="1 = buy once. More = buy again while it's still a good deal" />
+      <Field label="Wait between buys (seconds)" value={rule.reentry_gap_sec} disabled={disabled} onChange={set("reentry_gap_sec")} inputMode="numeric" note="Only matters if buys per market is more than 1" />
       <Field label="Cash out when up by ($)" value={rule.take_profit} disabled={disabled} onChange={set("take_profit")} note="0 = never, hold to the end" />
       <Field label="Cut losses when down by ($)" value={rule.stop_loss} disabled={disabled} onChange={set("stop_loss")} note="0 = never, hold to the end" />
     </div>
@@ -215,6 +227,7 @@ function LiveCard({ position, events, decision, now }) {
     <dl className="trading-policy">
       <Stat label="You paid" value={money(position.entry_cost)} />
       <Stat label="Contracts" value={position.quantity} />
+      {num(position.entries) > 1 && <Stat label="Times bought" value={position.entries} />}
       <Stat label="Cost each" value={each} />
       <Stat label="If it wins you get" value={money(quantity)} tone="positive" />
       <Stat label="If you sold now" value={worth} tone={num(position.net_pnl) > 0 ? "positive" : num(position.net_pnl) < 0 ? "negative" : ""} />

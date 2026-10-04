@@ -142,6 +142,57 @@ responses; authenticated demo/production execution has not been verified here.
 
 ## 📍 Where we are right now
 
+### Coin-price fair value + scale-in (v0.9.0, decision model `fair-value-v1`)
+
+The market-recal model only looked at the Kalshi price, so it could never know
+more than the market. Research on 5,694 settled markets (30 days of 1-minute
+Kalshi quotes plus Coinbase prices) found the real, repeatable edge: **Kalshi
+prices react slowly to coin moves**. When BTC/SOL moves away from the strike,
+the YES price takes seconds to a minute to catch up.
+
+`prediction/fair_value.py` measures how far the index is from the strike in
+"expected remaining moves" (z = distance / (price x 1-minute volatility x
+sqrt(minutes left))), turns that into a probability, and blends it with the
+market price:
+
+```
+logit P = c0 + c1*L(mid) + c2*L(Phi(z)) + c3*L(Phi(z))*is_btc
+            + c4*L(mid)*m/15 + c5*L(Phi(z))*m/15      # m = minutes left
+```
+
+The coin's weight grows with time left, because that's where the market
+under-reacts the most. Evidence (all after taker fees, buying at the ask):
+
+| Test | Bets | Avg profit / contract | Win rate |
+|---|---|---|---|
+| Walk-forward by day, 1-min data, edge >= 2c, 4-14 min left, one buy per minute | 2,090 | +4.3c (t = 5.2) | -- |
+| Same, but with a 1-minute-stale coin price | -- | ~0 (edge disappears) | -- |
+| Frozen coefficients, 179 later markets replayed tick by tick, edge >= 3c, up to 5 buys 60s apart, 2s delay | 190 | +11.3c (t = 4.7) | 86% |
+| Same with a 10s execution delay | ~190 | +10.8c | -- |
+
+Things that **lost money** in the same tests and are deliberately not used:
+buying on price alone, scalping (take-profit / sell-at-fair-value; wins often
+but spread + two fees eat it), and the old momentum confirmation.
+
+How the live bot uses it:
+- A 31-minute index buffer (re-seeded from the database on restart) feeds the
+  fair value every 2 seconds; with too little history or under 1 minute left
+  it falls back to `market-recal`.
+- The default rule *Coin price edge* buys whichever side is at least 3c cheap
+  after fees with 4-14 minutes left, and **adds to the position up to 5 times
+  (60s apart) while the edge is still there**, then holds to settlement.
+  `max_entries` / `reentry_gap_sec` are per-rule ("Buys per market" / "Wait
+  between buys" in the Trading tab). Total exposure per market is at most
+  budget x buys.
+- With side "Follow the bot's guess" the bot now buys the side with the larger
+  after-fee edge, not just the side above 50%.
+- `KALSHI_DAILY_LOSS_LIMIT_USD` pauses new bets for the day after a set loss.
+
+**Caveats:** the tick-level check covers only ~2 days, fills were simulated at
+the top of the book, and Coinbase stood in for BRTI in the 30-day fit. This is
+a speed edge: if Kalshi market makers get faster it will shrink. Run it in
+Practice mode for a few hundred bets before using real money.
+
 ### Market-anchored recalibration (v0.8.0, decision model `market-recal-v1`)
 
 After 300+ settled markets, a walk-forward review (fit on the past, test on
@@ -690,7 +741,8 @@ modify or deploy anything to that server.
 | `KALSHI_COIN_TICKS` | Which coins to find markets for (default `BTC,SOL`) |
 | `KALSHI_POLL_INTERVAL_SEC` | How often the bot recalculates its guess |
 | `KALSHI_EDGE_THRESHOLD` | Minimum model probability minus purchase price, before fees/slippage (legacy model) |
-| `KALSHI_DECISION_MODEL` | `market-recal` (default: market-anchored recalibration once fitted) or `legacy` |
+| `KALSHI_DECISION_MODEL` | `fair-value` (default: coin price vs strike blended with the market price), `market-recal`, or `legacy` |
+| `KALSHI_DAILY_LOSS_LIMIT_USD` | Pause new bets for the rest of the UTC day after losing this much that day (default `0` = off) |
 | `KALSHI_MARKET_RECAL_MIN_SAMPLES` | Clean settled decisions required before the recalibrator is used (default `300`) |
 | `KALSHI_MARKET_RECAL_WINDOW` | Most recent settled decisions used to fit it (default `5000`) |
 | `KALSHI_MARKET_RECAL_EDGE_THRESHOLD` | Edge threshold used with the recalibrator (default `0`; fees are already deducted) |

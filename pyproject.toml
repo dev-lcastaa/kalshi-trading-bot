@@ -1,6 +1,6 @@
 [project]
 name = "kalshi-bot"
-version = "0.8.0"
+version = "0.9.0"
 description = "Kalshi 15-minute BTC/SOL predictions with opt-in dashboard-controlled automatic trading."
 requires-python = ">=3.11"
 dependencies = [

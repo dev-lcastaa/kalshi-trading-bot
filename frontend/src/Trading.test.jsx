@@ -4,12 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Trading, { friendlyStatus, fromUi, toUi, validateSettings } from "./Trading";
 
-const RULE = { name: "Edge", enabled: true, coin: "ANY", side: "model", min_price: "0.50", max_price: "0.95", min_confidence: "0.50", min_edge: "0.00", min_seconds_left: 330, max_seconds_left: 390, budget: "1.00", take_profit: "0.50", stop_loss: "0.10" };
+const RULE = { name: "Edge", enabled: true, coin: "ANY", side: "model", min_price: "0.50", max_price: "0.95", min_confidence: "0.50", min_edge: "0.00", min_seconds_left: 330, max_seconds_left: 390, budget: "1.00", take_profit: "0.50", stop_loss: "0.10", max_entries: 1, reentry_gap_sec: 60 };
 const SETTINGS = { rules: [RULE] };
 const withRule = (overrides) => ({ rules: [{ ...RULE, ...overrides }] });
 const uiWith = (overrides) => ({ rules: [{ ...toUi(SETTINGS).rules[0], ...overrides }] });
 const rule = (index = 1) => within(screen.getByRole("group", { name: `Rule ${index}` }));
-const SPEND = "Most to spend per trade ($)";
+const SPEND = "Most to spend per buy ($)";
 const makeSnapshot = (mode, overrides = {}) => ({ mode, settings: structuredClone(SETTINGS), watch: [], enabled: false, environment: "demo", blockers: [], last_cycle_ms: null, error: null, positions: [], events: [], decisions: [], ...overrides });
 let state;
 let fail;
@@ -35,8 +35,8 @@ describe("Trading tab", () => {
     expect(fromUi(toUi(SETTINGS))).toEqual(SETTINGS);
     expect(fromUi(uiWith({ min_edge: "", budget: "5", min_price: "60" })).rules[0]).toMatchObject({ min_edge: null, budget: "5.00", min_price: "0.60" });
     expect(validateSettings(toUi(SETTINGS))).toBe("");
-    for (const ok of [{ budget: "25.00" }, { take_profit: "0", stop_loss: "0" }, { min_edge: "" }, { min_edge: "-5" }, { side: "no", coin: "SOL" }]) expect(validateSettings(uiWith(ok))).toBe("");
-    for (const bad of [{ budget: "25.01" }, { budget: "0" }, { stop_loss: "1.00" }, { take_profit: "0.001" }, { min_price: "96" }, { max_price: "100" }, { min_price: "0.5" }, { min_confidence: "150" }, { min_seconds_left: "400" }, { max_seconds_left: "abc" }, { name: " " }]) expect(validateSettings(uiWith(bad))).not.toBe("");
+    for (const ok of [{ budget: "25.00" }, { take_profit: "0", stop_loss: "0" }, { min_edge: "" }, { min_edge: "-5" }, { side: "no", coin: "SOL" }, { max_entries: "5", reentry_gap_sec: "0" }]) expect(validateSettings(uiWith(ok))).toBe("");
+    for (const bad of [{ budget: "25.01" }, { budget: "0" }, { stop_loss: "1.00" }, { take_profit: "0.001" }, { min_price: "96" }, { max_price: "100" }, { min_price: "0.5" }, { min_confidence: "150" }, { min_seconds_left: "400" }, { max_seconds_left: "abc" }, { name: " " }, { max_entries: "0" }, { max_entries: "11" }, { reentry_gap_sec: "901" }]) expect(validateSettings(uiWith(bad))).not.toBe("");
     expect(validateSettings({ rules: [] })).not.toBe("");
   });
   it("translates watch statuses into plain words", () => {

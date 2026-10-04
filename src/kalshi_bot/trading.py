@@ -97,6 +97,24 @@ def _seconds(values: dict, name: str, default: int) -> int:
     return seconds
 
 
+MAX_ENTRIES = 10
+
+
+def _int(values: dict, name: str, default: int) -> int:
+    raw = values.get(name)
+    if raw in (None, ""):
+        return default
+    if isinstance(raw, bool):
+        raise ValueError(f"{name} must be a whole number")
+    try:
+        number = Decimal(str(raw))
+    except Exception as exc:
+        raise ValueError(f"{name} must be a whole number") from exc
+    if number != number.to_integral_value():
+        raise ValueError(f"{name} must be a whole number")
+    return int(number)
+
+
 @dataclass(frozen=True)
 class EntryRule:
     """A user-defined entry rule: when a live market matches, the bot buys.
@@ -118,6 +136,8 @@ class EntryRule:
     min_seconds_left: int = 330
     max_seconds_left: int = 390
     policy: TradingPolicy = TradingPolicy()
+    max_entries: int = 1
+    reentry_gap_sec: int = 60
 
     def __post_init__(self) -> None:
         if not self.name or len(self.name) > 40:
@@ -132,6 +152,10 @@ class EntryRule:
             raise ValueError("min_edge must be between -1 and 1")
         if self.min_seconds_left > self.max_seconds_left:
             raise ValueError("min_seconds_left must not exceed max_seconds_left")
+        if not 1 <= self.max_entries <= MAX_ENTRIES:
+            raise ValueError(f"max_entries must be between 1 and {MAX_ENTRIES}")
+        if not 0 <= self.reentry_gap_sec <= 900:
+            raise ValueError("reentry_gap_sec must be between 0 and 900 seconds")
 
     @staticmethod
     def parse(values: dict) -> "EntryRule":
@@ -160,6 +184,8 @@ class EntryRule:
                 take_profit=dollars(values.get("take_profit") or "0"),
                 stop_loss=dollars(values.get("stop_loss") or "0"),
             ),
+            max_entries=_int(values, "max_entries", 1),
+            reentry_gap_sec=_int(values, "reentry_gap_sec", 60),
         )
 
     def to_json(self) -> dict:
@@ -171,14 +197,21 @@ class EntryRule:
             "min_seconds_left": self.min_seconds_left, "max_seconds_left": self.max_seconds_left,
             "budget": str(self.policy.budget), "take_profit": str(self.policy.take_profit),
             "stop_loss": str(self.policy.stop_loss),
+            "max_entries": self.max_entries, "reentry_gap_sec": self.reentry_gap_sec,
         }
 
     def coin_matches(self, ticker: str) -> bool:
         return self.coin == "ANY" or self.coin in ticker.split("-")[0].upper()
 
-    def pick_side(self, model_p_yes: Decimal) -> str:
+    def pick_side(self, model_p_yes: Decimal, yes_ask: Decimal | None = None, no_ask: Decimal | None = None) -> str:
+        """For side="model", buy the side whose after-fee edge is larger; without
+        quotes fall back to the side the model favours."""
         if self.side != "model":
             return self.side
+        if yes_ask is not None and no_ask is not None:
+            yes_edge = model_p_yes - yes_ask - taker_fee(yes_ask)
+            no_edge = (ONE - model_p_yes) - no_ask - taker_fee(no_ask)
+            return "yes" if yes_edge >= no_edge else "no"
         return "yes" if model_p_yes >= Decimal("0.5") else "no"
 
     def check(self, ticker: str, seconds_left: float, model_p_yes: Decimal, side: str, ask: Decimal) -> str | None:
@@ -200,10 +233,14 @@ class EntryRule:
 
 
 def default_rules(budget: Decimal = Decimal("1.00"), policy: TradingPolicy | None = None) -> list[EntryRule]:
-    """Mirrors the walk-forward backtest: follow the model's side whenever it shows
-    any after-fee edge at the T-6:30 decision point, held to settlement."""
+    """Mirrors the coin-price fair-value backtest: buy whichever side is at least
+    3c cheap after fees with 4-14 minutes left, add up to 5 times (60s apart)
+    while the edge lasts, and hold to settlement."""
     return [EntryRule(
-        name="Model edge at T-6:30", policy=policy or TradingPolicy(budget=min(budget, MAX_BUDGET)),
+        name="Coin price edge", min_price=Decimal("0.03"), max_price=Decimal("0.97"),
+        min_confidence=Decimal("0"), min_edge=Decimal("0.03"),
+        min_seconds_left=240, max_seconds_left=840, max_entries=5, reentry_gap_sec=60,
+        policy=policy or TradingPolicy(budget=min(budget, MAX_BUDGET)),
     )]
 
 

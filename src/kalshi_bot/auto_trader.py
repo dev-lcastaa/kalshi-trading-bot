@@ -32,6 +32,30 @@ def policy_json(policy: TradingPolicy) -> dict[str, str]:
     return {name: str(value) for name, value in asdict(policy).items()}
 
 
+def entries_of(position: dict) -> int:
+    """Filled buys in a position; records from before scale-in support count as one."""
+    if "entries" in position:
+        return int(position["entries"])
+    return 1 if dollars(position.get("quantity", "0")) > 0 or dollars(position.get("entry_cost", "0")) > 0 else 0
+
+
+def can_add_to(position: dict, rule: EntryRule, now_ms: int) -> str | None:
+    """None when another buy may be added to `position` under `rule`, else why not."""
+    if position.get("status") != "open" or position.get("pending"):
+        return f"Bot position {position.get('status')}"
+    if position.get("rule") != rule.name:
+        return "Bot position open (another rule)"
+    if dollars(position.get("exit_credit", "0")) != 0 or position.get("exit_trigger"):
+        return "Bot position open (already selling)"
+    entries = entries_of(position)
+    if entries >= rule.max_entries:
+        return f"Bot position open ({entries}/{rule.max_entries} buys)"
+    wait = int(position.get("last_entry_ms") or position.get("opened_ms") or 0) + rule.reentry_gap_sec * 1000 - now_ms
+    if wait > 0:
+        return f"Bot position open ({entries}/{rule.max_entries} buys, next buy allowed in {wait // 1000 + 1}s)"
+    return None
+
+
 def parse_policy(values: dict) -> TradingPolicy:
     return TradingPolicy(**{name: dollars(values[name]) for name in ("budget", "take_profit", "stop_loss")})
 
@@ -55,6 +79,7 @@ class AutoTrader:
         self, store: Store, rest: Any, defaults: TradingPolicy | None = None,
         environment: str = "demo", execution_allowed: bool = False, mode: str = "live",
         account_identity: str = "", worker_id: str | None = None, market_feed: MarketFeed | None = None,
+        daily_loss_limit: Decimal = Decimal("0"),
     ):
         if mode not in ("live", "paper"):
             raise ValueError("mode must be 'live' or 'paper'")
@@ -66,6 +91,7 @@ class AutoTrader:
         self.account_identity = account_identity
         self.worker_id = worker_id or str(uuid4())
         self.market_feed = market_feed
+        self.daily_loss_limit = daily_loss_limit
         self.worker_claimed = False
         self.control_revision = 0
         self.enabled = False
@@ -99,8 +125,17 @@ class AutoTrader:
     def positions(self) -> list[dict]:
         return self.store.trading_records(self.position_kind)
 
+    def today_pnl(self) -> Decimal:
+        """Net result of bets closed since midnight UTC."""
+        midnight_ms = int(time.time() // 86_400 * 86_400 * 1000)
+        return sum((dollars(p["net_pnl"]) for p in self.positions()
+                    if p.get("status") == "closed" and p.get("net_pnl") is not None
+                    and int(p.get("closed_ms") or 0) >= midnight_ms), Decimal("0"))
+
     def blockers(self) -> list[str]:
         blockers = []
+        if self.daily_loss_limit > 0 and self.today_pnl() <= -self.daily_loss_limit:
+            blockers.append(f"Daily loss limit of ${self.daily_loss_limit} reached; new bets resume tomorrow (UTC)")
         if not self.execution_allowed or self.rest is None:
             blockers.append("Order execution is not authorized on this server")
         if not self.account_identity:
@@ -260,8 +295,9 @@ class AutoTrader:
             except (KeyError, TypeError, ValueError, ArithmeticError):
                 row["status"] = "No live price"
                 continue
-            if ticker in positions:
-                row["status"] = f"Bot position {positions[ticker]['status']}"
+            existing = positions.get(ticker)
+            if existing is not None and existing["status"] != "open":
+                row["status"] = f"Bot position {existing['status']}"
                 continue
             if now_ms - int(market.get("ts_ms") or 0) > _MAX_FEED_AGE_MS:
                 row["status"] = "Live read is stale"
@@ -272,9 +308,26 @@ class AutoTrader:
             if not rules:
                 row["status"] = "No enabled rules"
                 continue
+            if existing is not None:
+                rule = next((r for r in rules if r.name == existing.get("rule")), None)
+                blocked = "Bot position open (its rule is off)" if rule is None else can_add_to(existing, rule, now_ms)
+                if blocked:
+                    row["status"] = blocked
+                    continue
+                side = existing["side"]
+                ask = yes_ask if side == "yes" else ONE - yes_bid
+                reason = rule.check(ticker, seconds_left, model_p_yes, side, ask)
+                if reason:
+                    row["status"] = f"Bot position open ({entries_of(existing)}/{rule.max_entries} buys) - {reason}"
+                    continue
+                row.update(side=side, price=f"{ask:.2f}", rule=rule.name,
+                           status=f"Matches '{rule.name}' again (buy {entries_of(existing) + 1}/{rule.max_entries})")
+                candidates.append({"market": market, "rule": rule, "side": side,
+                                   "model_p_yes": model_p_yes, "add_to": existing})
+                continue
             reasons = []
             for rule in rules:
-                side = rule.pick_side(model_p_yes)
+                side = rule.pick_side(model_p_yes, yes_ask, ONE - yes_bid)
                 ask = yes_ask if side == "yes" else ONE - yes_bid
                 reason = rule.check(ticker, seconds_left, model_p_yes, side, ask)
                 if reason is None:
@@ -323,27 +376,42 @@ class AutoTrader:
         return supported
 
     async def enter_by_rules(self, candidates: list[dict]) -> None:
-        busy_series = {series_of(p["ticker"]) for p in self.positions() if p["status"] in ("pending", "open")}
+        current = {p["ticker"]: p for p in self.positions()}
+        busy_series = {series_of(p["ticker"]) for p in current.values() if p["status"] in ("pending", "open")}
         for candidate in candidates:
             market, rule, side = candidate["market"], candidate["rule"], candidate["side"]
             ticker = market["ticker"]
             now_ms = int(time.time() * 1000)
-            if series_of(ticker) in busy_series or self.retry_after_ms.get(ticker, 0) > now_ms:
+            adding = candidate.get("add_to") is not None
+            if self.retry_after_ms.get(ticker, 0) > now_ms:
+                continue
+            if not adding and series_of(ticker) in busy_series:
                 continue
             if not self.enabled or (market.get("close_ts_ms") or 0) <= now_ms:
                 return
             policy = rule.policy
-            position = {
-                "ticker": ticker, "side": side, "rule": rule.name,
-                "close_ts_ms": market.get("close_ts_ms"), "opened_ms": now_ms,
-                "status": "skipped", "quantity": "0", "entry_cost": "0", "exit_credit": "0",
-                "policy": policy_json(policy), "pending": None, "net_pnl": None,
-                "account_identity": self.account_identity,
-            }
+            if adding:
+                position = current.get(ticker)
+                if position is None or position["side"] != side or can_add_to(position, rule, now_ms):
+                    continue
+                position.setdefault("entries", entries_of(position))
+            else:
+                position = {
+                    "ticker": ticker, "side": side, "rule": rule.name,
+                    "close_ts_ms": market.get("close_ts_ms"), "opened_ms": now_ms,
+                    "status": "skipped", "quantity": "0", "entry_cost": "0", "exit_credit": "0",
+                    "policy": policy_json(policy), "pending": None, "net_pnl": None,
+                    "account_identity": self.account_identity, "entries": 0,
+                }
             if not await self.market_supported(ticker):
-                self.skip(ticker, "Market is not open or uses an unsupported fee schedule", True, position)
+                self.skip(ticker, "Market is not open or uses an unsupported fee schedule", not adding,
+                          None if adding else position)
                 continue
-            if await self.account_quantity(ticker) != 0:
+            held = dollars(position["quantity"]) if adding else Decimal("0")
+            expected_account = held if side == "yes" else -held
+            if await self.account_quantity(ticker) != expected_account:
+                if adding:
+                    raise ValueError("Account holdings differ from bot journal; manual intervention required")
                 self.skip(ticker, "Existing account holdings in this market; bot will not mix positions",
                           True, position)
                 continue
@@ -378,8 +446,9 @@ class AutoTrader:
             if not self.enabled:
                 return
             confidence = candidate["model_p_yes"] if side == "yes" else ONE - candidate["model_p_yes"]
+            label = f" (buy {entries_of(position) + 1}/{rule.max_entries})" if rule.max_entries > 1 else ""
             await self.submit(position, "buy", Decimal(count), ask,
-                              f"Rule '{rule.name}': {side.upper()} at {ask}, model {confidence:.2f}, "
+                              f"Rule '{rule.name}'{label}: {side.upper()} at {ask}, model {confidence:.2f}, "
                               f"fee {taker_fee(ask, count)}")
             busy_series.add(series_of(ticker))
             self.last_skip_reason.pop(ticker, None)
@@ -391,6 +460,11 @@ class AutoTrader:
         payload = order_payload(position["ticker"], position["side"], action, quantity, price, client_id)
         position["pending"] = {"client_order_id": client_id, "action": action, "quantity": str(quantity), "reason": reason}
         if action == "buy":
+            # An add-on buy keeps what is already held; reconcile adds the new fill on top.
+            position["pending"]["base_quantity"] = position.get("quantity", "0")
+            position["pending"]["base_cost"] = position.get("entry_cost", "0")
+            position["pending"]["was_open"] = position.get("status") == "open"
+            position["last_entry_ms"] = int(time.time() * 1000)
             position["status"] = "pending"
         self.save_position(position)
         self.event(f"{action}_submitted", reason, position)
@@ -398,8 +472,9 @@ class AutoTrader:
             response = await self.rest.create_event_order(payload)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (400, 401, 403, 404, 422, 429):
+                was_open = position["pending"].get("was_open")
                 position["pending"] = None
-                position["status"] = "skipped" if action == "buy" else "open"
+                position["status"] = "open" if action == "sell" or was_open else "skipped"
                 self.save_position(position)
                 self.event("rejected", f"Kalshi rejected {action} (HTTP {exc.response.status_code})", position)
             raise
@@ -464,8 +539,10 @@ class AutoTrader:
         if filled != expected or filled > dollars(pending["quantity"]) or filled < 0:
             raise ValueError("Fill history is incomplete or inconsistent")
         if pending["action"] == "buy":
-            position["quantity"] = str(filled)
-            position["entry_cost"] = str(gross + fees)
+            position["quantity"] = str(dollars(pending.get("base_quantity", "0")) + filled)
+            position["entry_cost"] = str(dollars(pending.get("base_cost", "0")) + gross + fees)
+            if filled:
+                position["entries"] = entries_of(position) + 1 if "entries" in position else 1
         else:
             remaining = dollars(position["quantity"]) - filled
             if remaining < 0:
@@ -480,7 +557,7 @@ class AutoTrader:
             position["closed_by"] = pending["reason"]
         self.save_position(position)
         self.event("filled" if filled else "unfilled", f"{pending['action']} filled {filled} contracts: {pending['reason']}", position)
-        if dollars(position["entry_cost"]) > parse_policy(position["policy"]).budget:
+        if dollars(position["entry_cost"]) > parse_policy(position["policy"]).budget * max(1, entries_of(position)):
             raise ValueError("Actual entry fees exceeded budget")
 
     async def monitor(self, position: dict) -> None:

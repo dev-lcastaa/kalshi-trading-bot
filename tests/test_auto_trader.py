@@ -484,3 +484,52 @@ async def test_paper_and_live_settings_are_independent(tmp_path):
     assert not live.blockers()
     assert not paper.blockers()
     store.close()
+
+@pytest.mark.asyncio
+async def test_paper_scale_in_adds_buys_up_to_the_rule_limit(tmp_path):
+    store = Store(str(tmp_path / "scale.db"))
+    rest = entry_rest()
+    trader = feed_trader(store, PaperExchange(store, rest), mode="paper", account_identity="paper")
+    await trader.cycle()
+    await trader.save_settings(rules(max_entries=3, reentry_gap_sec=0))
+    await trader.control(True, True)
+    for _ in range(5):
+        await trader.cycle()
+    held = trader.positions()[0]
+    assert held["status"] == "open" and held["entries"] == 3
+    assert held["quantity"] == "6"
+    assert Decimal(held["entry_cost"]) == Decimal("2.82")
+    assert store.trading_record("paper_account")["BTC"] == "6"
+    assert "3/3 buys" in trader.watch[0]["status"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_scale_in_waits_between_buys(tmp_path):
+    store = Store(str(tmp_path / "gap.db"))
+    rest = entry_rest()
+    trader = feed_trader(store, PaperExchange(store, rest), mode="paper", account_identity="paper")
+    await trader.cycle()
+    await trader.save_settings(rules(max_entries=2, reentry_gap_sec=60))
+    await trader.control(True, True)
+    await trader.cycle()
+    await trader.cycle()
+    held = trader.positions()[0]
+    assert held["entries"] == 1 and held["quantity"] == "2"
+    assert "next buy allowed" in trader.watch[0]["status"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_daily_loss_limit_blocks_new_bets(tmp_path):
+    store = Store(str(tmp_path / "limit.db"))
+    trader = feed_trader(store, PaperExchange(store, entry_rest()), mode="paper", account_identity="paper",
+                         daily_loss_limit=Decimal("2"))
+    await trader.cycle()
+    assert not any("Daily loss" in b for b in trader.blockers())
+    trader.save_position(dict(position(), status="closed", quantity="0", net_pnl="-2.10",
+                              closed_ms=int(time.time() * 1000)))
+    assert any("Daily loss limit" in b for b in trader.blockers())
+    with pytest.raises(ValueError, match="Daily loss"):
+        await trader.control(True, True)
+    store.close()

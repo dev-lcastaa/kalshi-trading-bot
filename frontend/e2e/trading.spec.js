@@ -1,9 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-const rule = { name: "Edge", enabled: true, coin: "ANY", side: "model", min_price: "0.50", max_price: "0.95", min_confidence: "0.50", min_edge: "0.00", min_seconds_left: 330, max_seconds_left: 390, budget: "1.00", take_profit: "0.50", stop_loss: "0.10" };
+const rule = { name: "Edge", enabled: true, coin: "ANY", side: "model", min_price: "0.50", max_price: "0.95", min_confidence: "0.50", min_edge: "0.00", min_seconds_left: 330, max_seconds_left: 390, budget: "1.00", take_profit: "0.50", stop_loss: "0.10", max_entries: 1, reentry_gap_sec: 60 };
 const settings = { rules: [rule] };
 const policy = { budget: "1.00", take_profit: "0.50", stop_loss: "0.10" };
-const SPEND = "Most to spend per trade ($)";
+const SPEND = "Most to spend per buy ($)";
 const ruleGroup = (page, index = 1) => page.getByRole("group", { name: `Rule ${index}` });
 
 function makeSnapshot(mode, { populated = false, environment = "demo" } = {}) {
@@ -109,7 +109,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByText("Turn on the real-money bot?")).toBeVisible();
-    await expect(dialog.getByText(/Spend up to \$1\.75\. Cash out when up \$0\.65, sell if down \$0\.25\./)).toBeVisible();
+    await expect(dialog.getByText(/Spend up to \$1\.75 once per market\. Cash out when up \$0\.65, sell if down \$0\.25\./)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Yes, turn it on" })).toBeDisabled();
     await expect(page.getByRole("switch")).not.toBeChecked();
     await noOverflow(page);

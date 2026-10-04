@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from dotenv import load_dotenv
 
@@ -62,7 +63,8 @@ class Settings:
     logistic_training_window: int
     trading_policy: TradingPolicy = field(default_factory=TradingPolicy)
     order_execution_enabled: bool = False
-    decision_model: str = "market-recal"
+    daily_loss_limit: Decimal = Decimal("0")
+    decision_model: str = "fair-value"
     market_recal_min_samples: int = 300
     market_recal_window: int = 5000
     market_recal_edge_threshold: float = 0.0
@@ -137,10 +139,13 @@ class Settings:
                 stop_loss=dollars(os.environ.get("KALSHI_STOP_LOSS_USD", "0")),
             ),
             order_execution_enabled=os.environ.get("KALSHI_ORDER_EXECUTION_ENABLED", "false").strip().lower() == "true",
-            # "market-recal": decision probability is the market price recalibrated
-            # against settled outcomes (the only variant that beat the market after
-            # fees in walk-forward tests). "legacy": blended model + isotonic.
-            decision_model=os.environ.get("KALSHI_DECISION_MODEL", "market-recal").strip().lower(),
+            # Pause new bets for the rest of the UTC day once closed bets lose this much (0 = off).
+            daily_loss_limit=dollars(os.environ.get("KALSHI_DAILY_LOSS_LIMIT_USD", "0")),
+            # "fair-value" (default): coin price vs strike blended with the market price
+            # (prediction.fair_value); falls back to "market-recal" until enough recent
+            # index history exists. "market-recal": recalibrated market price only.
+            # "legacy": blended model + isotonic.
+            decision_model=os.environ.get("KALSHI_DECISION_MODEL", "fair-value").strip().lower(),
             market_recal_min_samples=int(os.environ.get("KALSHI_MARKET_RECAL_MIN_SAMPLES", "300")),
             market_recal_window=int(os.environ.get("KALSHI_MARKET_RECAL_WINDOW", "5000")),
             market_recal_edge_threshold=float(os.environ.get("KALSHI_MARKET_RECAL_EDGE_THRESHOLD", "0")),

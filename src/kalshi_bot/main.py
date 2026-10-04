@@ -12,6 +12,7 @@ import time
 from copy import copy
 from dataclasses import asdict, replace
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
@@ -34,6 +35,7 @@ from .paper import PaperExchange
 from .prediction.calibration import IsotonicCalibrator
 from .prediction.logistic import FEATURE_NAMES, LogisticRegressionModel, LogisticSignalPredictor, fit_logistic_model
 from .prediction.market_recal import MarketRecalibrator
+from .prediction.fair_value import HISTORY_MS as FAIR_VALUE_HISTORY_MS, fair_value_from_ticks
 from .prediction.model import RandomWalkPredictor, RegularizedSettlementPredictor, SettlementAwarePredictor
 from .signals.confirmation import check_confirmation
 from .signals.generator import generate_signal
@@ -87,11 +89,13 @@ class BotApp:
             execution_allowed=settings.order_execution_enabled and bool(settings.key_id),
             account_identity=hashlib.sha256(settings.key_id.encode()).hexdigest() if settings.key_id else "",
             worker_id=worker_id, market_feed=self.market_feed,
+            daily_loss_limit=getattr(settings, "daily_loss_limit", Decimal("0")),
         )
         self.paper_trader = AutoTrader(
             self.store, PaperExchange(self.store, self.rest), defaults=settings.trading_policy,
             environment=settings.env, execution_allowed=True, mode="paper",
             account_identity="paper", worker_id=worker_id, market_feed=self.market_feed,
+            daily_loss_limit=getattr(settings, "daily_loss_limit", Decimal("0")),
         )
         self.live_market: dict[str, dict] = {}
         self.market_recalibrator = MarketRecalibrator(
@@ -119,6 +123,10 @@ class BotApp:
         )
         self.markets: dict[str, MarketState] = {}
         self.index_ticks: dict[str, list[tuple[int, float]]] = {
+            idx: [] for idx in settings.index_ids
+        }
+        # Longer history for the coin-price fair value's 30-minute volatility estimate.
+        self.index_history: dict[str, list[tuple[int, float]]] = {
             idx: [] for idx in settings.index_ids
         }
         self.coin_to_index = dict(zip(settings.coin_ticks, settings.index_ids))
@@ -150,7 +158,30 @@ class BotApp:
             )
 
     def _uses_market_recal(self) -> bool:
-        return getattr(self.settings, "decision_model", "market-recal") != "legacy"
+        return getattr(self.settings, "decision_model", "fair-value") != "legacy"
+
+    def _uses_fair_value(self) -> bool:
+        return getattr(self.settings, "decision_model", "fair-value") == "fair-value"
+
+    def _fair_value(self, state: "MarketState", now_ms: int) -> float | None:
+        if not self._uses_fair_value() or state.yes_bid_dollars is None or state.yes_ask_dollars is None:
+            return None
+        history = getattr(self, "index_history", {}).get(state.index_id) or []
+        return fair_value_from_ticks(
+            history, state.strike, state.close_ts_ms, now_ms,
+            (state.yes_bid_dollars + state.yes_ask_dollars) / 2, state.index_id,
+        )
+
+    def _seed_index_history(self) -> None:
+        """Reload recent index ticks so the fair value works right after a restart."""
+        since_ms = int(time.time() * 1000) - FAIR_VALUE_HISTORY_MS
+        for index_id in self.settings.index_ids:
+            try:
+                self.index_history[index_id] = [
+                    (int(ts), float(value)) for ts, value in self.store.recent_index_ticks(index_id, since_ms)
+                ]
+            except Exception as exc:
+                logger.warning("Could not seed index history for %s: %s", index_id, exc)
 
     def market_feed(self) -> list[dict]:
         """Latest live read per active market, consumed by the rule-based auto-traders."""
@@ -291,6 +322,14 @@ class BotApp:
         cutoff = ts_ms - _INDEX_LOOKBACK_MS
         while buf and buf[0][0] < cutoff:
             buf.pop(0)
+        history = self.index_history.setdefault(index_id, [])
+        history.append((ts_ms, value))
+        history_cutoff = ts_ms - FAIR_VALUE_HISTORY_MS
+        drop = 0
+        while drop < len(history) and history[drop][0] < history_cutoff:
+            drop += 1
+        if drop:
+            del history[:drop]
 
         self.store.insert_index_tick(index_id, ts_ms, value)
         await self.broadcaster.broadcast(
@@ -424,6 +463,10 @@ class BotApp:
         recal = getattr(self, "market_recalibrator", None)
         if self._uses_market_recal() and recal is not None and recal.is_fitted:
             parameters["decision_model"] = "market-recal-v1"
+            parameters["edge_threshold"] = getattr(self.settings, "market_recal_edge_threshold", 0.0)
+            parameters["confirmation_gate"] = getattr(self.settings, "confirmation_gate", False)
+        if self._fair_value(state, now_ms) is not None:
+            parameters["decision_model"] = "fair-value-v1"
             parameters["edge_threshold"] = getattr(self.settings, "market_recal_edge_threshold", 0.0)
             parameters["confirmation_gate"] = getattr(self.settings, "confirmation_gate", False)
         fingerprint = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()[:16]
@@ -604,6 +647,7 @@ class BotApp:
                         ticker, ", ".join(quality_flags),
                     )
                 use_recal = self._uses_market_recal()
+                fair_p = self._fair_value(state, now_ms)
                 signal = generate_signal(
                     ticker=ticker,
                     index_id=state.index_id,
@@ -621,6 +665,7 @@ class BotApp:
                     market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
                     calibrator=self._calibrator(state.index_id),
                     market_recalibrator=self.market_recalibrator if use_recal else None,
+                    fair_value_p=fair_p,
                 )
                 self.store.insert_signal(signal)
                 self.live_market[ticker] = {
@@ -629,6 +674,7 @@ class BotApp:
                     "ts_ms": signal.ts_ms,
                     "close_ts_ms": state.close_ts_ms,
                     "model_p_yes": signal.model_p_yes,
+                    "model": "fair-value" if fair_p is not None else "market-recal",
                     "market_p_yes": signal.market_p_yes,
                     "yes_bid": state.yes_bid_dollars,
                     "yes_ask": state.yes_ask_dollars,
@@ -911,6 +957,7 @@ class BotApp:
             )
 
     async def run(self) -> None:
+        self._seed_index_history()
         await self.discover_and_subscribe()
         try:
             self._refit_calibrators()

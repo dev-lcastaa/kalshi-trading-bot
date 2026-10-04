@@ -36,6 +36,7 @@ def generate_signal(
     market_blend_weight: float = 0.0,
     calibrator: IsotonicCalibrator | None = None,
     market_recalibrator: MarketRecalibrator | None = None,
+    fair_value_p: float | None = None,
 ) -> Signal:
     if fee_multiplier < 0 or slippage_per_contract < 0:
         raise ValueError("fee_multiplier and slippage_per_contract must be non-negative")
@@ -48,7 +49,10 @@ def generate_signal(
     # model alone.
     pre_calibration_model_p = (1 - market_blend_weight) * raw_model_p + market_blend_weight * market_p
     model_p = pre_calibration_model_p
-    if market_recalibrator is not None and market_recalibrator.is_fitted:
+    if fair_value_p is not None:
+        # Coin-price fair value (prediction.fair_value) already blends in the market price.
+        model_p = fair_value_p
+    elif market_recalibrator is not None and market_recalibrator.is_fitted:
         # Market-anchored decision model: recalibrated market price replaces the
         # blended/isotonic model output. pre_calibration_model_p keeps recording
         # the blend so the isotonic training history stays consistent.

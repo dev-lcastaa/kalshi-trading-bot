@@ -16,7 +16,8 @@ def test_dashboard_modes_have_independent_settings_and_controls(tmp_path):
     client = TestClient(create_app(store, traders={"live": live, "paper": paper}))
     rule = {"name": "Favorites", "enabled": True, "coin": "BTC", "side": "model", "min_price": "0.60",
             "max_price": "0.90", "min_confidence": "0.65", "min_edge": "0.01", "min_seconds_left": 300,
-            "max_seconds_left": 420, "budget": "12.50", "take_profit": "0.25", "stop_loss": "0.05"}
+            "max_seconds_left": 420, "budget": "12.50", "take_profit": "0.25", "stop_loss": "0.05",
+                "max_entries": 3, "reentry_gap_sec": 45}
     settings = {"rules": [rule]}
     body = client.get("/api/trading").json()
     assert body["live"]["enabled"] is False

@@ -31,6 +31,8 @@ class TradingRuleBody(BaseModel):
     budget: str = Field(min_length=1, max_length=24)
     take_profit: str = Field(default="0", max_length=24)
     stop_loss: str = Field(default="0", max_length=24)
+    max_entries: int = Field(default=1, ge=1, le=10)
+    reentry_gap_sec: int = Field(default=60, ge=0, le=900)
 
 
 class TradingSettingsBody(BaseModel):
