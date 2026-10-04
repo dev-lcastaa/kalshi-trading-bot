@@ -28,8 +28,10 @@ Each mode has its own saved rules and its own page:
 - **Bets happening now** — one card per open bet: coin, UP/DOWN, amount paid,
   cost per contract, payout if it wins, value if sold now, time left, the rule
   that triggered it, its exit plan, what the bot did, and why.
-- **Finished bets** — closed bets only, newest first: Won/Lost, profit, and
-  how it ended (market ended / cashed out early / sold to cut losses).
+- **Finished bets** — responsive cards for closed bets only, newest first:
+  Won/Lost/Broke even, prominent net profit or loss, amount paid and returned,
+  contracts, rule used, completion time, and how it ended (market ended /
+  cashed out early / sold to cut losses).
 - **Markets the bot is watching** — every live market with the bot's and the
   crowd's odds, probability bars, and a plain reason it is or isn't betting.
   Trading updates arrive over `/ws/trading` after each bot check or settings/

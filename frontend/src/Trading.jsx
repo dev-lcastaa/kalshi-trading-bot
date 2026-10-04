@@ -257,15 +257,24 @@ function LiveCard({ position, events, decision, now }) {
 
 const ENDINGS = { settled: "Market ended", take_profit: "Cashed out early", stop_loss: "Sold to cut losses" };
 
-function FinishedRow({ position }) {
+function FinishedCard({ position }) {
   const pnl = num(position.net_pnl);
   const outcome = position.net_pnl == null ? "Closed" : pnl > 0 ? "Won" : pnl < 0 ? "Lost" : "Broke even";
-  return <li className="trading-finished" aria-label={`Finished trade ${position.ticker}`}>
-    <span className={`trading-outcome ${pnl > 0 ? "win" : pnl < 0 ? "loss" : ""}`}>{outcome}</span>
-    <span><strong>{coinOf(position.ticker)}</strong> · Bet {direction(position.side)}<small className="trading-muted">{timestamp(position.closed_ms ?? position.opened_ms)}</small></span>
-    <span>Paid {money(position.entry_cost)}<small className="trading-muted">Got back {money(position.exit_credit)}</small></span>
-    <span>{ENDINGS[position.closed_by] ?? "Closed"}<small className="trading-muted">Rule: {position.rule ?? "--"}</small></span>
-    <strong className={pnl > 0 ? "positive" : pnl < 0 ? "negative" : ""}>{signedMoney(position.net_pnl)}</strong>
+  const tone = pnl > 0 ? "win" : pnl < 0 ? "loss" : "";
+  const endedAt = position.closed_ms ?? position.opened_ms;
+  return <li className={`trading-card trading-finished ${tone}`} aria-label={`Finished trade ${position.ticker}`}>
+    <header>
+      <div className="watch-identity"><span className={`watch-coin ${coinOf(position.ticker).toLowerCase()}`} aria-hidden="true">{coinOf(position.ticker).slice(0, 1)}</span><div><strong>{coinOf(position.ticker)}</strong><small>Bet {direction(position.side)}</small></div></div>
+      <span className={`trading-outcome ${tone}`}>{outcome}</span>
+    </header>
+    <div className="finished-result"><span>Net profit / loss</span><strong className={pnl > 0 ? "positive" : pnl < 0 ? "negative" : ""}>{signedMoney(position.net_pnl)}</strong></div>
+    <dl className="finished-details">
+      <Stat label="You paid" value={money(position.entry_cost)} />
+      <Stat label="Got back" value={money(position.exit_credit)} />
+      <Stat label="Contracts" value={position.quantity ?? "--"} />
+      <Stat label="Rule used" value={position.rule ?? "--"} />
+    </dl>
+    <footer><span>{ENDINGS[position.closed_by] ?? "Closed"}</span><time dateTime={endedAt == null ? undefined : new Date(endedAt).toISOString()}>{timestamp(endedAt)}</time></footer>
   </li>;
 }
 
@@ -477,7 +486,7 @@ export default function Trading() {
           : <p className="trading-muted">No bets running right now</p>}
       </section>
       <section className="trading-section" aria-label="Finished bets"><h3>Finished bets</h3>
-        {finished.length ? <ol className="trading-finished-list">{finished.map((position, index) => <FinishedRow key={`${position.ticker}-${index}`} position={position} />)}</ol>
+        {finished.length ? <ol className="trading-cards trading-finished-list">{finished.map((position, index) => <FinishedCard key={`${position.ticker}-${index}`} position={position} />)}</ol>
           : <p className="trading-muted">No finished bets yet</p>}
       </section>
       <section className="trading-section" aria-label="Markets the bot is watching">

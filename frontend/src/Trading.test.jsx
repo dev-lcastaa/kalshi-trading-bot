@@ -311,6 +311,11 @@ describe("Trading tab", () => {
     expect(within(rows[0]).getByText("Lost")).toBeTruthy();
     expect(within(rows[0]).getByText("Sold to cut losses")).toBeTruthy();
     expect(within(rows[0]).getByText("-$0.30")).toBeTruthy();
+    expect(within(rows[0]).getByText("Net profit / loss")).toBeTruthy();
+    expect(within(rows[0]).getByText("$0.70")).toBeTruthy();
+    expect(within(rows[0]).getByText("$0.40")).toBeTruthy();
+    expect(within(rows[0]).getByText("Edge")).toBeTruthy();
+    expect(rows[0].querySelector("time").dateTime).toBe(new Date(now - 500000).toISOString());
     expect(within(rows[1]).getByText("Won")).toBeTruthy();
     expect(within(rows[1]).getByText("Market ended")).toBeTruthy();
     expect(within(rows[1]).getByText("Bet DOWN", { exact: false })).toBeTruthy();
@@ -321,5 +326,23 @@ describe("Trading tab", () => {
     const diary = screen.getByRole("region", { name: "Bot diary" });
     expect(within(diary).getByText("Bot diary (2)")).toBeTruthy();
     expect(within(diary).getByText("Bot turned on")).toBeTruthy();
+  });
+  it("shows neutral finished cards for break-even and unknown results without inventing a profit", async () => {
+    state.paper.positions = [
+      { ticker: "KXBTC15M-EVEN", side: "yes", status: "closed", entry_cost: "1.00", exit_credit: "1.00", net_pnl: "0.00", closed_by: "take_profit", closed_ms: 2000, quantity: "2", rule: "Long rule name ".repeat(10) },
+      { ticker: "KXSOL15M-UNKNOWN", side: "no", status: "closed", net_pnl: null },
+    ];
+    render(<Trading />);
+    const even = await screen.findByRole("listitem", { name: "Finished trade KXBTC15M-EVEN" });
+    expect(within(even).getByText("Broke even")).toBeTruthy();
+    expect(within(even).getByText("$0.00")).toBeTruthy();
+    expect(within(even).getByText("Cashed out early")).toBeTruthy();
+    expect(even.classList.contains("win")).toBe(false);
+    expect(even.classList.contains("loss")).toBe(false);
+    const unknown = screen.getByRole("listitem", { name: "Finished trade KXSOL15M-UNKNOWN" });
+    expect(within(unknown).getAllByText("Closed")).toHaveLength(2);
+    expect(unknown.querySelector(".finished-result strong").textContent).toBe("--");
+    expect(unknown.querySelector("time").hasAttribute("datetime")).toBe(false);
+    expect(within(unknown).queryByText("$0.00")).toBeNull();
   });
 });

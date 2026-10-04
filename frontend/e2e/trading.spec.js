@@ -82,6 +82,45 @@ async function noOverflow(page) {
 }
 
 for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`${name}: finished bet cards show wins, losses, and neutral outcomes`, async ({ page }) => {
+    await page.setViewportSize(size);
+    const api = await mockTrading(page);
+    const won = api.state.live.positions.find((position) => position.status === "closed");
+    api.state.live.positions.push(
+      { ...won, ticker: "KXBTC15M-LOSS", side: "yes", entry_cost: "1.00", exit_credit: "0.50", net_pnl: "-0.50", closed_by: "stop_loss", closed_ms: won.closed_ms + 1000 },
+      { ...won, ticker: "KXSOL15M-EVEN", entry_cost: "1.00", exit_credit: "1.00", net_pnl: "0.00", closed_by: "take_profit", rule: "A long saved rule name for this trade", closed_ms: won.closed_ms - 1000 },
+      { ...won, ticker: "KXBTC15M-UNKNOWN", net_pnl: null, closed_by: null, closed_ms: won.closed_ms - 2000 },
+    );
+    await page.goto("/trading");
+    await page.getByRole("radio", { name: "Real money" }).check();
+    const finished = page.getByRole("region", { name: "Finished bets" });
+    const cards = finished.getByRole("listitem");
+    await expect(cards).toHaveCount(4);
+    await expect(cards.first()).toHaveAttribute("aria-label", "Finished trade KXBTC15M-LOSS");
+    await expect(cards.first().getByText("Lost", { exact: true })).toBeVisible();
+    await expect(cards.first().getByText("-$0.50")).toBeVisible();
+    await expect(cards.first().getByText("Sold to cut losses")).toBeVisible();
+    await expect(cards.nth(1).getByText("Won", { exact: true })).toBeVisible();
+    await expect(cards.nth(1).getByText("+$0.90")).toBeVisible();
+    await expect(cards.nth(1).getByText("$2.10")).toBeVisible();
+    await expect(cards.nth(1).getByText("$3.00")).toBeVisible();
+    await expect(cards.nth(2).getByText("Broke even")).toBeVisible();
+    await expect(cards.nth(2).getByText("$0.00")).toBeVisible();
+    await expect(cards.nth(2).getByText("Cashed out early")).toBeVisible();
+    await expect(cards.nth(3).locator(".finished-result strong")).toHaveText("--");
+    const boxes = await cards.evaluateAll((elements) => elements.map((element) => {
+      const { x, y, width } = element.getBoundingClientRect();
+      return { x, y, width };
+    }));
+    if (name === "mobile") expect(boxes[1].y).toBeGreaterThan(boxes[0].y);
+    else {
+      expect(boxes[1].y).toBe(boxes[0].y);
+      expect(boxes[1].x).toBeGreaterThan(boxes[0].x);
+    }
+    await noOverflow(page);
+    await finished.screenshot({ path: `test-results/finished-bets-${name}.png` });
+  });
+
   test(`${name}: market cards stream changes and count down without API polling`, async ({ page }) => {
     await page.setViewportSize(size);
     const api = await mockTrading(page);
