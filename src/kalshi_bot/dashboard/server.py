@@ -3,15 +3,36 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import Callable, TypeVar
+from typing import Callable, Literal, TypeVar
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
+from ..auto_trader import AutoTrader
 from ..data.store import Store
 from .. import __version__
 from .broadcaster import Broadcaster
 
 _T = TypeVar("_T")
+
+
+class TradingSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    budget: str = Field(min_length=1, max_length=24)
+    take_profit: str = Field(min_length=1, max_length=24)
+    stop_loss: str = Field(min_length=1, max_length=24)
+
+
+class TradingSettingsUpdateBody(TradingSettingsBody):
+    mode: Literal["live", "paper"]
+
+
+class TradingControlBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["live", "paper"]
+    enabled: StrictBool
+    confirm: StrictBool = False
+    settings: TradingSettingsBody | None = None
 
 
 class _TtlCache:
@@ -35,10 +56,42 @@ def create_app(
     closed_grace_sec: int = 300,
     decision_lead_sec: int = 390,
     broadcaster: Broadcaster | None = None,
+    traders: dict[str, AutoTrader] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Kalshi 15-Min Crypto Signals")
     broadcaster = broadcaster if broadcaster is not None else Broadcaster()
     telemetry_cache = _TtlCache()
+    traders = traders if traders is not None else {
+        "live": AutoTrader(store, None),
+        "paper": AutoTrader(store, None, mode="paper"),
+    }
+
+    def trading_state() -> dict:
+        return {mode: trader.snapshot() for mode, trader in traders.items()}
+
+    @app.get("/api/trading")
+    async def get_trading() -> dict:
+        return trading_state()
+
+    @app.put("/api/trading/settings")
+    async def save_trading_settings(body: TradingSettingsUpdateBody) -> dict:
+        try:
+            await traders[body.mode].save_settings(body.model_dump(exclude={"mode"}))
+        except (ValueError, ArithmeticError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return trading_state()
+
+    @app.post("/api/trading/control")
+    async def control_trading(body: TradingControlBody) -> dict:
+        if body.enabled and body.settings is None:
+            raise HTTPException(status_code=422, detail="Confirmed saved settings are required")
+        try:
+            await traders[body.mode].control(
+                body.enabled, body.confirm, body.settings.model_dump() if body.settings else None,
+            )
+        except (ValueError, ArithmeticError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return trading_state()
 
     @app.get("/api/version")
     def get_version() -> dict:

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
+from .trading import TradingPolicy, dollars
+
 load_dotenv()
 
 _REST_BASES = {
@@ -58,6 +60,8 @@ class Settings:
     logistic_min_samples: int
     logistic_refit_interval_sec: float
     logistic_training_window: int
+    trading_policy: TradingPolicy = field(default_factory=TradingPolicy)
+    order_execution_enabled: bool = False
 
     @staticmethod
     def load() -> "Settings":
@@ -121,4 +125,10 @@ class Settings:
                 os.environ.get("KALSHI_LOGISTIC_REFIT_INTERVAL_SEC", "1800")
             ),
             logistic_training_window=int(os.environ.get("KALSHI_LOGISTIC_TRAINING_WINDOW", "5000")),
+            trading_policy=TradingPolicy(
+                budget=dollars(os.environ.get("KALSHI_TRADE_BUDGET_USD", "1.00")),
+                take_profit=dollars(os.environ.get("KALSHI_TAKE_PROFIT_USD", "0.50")),
+                stop_loss=dollars(os.environ.get("KALSHI_STOP_LOSS_USD", "0.10")),
+            ),
+            order_execution_enabled=os.environ.get("KALSHI_ORDER_EXECUTION_ENABLED", "false").strip().lower() == "true",
         )

@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 import threading
 import time
 from pathlib import Path
+from uuid import uuid4
 
 try:
     import psycopg
@@ -21,6 +23,20 @@ except ImportError:  # PostgreSQL is optional for local SQLite runs.
     psycopg = None
 
 _SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS trading_records (
+        record_key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        value_json TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS trading_events (
+        event_id TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        event_json TEXT NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS index_ticks (
         index_id TEXT NOT NULL,
@@ -194,6 +210,9 @@ class _BufferedResult:
 
 class Store:
     def __init__(self, database_url: str):
+        self._database_url = database_url
+        self._trading_owner: str | None = None
+        self._trading_fd: int | None = None
         self._is_postgres = database_url.startswith(("postgresql://", "postgres://"))
         if self._is_postgres:
             if psycopg is None:
@@ -256,7 +275,95 @@ class Store:
             self._raw_execute("ALTER TABLE decisions ADD COLUMN confirmation_detail TEXT")
 
     def close(self) -> None:
+        if self._trading_owner:
+            self.release_trading_worker(self._trading_owner)
         self._conn.close()
+
+    def claim_trading_worker(self, owner: str) -> bool:
+        with self._lock:
+            if self._trading_owner is not None:
+                return self._trading_owner == owner
+            if self._is_postgres:
+                claimed = self._raw_execute("SELECT pg_try_advisory_lock(1562279111)").fetchone()[0]
+                self._conn.commit()
+                if not claimed:
+                    return False
+            else:
+                descriptor = os.open(self._database_url + ".trading.lock", os.O_RDWR | os.O_CREAT, 0o600)
+                try:
+                    if os.fstat(descriptor).st_size == 0:
+                        os.write(descriptor, b"0")
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    os.close(descriptor)
+                    return False
+                self._trading_fd = descriptor
+            self._trading_owner = owner
+            return True
+
+    def release_trading_worker(self, owner: str) -> None:
+        with self._lock:
+            if self._trading_owner != owner:
+                return
+            if self._is_postgres:
+                self._raw_execute("SELECT pg_advisory_unlock(1562279111)")
+                self._conn.commit()
+            elif self._trading_fd is not None:
+                os.close(self._trading_fd)
+                self._trading_fd = None
+            self._trading_owner = None
+
+    def trading_record(self, record_key: str) -> dict | None:
+        row = self._query(
+            "SELECT value_json FROM trading_records WHERE record_key = ?", (record_key,),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_trading_record(self, record_key: str, kind: str, value: dict) -> None:
+        self._execute(
+            """INSERT INTO trading_records (record_key, kind, value_json) VALUES (?, ?, ?)
+               ON CONFLICT (record_key) DO UPDATE SET value_json = excluded.value_json""",
+            (record_key, kind, json.dumps(value, allow_nan=False)),
+        )
+
+    def trading_records(self, kind: str) -> list[dict]:
+        rows = self._query(
+            "SELECT value_json FROM trading_records WHERE kind = ? ORDER BY record_key", (kind,),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def record_trading_event(self, action: str, reason: str, **details) -> None:
+        event = {"id": str(uuid4()), "ts_ms": int(time.time() * 1000),
+                 "action": action, "reason": reason, **details}
+        self._execute(
+            "INSERT INTO trading_events (event_id, ts_ms, event_json) VALUES (?, ?, ?)",
+            (event["id"], event["ts_ms"], json.dumps(event, allow_nan=False)),
+        )
+
+    def trading_events(self, limit: int = 100) -> list[dict]:
+        rows = self._query(
+            "SELECT event_json FROM trading_events ORDER BY ts_ms DESC, event_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def trading_decisions(self, limit: int = 100) -> list[dict]:
+        cursor = self._query(
+            """SELECT d.ticker, d.ts_ms, d.recommendation, d.confidence,
+                      d.confirmation_detail, m.close_ts_ms, m.result
+               FROM decisions d LEFT JOIN markets m ON m.ticker = d.ticker
+               ORDER BY d.ts_ms DESC LIMIT ?""", (limit,),
+        )
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
     def insert_index_tick(self, index_id: str, ts_ms: int, value: float) -> None:
         self._execute(

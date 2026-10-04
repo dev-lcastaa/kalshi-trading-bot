@@ -1,7 +1,4 @@
-"""Thin async REST client for Kalshi's public/authenticated GET endpoints.
-
-Only read endpoints are implemented - this bot never places orders.
-"""
+"""Async REST client for market data and opt-in event-market orders."""
 from __future__ import annotations
 
 import asyncio
@@ -90,6 +87,39 @@ class KalshiRestClient:
 
     async def get_market_orderbook(self, ticker: str) -> dict[str, Any]:
         return await self._get(f"/markets/{ticker}/orderbook")
+
+    async def create_event_order(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._auth is None:
+            raise ValueError("Order execution requires authentication")
+        path = "/portfolio/events/orders"
+        response = await self._client.post(
+            path, json=payload, headers=self._auth.headers("POST", f"/trade-api/v2{path}"),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def get_order(self, order_id: str) -> dict[str, Any]:
+        return await self._get(f"/portfolio/orders/{order_id}")
+
+    async def get_orders(self, ticker: str, cursor: str = "") -> dict[str, Any]:
+        return await self._get("/portfolio/orders", {"ticker": ticker, "cursor": cursor, "limit": 100})
+
+    async def get_fills(self, order_id: str, cursor: str = "") -> dict[str, Any]:
+        return await self._get("/portfolio/fills", {"order_id": order_id, "cursor": cursor, "limit": 100})
+
+    async def get_positions(self, ticker: str) -> dict[str, Any]:
+        return await self._get("/portfolio/positions", {"ticker": ticker, "limit": 100})
+
+    async def cancel_event_order(self, order_id: str, ticker: str) -> dict[str, Any]:
+        if self._auth is None:
+            raise ValueError("Order cancellation requires authentication")
+        path = f"/portfolio/events/orders/{order_id}"
+        response = await self._client.delete(
+            path, params={"market_ticker": ticker},
+            headers=self._auth.headers("DELETE", f"/trade-api/v2{path}"),
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def get_trades(
         self,

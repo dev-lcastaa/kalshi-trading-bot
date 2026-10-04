@@ -6,12 +6,14 @@ import {
 } from "lucide-react";
 import { useDashboardData, useTelemetry } from "./hooks/useDashboardData";
 import { useLivePrices } from "./hooks/useLivePrices";
+import Trading from "./Trading";
 import { coinMeta, countdown, formatDecision, friendlyBlocker, friendlyCheckName, money, percent, recommendationLabel } from "./utils";
 
 const TABS = [
   ["active", "Live Picks", Activity],
   ["closed", "Past Results", History],
   ["shadow", "Test Lab", FlaskConical],
+  ["trading", "Trading", Bot],
 ];
 const REVIEW_STAGES = [
   ["8:30", 510, "llm_8m30_decision", "llm_8m30_reason"],
@@ -248,11 +250,12 @@ function ShadowComparison({ data }) {
 }
 
 export default function App() {
-  const [tab, setTab] = React.useState(() => location.pathname === "/shadow" ? "shadow" : "active");
+  const routeTab = () => location.pathname === "/trading" ? "trading" : location.pathname === "/shadow" ? "shadow" : "active";
+  const [tab, setTab] = React.useState(routeTab);
   const [coin, setCoin] = React.useState("all");
   const [query, setQuery] = React.useState("");
   const [now, setNow] = React.useState(Date.now());
-  const dashboard = useDashboardData(tab);
+  const dashboard = useDashboardData(tab === "trading" ? "active" : tab);
   const telemetry = useTelemetry(tab);
   const indexIds = ["BRTI", "SOLUSD_RTI", ...dashboard.rows.map((row) => row.index_id)];
   const live = useLivePrices(indexIds);
@@ -262,24 +265,41 @@ export default function App() {
     return () => window.clearInterval(interval);
   }, []);
 
+  React.useEffect(() => {
+    const onPopState = () => setTab(routeTab());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = dashboard.rows.filter((row) => (coin === "all" || row.index_id === coin) && (!normalizedQuery || [row.ticker, row.index_id, row.strike].some((value) => String(value || "").toLowerCase().includes(normalizedQuery))));
   const overallStatus = dashboard.error ? "DATA OFFLINE" : live.socketStatus === "LIVE" ? "LIVE" : live.socketStatus === "OFFLINE" ? "DATA OFFLINE" : "CONNECTING";
   const selectTab = (nextTab) => {
     setTab(nextTab);
-    history.replaceState(null, "", nextTab === "shadow" ? "/shadow" : "/");
+    history.replaceState(null, "", nextTab === "trading" ? "/trading" : nextTab === "shadow" ? "/shadow" : "/");
   };
 
   return <main className="shell" id="main-content">
-    <header className="topbar"><a className="brand" href="#main-content" aria-label="AQLabs dashboard home"><span className="brand-mark">AQ</span><span><strong>AQLABS</strong><small>CRYPTO PICK TRACKER</small></span></a><div className="topbar-right">{telemetry.version && <span className="version-badge" title="App version">v{telemetry.version}</span>}<div className="connection"><span className={`status-dot ${overallStatus === "LIVE" ? "live" : ""}`} /><div><strong>{overallStatus}</strong><small>{live.lastTickAt ? `Price updated ${live.lastTickAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : dashboard.lastUpdated ? `Updated ${dashboard.lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Waiting for data"}</small></div></div></div></header>
+    <header className="topbar"><a className="brand" href="#main-content" aria-label="AQLabs dashboard home"><span className="brand-mark">AQ</span><span><strong>AQLABS</strong><small>SIGNALS AND TRADING</small></span></a><div className="topbar-right">{telemetry.version && <span className="version-badge" title="App version">v{telemetry.version}</span>}{tab !== "trading" && <div className="connection"><span className={`status-dot ${overallStatus === "LIVE" ? "live" : ""}`} /><div><strong>{overallStatus}</strong><small>{live.lastTickAt ? `Price updated ${live.lastTickAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : dashboard.lastUpdated ? `Updated ${dashboard.lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : "Waiting for data"}</small></div></div>}</div></header>
 
-    <section className="workspace-heading"><div><span className="eyebrow"><Activity size={15} /> Live tracker</span><h1>Crypto picks</h1><p>Simple 15-minute Bitcoin and Solana picks.</p></div><div className="read-only"><ShieldCheck size={18} /><span><strong>Watching only</strong><small>This app never places bets</small></span></div></section>
+    <section className="workspace-heading"><div><span className="eyebrow"><Activity size={15} /> Signals and trading</span><h1>{tab === "trading" ? "Trading" : "Crypto picks"}</h1></div></section>
 
-    <ReadinessStrip readiness={telemetry.readiness} />
+    {tab !== "trading" && <><ReadinessStrip readiness={telemetry.readiness} />
     <CalibrationHud calibration={telemetry.calibration} external={telemetry.external} />
     {dashboard.error && <div className="alert" role="alert"><AlertTriangle size={17} /><span><strong>Live data connection lost.</strong> Showing the last update while we reconnect.</span><button className="icon-button" type="button" onClick={() => dashboard.reload()} aria-label="Try reconnecting"><RefreshCw size={16} /></button></div>}
+    </>}
 
-    <nav className="toolbar glass-panel" aria-label="Market views and filters"><div className="tabs" role="tablist">{TABS.map(([key, label, Icon]) => <button role="tab" aria-selected={tab === key} className={tab === key ? "active" : ""} key={key} onClick={() => selectTab(key)}><Icon size={15} aria-hidden="true" />{label}{tab === key && <span>{dashboard.rows.length}</span>}</button>)}</div><div className="filters"><div className="coin-filter" aria-label="Filter by coin">{[["all", "All"], ["BRTI", "BTC"], ["SOLUSD_RTI", "SOL"]].map(([key, label]) => <button className={coin === key ? "active" : ""} type="button" key={key} onClick={() => setCoin(key)}>{label}</button>)}</div><label className="search"><Search size={16} /><span className="sr-only">Search markets</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search markets" /></label></div></nav>
+    <nav className={`toolbar glass-panel ${tab === "trading" ? "trading-toolbar" : ""}`} aria-label="Dashboard views"><div className="tabs" role="tablist" aria-label="Dashboard views">{TABS.map(([key, label, Icon], index) => <button role="tab" id={`tab-${key}`} aria-controls="dashboard-view" tabIndex={tab === key ? 0 : -1} aria-selected={tab === key} className={tab === key ? "active" : ""} key={key} onClick={() => selectTab(key)} onKeyDown={(event) => {
+      let nextIndex;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % TABS.length;
+      if (event.key === "ArrowLeft") nextIndex = (index + TABS.length - 1) % TABS.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = TABS.length - 1;
+      if (nextIndex !== undefined) { event.preventDefault(); selectTab(TABS[nextIndex][0]); document.getElementById(`tab-${TABS[nextIndex][0]}`)?.focus(); }
+    }}><Icon size={15} aria-hidden="true" />{label}{tab === key && key !== "trading" && <span>{dashboard.rows.length}</span>}</button>)}</div>{tab !== "trading" && <div className="filters"><div className="coin-filter" aria-label="Filter by coin">{[["all", "All"], ["BRTI", "BTC"], ["SOLUSD_RTI", "SOL"]].map(([key, label]) => <button className={coin === key ? "active" : ""} type="button" key={key} onClick={() => setCoin(key)}>{label}</button>)}</div><label className="search"><Search size={16} /><span className="sr-only">Search markets</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search markets" /></label></div>}</nav>
+
+    <div id="dashboard-view" role="tabpanel" aria-labelledby={`tab-${tab}`}>
+    {tab === "trading" ? <Trading /> : <>
 
     {tab === "shadow" && <><div className="shadow-warning"><AlertTriangle size={18} /><div><strong>Test model only</strong><span>This is an experiment. Do not use these picks to bet.</span></div></div><ShadowComparison data={telemetry.shadowComparison} /></>}
 
@@ -288,5 +308,7 @@ export default function App() {
     <section className="markets" aria-live="polite">{!dashboard.loading && !filtered.length ? <div className="empty-state"><Waves size={24} /><strong>No markets found</strong><span>Try another coin or search.</span></div> : filtered.map((market) => tab === "shadow" ? <ShadowCard key={market.ticker} market={market} livePrice={live.livePrices[market.index_id]} now={now} /> : <MarketCard key={market.ticker} market={market} livePrice={live.livePrices[market.index_id]} history={live.histories[market.index_id]} now={now} decisionLeadSec={telemetry.decisionLeadSec} closed={tab === "closed" || market.status === "closed"} />)}</section>
 
     {tab === "closed" && dashboard.hasMore && <div className="load-more"><button className="secondary-button" type="button" disabled={dashboard.loadingMore} onClick={dashboard.loadMore}>{dashboard.loadingMore ? <RefreshCw className="spin" size={16} /> : <ChevronDown size={16} />}{dashboard.loadingMore ? "Loading" : "Show more results"}</button></div>}
+    </>}
+    </div>
   </main>;
 }

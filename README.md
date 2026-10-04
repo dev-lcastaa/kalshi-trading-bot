@@ -4,8 +4,93 @@ A bot that watches Kalshi's 15-minute Bitcoin and Solana "above or below"
 markets and tells you what it thinks will happen — as a percentage — before
 each market closes.
 
-**It only watches. It never buys, sells, or places any order for you.**
-Every trade decision is 100% yours.
+**Order execution is disabled by default.** The Trading tab provides explicit
+opt-in automatic trading, saved dollar thresholds, and an activity journal.
+
+## Dashboard trading
+
+The **Trading** tab (or `/trading`) has two independent journeys:
+
+- **Live auto trading** — places real orders on your Kalshi account
+  (demo or production, depending on `KALSHI_ENV`).
+- **Paper auto trading** — simulates fills against the live order books and
+  tracks a simulated account. No orders are ever sent. Paper results are
+  estimates: they ignore queue position and your order's market impact,
+  so real fills can be worse.
+
+Each journey has its own saved **Budget**, **Take profit**, and **Stop loss**,
+its own on/off switch, and its own position cards with that position's actions
+and decision. Save settings before enabling the switch. Settings are stored in
+the bot database, not the browser; they survive refreshes and restarts and do
+not require a bot restart to change. Environment values provide first-run
+defaults only:
+
+```dotenv
+KALSHI_TRADE_BUDGET_USD=1.00
+KALSHI_TAKE_PROFIT_USD=0.50
+KALSHI_STOP_LOSS_USD=0.10
+```
+
+Use positive dollar amounts with at most two decimals. The budget must be
+below $2, and the loss limit must be below the budget. Amounts are **per trade**,
+not percentages or daily/session totals. Repeated trades can cumulatively spend
+or lose more than $2. No accuracy or profitability is guaranteed.
+
+To set up:
+
+1. Start with `KALSHI_ENV=demo` and demo API credentials. Paper trading works
+   immediately; its switch enables without a confirmation dialog.
+2. For live trading, set `KALSHI_ORDER_EXECUTION_ENABLED=true` and
+   restart/redeploy the bot. Enabling **Live trading** in the dashboard always
+   shows a confirmation with your exact saved settings and a risk acknowledgment.
+3. Production uses `KALSHI_ENV=prod` and production credentials; the switch is
+   labelled **Live trading — real money**. Switching credentials while journaled
+   positions are open blocks their management; use a separate database for a
+   different account, or resolve the original positions first. API-key rotation
+   also requires resolving ownership.
+
+The dashboard controls have **no login or token**. Anyone who can reach the
+dashboard can change settings and enable live trading, so run it only on a
+private, trusted network (or put authenticated HTTPS/VPN in front). Never
+expose the port to the internet or an untrusted LAN.
+
+The bot always restarts **paused** in both journeys, while retaining saved
+settings and position journals. Off takes effect immediately for new entries,
+but cannot recall an already submitted order. Existing positions continue to be
+monitored for exits. Pause before editing settings. Positions retain their
+entry-time thresholds.
+If the server authorization flag is false, **all** live order execution,
+including exits, stops. Do not disable that flag or stop the process while
+relying on exits. Compose already reads these variables from `.env`.
+
+The policy triggers an exit at net profit **at or above** the profit target,
+or net loss **at or above** the loss limit. Entry sizing reserves fees and
+skips quotes where the profit target cannot be reached even at a $1 payout.
+It also skips entries whose quoted spread and fee reserve already reach the
+configured loss limit, or whose initial sell liquidity is insufficient.
+Net P/L uses confirmed fill costs/fees and available sell liquidity, not the
+underlying crypto price. Entries use fresh, newly locked live-model decisions
+made after enabling; historical or Test Lab decisions never trigger trades.
+Only one bot position is allowed at a time, with one entry attempt per market.
+The worker refuses to mix an entry with existing holdings/resting orders in that
+market. Avoid manual trading in bot-managed markets; a holdings mismatch pauses
+automation rather than risking unrelated holdings. Only ordinary $1 binary
+contracts with supported general fee schedules are eligible.
+
+Orders are price-limited and immediate-or-cancel; exits are reduce-only. Partial
+fills are tracked. Orders are journaled before submission, and uncertain outcomes
+block new entries instead of being blindly retried. A lost response with no
+confirmed fills may need manual reconciliation in Kalshi; do not delete the
+journal to bypass this block. Database worker ownership prevents overlapping
+workers from submitting duplicate orders. Use one bot process per database.
+
+**A stop-loss cannot cap losses or guarantee a cash-out price.** Liquidity, price
+gaps, fees, outages, rejected orders, and market closure can prevent an exit or
+cause larger losses. Stop-losses attempt available partial liquidity; unavailable
+liquidity is recorded rather than displayed as a guaranteed executable P/L.
+The worker must stay running to monitor thresholds. If a position remains through
+market close, it is tracked until final settlement. Tests use mocked Kalshi
+responses; authenticated demo/production execution has not been verified here.
 
 ## 📍 Where we are right now
 

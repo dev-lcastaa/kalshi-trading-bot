@@ -1,7 +1,6 @@
 """Orchestrator: wires REST discovery, WS ingestion, prediction, and the dashboard.
 
-This process only reads market data and computes signals - it never places,
-amends, or cancels orders.
+Order execution is explicitly opt-in and controlled from the trading dashboard.
 """
 from __future__ import annotations
 
@@ -14,10 +13,12 @@ from copy import copy
 from dataclasses import asdict, replace
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 import uvicorn
 
 from .auth import KalshiAuth
+from .auto_trader import AutoTrader
 from .config import Settings
 from .dashboard.broadcaster import Broadcaster
 from .dashboard.server import create_app
@@ -29,6 +30,7 @@ from .kalshi_client.rest import KalshiRestClient
 from .kalshi_client.ws import KalshiWsClient
 from .llm_review import LlmReviewer
 from .market_discovery import find_15min_markets
+from .paper import PaperExchange
 from .prediction.calibration import IsotonicCalibrator
 from .prediction.logistic import FEATURE_NAMES, LogisticRegressionModel, LogisticSignalPredictor, fit_logistic_model
 from .prediction.model import RandomWalkPredictor, RegularizedSettlementPredictor, SettlementAwarePredictor
@@ -77,6 +79,19 @@ class BotApp:
         self.auth = KalshiAuth.from_file(settings.key_id, settings.private_key_path)
         self.rest = KalshiRestClient(settings.rest_base, self.auth)
         self.store = Store(settings.database_url)
+        worker_id = str(uuid4())
+        self.trader = AutoTrader(
+            self.store, self.rest, defaults=settings.trading_policy,
+            environment=settings.env,
+            execution_allowed=settings.order_execution_enabled and bool(settings.key_id),
+            account_identity=hashlib.sha256(settings.key_id.encode()).hexdigest() if settings.key_id else "",
+            worker_id=worker_id,
+        )
+        self.paper_trader = AutoTrader(
+            self.store, PaperExchange(self.store, self.rest), defaults=settings.trading_policy,
+            environment=settings.env, execution_allowed=True, mode="paper",
+            account_identity="paper", worker_id=worker_id,
+        )
         self.predictor = (
             RegularizedSettlementPredictor() if settings.predictor_version == "v3"
             else SettlementAwarePredictor() if settings.predictor_version == "v2"
@@ -868,6 +883,7 @@ class BotApp:
                 closed_grace_sec=self.settings.closed_grace_sec,
                 decision_lead_sec=self.settings.decision_lead_sec,
                 broadcaster=self.broadcaster,
+                traders={"live": self.trader, "paper": self.paper_trader},
             ),
             host=self.settings.dashboard_host,
             port=self.settings.dashboard_port,
@@ -876,6 +892,8 @@ class BotApp:
         server = uvicorn.Server(uv_config)
 
         await asyncio.gather(
+            self.trader.run(),
+            self.paper_trader.run(),
             self.prediction_loop(),
             self.rediscovery_loop(),
             self.outcome_polling_loop(),
