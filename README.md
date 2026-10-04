@@ -65,13 +65,64 @@ matches when **all** of its conditions hold:
 | Rule field | Meaning |
 |---|---|
 | Coin | `ANY`, `BTC`, or `SOL` |
-| Which way to bet | **Follow the bot's guess** (UP/YES if the model gives YES ≥ 50%, else DOWN/NO), **Always bet UP**, or **Always bet DOWN** |
+| Which way to bet | **Follow the bot's guess** (side with the larger estimated after-fee edge at current quotes; not necessarily the favored direction), **Always bet UP**, or **Always bet DOWN** |
 | Lowest/Highest price to pay | Price of one contract of the side being bought, in cents (1–99¢) |
 | How sure the bot must be | Model probability that the bought side wins (0–100%) |
 | Minimum expected profit | Confidence minus price minus taker fee, in cents; blank turns the check off |
 | Start/Stop betting at (seconds left) | Time window before market close (e.g. 390→330 = around T-6:30) |
 | Most to spend per trade | Dollars per trade, at most **$25** (fees are reserved from it) |
 | Cash out when up by / Cut losses when down by | Net-P/L exit thresholds in dollars; **0 = never (hold to the end)** |
+
+### Repeated scalping (opt-in)
+
+Each rule can opt into **Repeated scalping (sell, then re-enter)** in Practice
+or Real money. Existing rules do not opt in automatically. **Add scalping test
+rule** adds an unsaved preset: 20-85 cents, at least 60% confidence and 3 cents
+after-entry-fee edge, entry window 14:00-1:30, $1 per buy, 2-cent net profit
+target, 20-cent stop-loss trigger, three cycles, 30-second cooldown, $3 total
+entry spending and a 50-cent market-loss trigger. Saving the rule does not
+enable trading; real money still requires the existing confirmation.
+
+Scalping is one buy per cycle, with no scale-in. After the entire position is
+sold at a **take-profit exit with positive realized net P/L**, the bot waits
+the cooldown and may buy again in the same ticker. Every re-entry must pass
+the current rule, fresh prediction/quality checks, account/order reconciliation,
+and actual order-book checks. A partial or unknown exit never permits a new
+cycle. Stop-loss, settlement, rejected/permanently skipped, and zero-fill
+cycles end trading in that ticker; the bot does not chase losses.
+
+| Scalping field | Meaning |
+|---|---|
+| Cycles per market | 1-10 separate buy/sell positions, including the first cycle |
+| Cooldown after exit | 5-900 seconds after the full exit is reconciled |
+| Total spending per market | Up to $25, cumulative entry costs including fees; profits do not replenish it |
+| Market loss limit | Up to $25; blocks entries after realized losses and triggers a stop-loss exit when remaining loss allowance is breached |
+
+Scalping requires positive take-profit and stop-loss amounts, a minimum
+after-entry-fee edge of 1 cent, and an entry window between 60 and 900 seconds
+left. The loss limit cannot exceed spending; the buy budget cannot exceed
+spending; the per-position stop-loss cannot exceed the market-loss limit.
+Each market retains its original caps: settings edits cannot raise its cycle,
+spending, or loss limits or shorten its cooldown. Another rule/name cannot
+bypass a completed or stopped scalping market. Caps and cooldowns survive
+restarts, but new entries always restart paused.
+
+Targets are **net dollars per position**, not price moves or per-contract
+profits. Profit checks subtract paid entry costs and reserve exit fees, and
+sell orders are price-limited IOC orders. Profit is not guaranteed: quotes
+can move, orders can fill partially, and fees can differ from estimates.
+Stop-loss and market-loss amounts are triggers, **not guaranteed maximum
+losses**; a failed/illiquid exit can lose the full purchase cost. Unexited
+positions remain monitored and can settle when the market closes.
+
+Each cycle has a separate persistent journal, order IDs, entry prediction,
+timestamps, and P/L. Running cards and trade details show cycle numbers; watch
+cards show cumulative spending, closed net P/L, cooldowns and stop reasons.
+The scoreboard includes all funded closed cycles even when the displayed
+history is limited to the latest 100 closed positions.
+Test in Practice before using real money. Settlement probability is not a
+prediction of a price rise over the next few seconds; no preset is a proven
+profitable scalping strategy.
 
 On a match the bot re-checks the rule against the **real order book** (not the
 quote), sizes the order to the budget and top-of-book size, and submits a

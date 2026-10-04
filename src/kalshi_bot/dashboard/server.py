@@ -33,6 +33,11 @@ class TradingRuleBody(BaseModel):
     stop_loss: str = Field(default="0", max_length=24)
     max_entries: int = Field(default=1, ge=1, le=10)
     reentry_gap_sec: int = Field(default=60, ge=0, le=900)
+    scalping: StrictBool = False
+    max_cycles: int = Field(default=3, ge=1, le=10)
+    cycle_cooldown_sec: int = Field(default=30, ge=5, le=900)
+    market_spend_limit: str = Field(default="3.00", min_length=1, max_length=24)
+    market_loss_limit: str = Field(default="0.50", min_length=1, max_length=24)
 
 
 class TradingSettingsBody(BaseModel):

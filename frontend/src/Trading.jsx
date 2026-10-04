@@ -8,8 +8,10 @@ export const MAX_BUDGET = 25;
 export const MAX_RULES = 10;
 const COINS = [["ANY", "Any coin"], ["BTC", "Bitcoin (BTC)"], ["SOL", "Solana (SOL)"]];
 const SIDES = [["model", "Follow the bot's guess"], ["yes", "Always bet UP"], ["no", "Always bet DOWN"]];
-const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss", "max_entries", "reentry_gap_sec"];
+const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss", "max_entries", "reentry_gap_sec", "scalping", "max_cycles", "cycle_cooldown_sec", "market_spend_limit", "market_loss_limit"];
 const NEW_RULE = { name: "New rule", enabled: true, coin: "ANY", side: "model", min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", max_seconds_left: "390", budget: "1.00", take_profit: "0.00", stop_loss: "0.00", max_entries: "1", reentry_gap_sec: "60" };
+const SCALP_DEFAULTS = { scalping: false, max_cycles: "3", cycle_cooldown_sec: "30", market_spend_limit: "3.00", market_loss_limit: "0.50" };
+const SCALP_PRESET = { ...NEW_RULE, ...SCALP_DEFAULTS, name: "Early scalp test", scalping: true, min_price: "20", max_price: "85", min_confidence: "60", min_edge: "3", min_seconds_left: "90", max_seconds_left: "840", take_profit: "0.02", stop_loss: "0.20" };
 const WHOLE = /^\d+$/;
 const SIGNED_WHOLE = /^-?\d+$/;
 const MONEY = /^\d+(\.\d{1,2})?$/;
@@ -36,6 +38,10 @@ export function toUi(settings) {
     min_seconds_left: String(rule.min_seconds_left), max_seconds_left: String(rule.max_seconds_left),
     budget: num(rule.budget).toFixed(2), take_profit: num(rule.take_profit).toFixed(2), stop_loss: num(rule.stop_loss).toFixed(2),
     max_entries: String(rule.max_entries ?? 1), reentry_gap_sec: String(rule.reentry_gap_sec ?? 60),
+    scalping: Boolean(rule.scalping), max_cycles: String(rule.max_cycles ?? 3),
+    cycle_cooldown_sec: String(rule.cycle_cooldown_sec ?? 30),
+    market_spend_limit: num(rule.market_spend_limit ?? 3).toFixed(2),
+    market_loss_limit: num(rule.market_loss_limit ?? 0.5).toFixed(2),
   })) };
 }
 
@@ -48,6 +54,10 @@ export function fromUi(form) {
     min_seconds_left: num(rule.min_seconds_left), max_seconds_left: num(rule.max_seconds_left),
     budget: num(rule.budget).toFixed(2), take_profit: num(rule.take_profit).toFixed(2), stop_loss: num(rule.stop_loss).toFixed(2),
     max_entries: num(rule.max_entries), reentry_gap_sec: num(rule.reentry_gap_sec),
+    ...(rule.scalping ? { scalping: true, max_cycles: num(rule.max_cycles),
+      cycle_cooldown_sec: num(rule.cycle_cooldown_sec),
+      market_spend_limit: num(rule.market_spend_limit).toFixed(2),
+      market_loss_limit: num(rule.market_loss_limit).toFixed(2) } : {}),
   })) };
 }
 
@@ -65,6 +75,18 @@ export function validateRule(rule) {
   if (num(rule.stop_loss) >= num(rule.budget)) return "\"Cut losses\" must be less than the most you spend.";
   if (!WHOLE.test(text("max_entries")) || num(text("max_entries")) < 1 || num(text("max_entries")) > 10) return "\"Buys per market\" must be a whole number from 1 to 10.";
   if (!WHOLE.test(text("reentry_gap_sec")) || num(text("reentry_gap_sec")) > 900) return "\"Wait between buys\" must be whole seconds from 0 to 900.";
+  if (rule.scalping) {
+    if (num(rule.max_entries) !== 1) return "Scalping uses one buy per cycle, not scale-in buys.";
+    if (num(rule.take_profit) <= 0 || num(rule.stop_loss) <= 0) return "Scalping needs positive cash-out and cut-loss amounts.";
+    if (text("min_edge") === "" || num(rule.min_edge) < 1) return "Scalping needs at least 1¢ expected profit after entry fees.";
+    if (num(rule.min_seconds_left) < 60 || num(rule.max_seconds_left) > 900) return "Scalping entries must be between 60 and 900 seconds left.";
+    if (!WHOLE.test(text("max_cycles")) || num(rule.max_cycles) < 1 || num(rule.max_cycles) > 10) return "Cycles per market must be from 1 to 10.";
+    if (!WHOLE.test(text("cycle_cooldown_sec")) || num(rule.cycle_cooldown_sec) < 5 || num(rule.cycle_cooldown_sec) > 900) return "Cycle cooldown must be from 5 to 900 seconds.";
+    for (const key of ["market_spend_limit", "market_loss_limit"]) if (!MONEY.test(text(key)) || num(rule[key]) <= 0 || num(rule[key]) > MAX_BUDGET) return `Market spending and loss limits must be positive dollars up to $${MAX_BUDGET}.`;
+    if (num(rule.market_loss_limit) > num(rule.market_spend_limit)) return "Market loss limit cannot exceed its spending limit.";
+    if (num(rule.budget) > num(rule.market_spend_limit)) return "Per-buy budget cannot exceed the market spending limit.";
+    if (num(rule.stop_loss) > num(rule.market_loss_limit)) return "Cut losses cannot exceed the market loss limit.";
+  }
   return "";
 }
 
@@ -83,6 +105,7 @@ function exitPlan(policy) {
 }
 
 function repeats(rule) {
+  if (rule.scalping) return ` per cycle, up to ${rule.max_cycles} cycles in one market, waiting ${rule.cycle_cooldown_sec}s after each fully closed profitable exit. Never re-enter after a loss or settlement. Total spending including entry fees is capped at ${money(rule.market_spend_limit)} per market; stop new entries at ${money(rule.market_loss_limit)} in losses (exits can lose more)`;
   const times = num(rule.max_entries) || 1;
   if (times <= 1) return " once per market";
   return ` each time, up to ${times} times per market (at least ${num(rule.reentry_gap_sec) || 0}s apart, only while the deal is still good) — so up to ${money(num(rule.budget) * times)} in one market`;
@@ -121,6 +144,7 @@ function RuleEditor({ rule, index, count, disabled, onChange, onRemove }) {
       <label className="trading-ack"><input type="checkbox" checked={Boolean(rule.enabled)} disabled={disabled} onChange={(event) => set("enabled")(event.target.checked)} />Rule is on</label>
       <button type="button" className="icon-button" aria-label={`Remove rule ${index + 1}`} title="Remove rule" disabled={disabled || count <= 1} onClick={onRemove}><Trash2 size={16} /></button>
     </header>
+    <label className="trading-ack"><input type="checkbox" checked={Boolean(rule.scalping)} disabled={disabled} onChange={(event) => onChange({ ...rule, ...(!rule.max_cycles ? SCALP_DEFAULTS : {}), scalping: event.target.checked, ...(event.target.checked ? { max_entries: "1" } : {}) })} />Repeated scalping (sell, then re-enter)</label>
     <div className="trading-fields">
       <Field label="Rule name" value={rule.name} disabled={disabled} onChange={set("name")} inputMode="text" />
       <Choice label="Which coin" value={rule.coin} options={COINS} disabled={disabled} onChange={set("coin")} />
@@ -132,11 +156,18 @@ function RuleEditor({ rule, index, count, disabled, onChange, onRemove }) {
       <Field label="Start betting at (seconds left)" value={rule.max_seconds_left} disabled={disabled} onChange={set("max_seconds_left")} inputMode="numeric" note={`= ${clock(rule.max_seconds_left)} left`} />
       <Field label="Stop betting at (seconds left)" value={rule.min_seconds_left} disabled={disabled} onChange={set("min_seconds_left")} inputMode="numeric" note={`= ${clock(rule.min_seconds_left)} left`} />
       <Field label="Most to spend per buy ($)" value={rule.budget} disabled={disabled} onChange={set("budget")} note={`Up to $${MAX_BUDGET}`} />
-      <Field label="Buys per market" value={rule.max_entries} disabled={disabled} onChange={set("max_entries")} inputMode="numeric" note="1 = buy once. More = buy again while it's still a good deal" />
-      <Field label="Wait between buys (seconds)" value={rule.reentry_gap_sec} disabled={disabled} onChange={set("reentry_gap_sec")} inputMode="numeric" note="Only matters if buys per market is more than 1" />
+      <Field label="Buys per market" value={rule.max_entries} disabled={disabled || rule.scalping} onChange={set("max_entries")} inputMode="numeric" note={rule.scalping ? "One buy per scalp cycle; no adding to an open position" : "1 = buy once. More = add to the same open position"} />
+      <Field label="Wait between buys (seconds)" value={rule.reentry_gap_sec} disabled={disabled || rule.scalping} onChange={set("reentry_gap_sec")} inputMode="numeric" note="Only matters for adding to an open position, not scalp cycles" />
       <Field label="Cash out when up by ($)" value={rule.take_profit} disabled={disabled} onChange={set("take_profit")} note="0 = never, hold to the end" />
       <Field label="Cut losses when down by ($)" value={rule.stop_loss} disabled={disabled} onChange={set("stop_loss")} note="0 = never, hold to the end" />
+      {rule.scalping && <>
+        <Field label="Cycles per market" value={rule.max_cycles} disabled={disabled} onChange={set("max_cycles")} inputMode="numeric" note="1-10 separate buy/sell cycles, counting the first buy" />
+        <Field label="Cooldown after exit (seconds)" value={rule.cycle_cooldown_sec} disabled={disabled} onChange={set("cycle_cooldown_sec")} inputMode="numeric" note="5-900 seconds, starts only after fully selling" />
+        <Field label="Total spending per market ($)" value={rule.market_spend_limit} disabled={disabled} onChange={set("market_spend_limit")} note="Includes entry fees; profits do not replenish this cap" />
+        <Field label="Market loss limit ($)" value={rule.market_loss_limit} disabled={disabled} onChange={set("market_loss_limit")} note="Exit trigger, not a guaranteed maximum loss" />
+      </>}
     </div>
+    {rule.scalping && <p className="trading-muted">Profit targets are net dollars per position after entry costs and reserved exit fees, not per contract. Fees and spreads can erase small gains. Caps persist across restarts and cannot be increased for a market already traded. No profit is guaranteed.</p>}
     {problem ? <p className="negative">{problem}</p> : <p className="trading-muted">{ruleSummary(rule)}</p>}
   </fieldset>;
 }
@@ -188,6 +219,7 @@ function WatchCards({ watch, now, updatedAt, stale, enabled }) {
         <div className={`watch-countdown${left <= 240 ? " closing" : ""}`}><span>Time left</span><strong>{clock(left)}</strong></div></header>
       <DirectionBars modelProbability={row.model_p_yes} marketProbability={row.market_p_yes} />
       <footer><span className={`trading-bet ${row.side === "no" ? "down" : row.side ? "up" : ""}`}>{row.side ? `${direction(row.side)} at ${centsOf(row.price)}¢` : "No bet yet"}</span>
+        {row.scalping && <p>Scalp cycles started: {row.scalping.cycles} · Spent {money(row.scalping.spent)} · Closed net {signedMoney(row.scalping.realized_pnl)}</p>}
         <p>{note}</p></footer>
     </article>;
   })}</div>;
@@ -240,11 +272,14 @@ function LiveCard({ position, events, decision, now }) {
       <Stat label="If it wins you get" value={money(quantity)} tone="positive" />
       <Stat label="If you sold now" value={worth} tone={num(position.net_pnl) > 0 ? "positive" : num(position.net_pnl) < 0 ? "negative" : ""} />
       <Stat label="Market ends in" value={left} />
+      {position.scalp && <Stat label="Scalp cycle" value={`${position.cycle_number}/${position.scalp.max_cycles}`} />}
     </dl>
     <p className="trading-muted">Rule used: <strong>{position.rule ?? "--"}</strong> · Plan: {exitPlan(position.policy)}</p>
     {position.liquidity_warning && <p className="negative">Nobody is buying right now, so the bot can't sell yet.</p>}
     <details className="trading-decision"><summary><span>What the bot did</span><ChevronDown size={16} /></summary>{events.length ? <Diary events={events} /> : <p className="trading-muted">Nothing yet</p>}</details>
-    <details className="trading-decision"><summary><span>Why the bot made this bet</span><ChevronDown size={16} /></summary><Why decision={decision} /></details>
+    <details className="trading-decision"><summary><span>Why the bot made this bet</span><ChevronDown size={16} /></summary>{position.scalp && position.entry_signal
+      ? <p className="trading-muted">Live rule matched at {timestamp(position.entry_signal.ts_ms)}: {direction(position.side)} at {centsOf(position.entry_signal.price)}¢, estimated win chance {(num(position.entry_signal.confidence) * 100).toFixed(1)}%. This is the cycle's entry prediction, not the saved final pick.</p>
+      : <Why decision={decision} />}</details>
   </article>;
 }
 
@@ -266,8 +301,9 @@ function FinishedCard({ position }) {
       <Stat label="Got back" value={money(position.exit_credit)} />
     </dl>
     <details className="finished-extra"><summary>Trade details</summary><dl className="finished-details">
-      <Stat label="Contracts" value={position.quantity ?? "--"} />
+      <Stat label="Contracts" value={position.bought_quantity ?? position.quantity ?? "--"} />
       <Stat label="Rule used" value={position.rule ?? "--"} />
+      {position.scalp && <Stat label="Scalp cycle" value={`${position.cycle_number}/${position.scalp.max_cycles}`} />}
     </dl></details>
     <footer><span>{ENDINGS[position.closed_by] ?? "Closed"}</span><time dateTime={endedAt == null ? undefined : new Date(endedAt).toISOString()}>{timestamp(endedAt)}</time></footer>
   </li>;
@@ -276,7 +312,7 @@ function FinishedCard({ position }) {
 function FinishedBets({ positions }) {
   const [visibleCount, setVisibleCount] = React.useState(2);
   return <>
-    <ol className="trading-cards trading-finished-list">{positions.slice(0, visibleCount).map((position, index) => <FinishedCard key={`${position.ticker}-${index}`} position={position} />)}</ol>
+    <ol className="trading-cards trading-finished-list">{positions.slice(0, visibleCount).map((position, index) => <FinishedCard key={position.position_id ?? `${position.ticker}-${index}`} position={position} />)}</ol>
     {positions.length > 2 && <div className="trading-buttons finished-controls">
       <span className="trading-muted">Showing {Math.min(visibleCount, positions.length)} of {positions.length} finished bets</span>
       {visibleCount < positions.length && <button className="secondary-button" onClick={() => setVisibleCount((count) => count + 2)}>Load more</button>}
@@ -455,8 +491,9 @@ export default function Trading() {
   const running = positions.filter((position) => position.status === "pending" || position.status === "open");
   const finished = positions.filter((position) => position.status === "closed").sort((a, b) => (b.closed_ms ?? b.opened_ms ?? 0) - (a.closed_ms ?? a.opened_ms ?? 0));
   const scored = finished.filter((position) => position.net_pnl != null);
-  const total = scored.reduce((sum, position) => sum + num(position.net_pnl), 0);
-  const wins = scored.filter((position) => num(position.net_pnl) > 0).length;
+  const total = snap?.summary ? num(snap.summary.net_pnl) : scored.reduce((sum, position) => sum + num(position.net_pnl), 0);
+  const wins = snap?.summary?.wins ?? scored.filter((position) => num(position.net_pnl) > 0).length;
+  const finishedCount = snap?.summary?.finished ?? scored.length;
   const decisionFor = (ticker) => decisions.filter((decision) => decision.ticker === ticker).sort((a, b) => b.ts_ms - a.ts_ms)[0];
   const title = snap ? modeLabel(mode, snap.environment) : "Trading";
 
@@ -484,12 +521,12 @@ export default function Trading() {
       </section>
       <section className="trading-section" aria-label="Scoreboard"><dl className="trading-score">
         <Stat label="Bets running now" value={running.length} />
-        <Stat label="Finished bets" value={finished.length} />
-        <Stat label="Total won / lost" value={scored.length ? signedMoney(total) : "--"} tone={total > 0 ? "positive" : total < 0 ? "negative" : ""} />
-        <Stat label="Win rate" value={scored.length ? `${Math.round((wins / scored.length) * 100)}% (${wins} of ${scored.length})` : "--"} />
+        <Stat label="Finished bets" value={snap?.summary?.finished ?? finished.length} />
+        <Stat label="Total won / lost" value={finishedCount ? signedMoney(total) : "--"} tone={total > 0 ? "positive" : total < 0 ? "negative" : ""} />
+        <Stat label="Win rate" value={finishedCount ? `${Math.round((wins / finishedCount) * 100)}% (${wins} of ${finishedCount})` : "--"} />
       </dl></section>
       <section className="trading-section" aria-label="Bets happening now"><h3>Bets happening now</h3>
-        {running.length ? <div className="trading-cards">{running.map((position, index) => <LiveCard key={`${position.ticker}-${index}`} position={position} now={now} events={events.filter((event) => event.ticker === position.ticker)} decision={decisionFor(position.ticker)} />)}</div>
+        {running.length ? <div className="trading-cards">{running.map((position, index) => <LiveCard key={position.position_id ?? `${position.ticker}-${index}`} position={position} now={now} events={events.filter((event) => position.position_id ? event.position_id === position.position_id : event.ticker === position.ticker)} decision={decisionFor(position.ticker)} />)}</div>
           : <p className="trading-muted">No bets running right now</p>}
       </section>
       <section className="trading-section" aria-label="Finished bets"><h3>Finished bets</h3>
@@ -509,10 +546,12 @@ export default function Trading() {
             onRemove={() => updateRules(rulesOf(form).filter((_, position) => position !== index))} />)}
           {validation && <p className="negative" role="alert">{validation}</p>}
           <div className="trading-buttons">
-            <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...NEW_RULE, name: `Rule ${rulesOf(form).length + 1}` }])}><Plus size={16} />Add a rule</button>
+            <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...NEW_RULE, ...SCALP_DEFAULTS, name: `Rule ${rulesOf(form).length + 1}` }])}><Plus size={16} />Add a rule</button>
+            <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...SCALP_PRESET }])}><Plus size={16} />Add scalping test rule</button>
             <button className="secondary-button" type="submit" disabled={snap.enabled || busy || stale || !dirty || !!validation}><Save size={16} />Save rules</button>
             <span className="trading-muted">{snap.enabled ? "Turn the bot off to change rules." : dirty ? "You have unsaved changes" : "All changes saved"}</span>
           </div>
+          <p className="trading-muted">The scalping preset only adds an unsaved rule; it does not start trading. Rules run top to bottom, so earlier rules can take priority. Test in Practice first. A profitable exit is required before re-entry; a stop loss ends trading in that market.</p>
         </form>
       </section>
       <section className="trading-section" aria-label="Bot diary">

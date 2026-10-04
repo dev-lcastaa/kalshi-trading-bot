@@ -100,6 +100,32 @@ def _seconds(values: dict, name: str, default: int) -> int:
 MAX_ENTRIES = 10
 
 
+@dataclass(frozen=True)
+class ScalpPolicy:
+    max_cycles: int = 3
+    cycle_cooldown_sec: int = 30
+    market_spend_limit: Decimal = Decimal("3.00")
+    market_loss_limit: Decimal = Decimal("0.50")
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_cycles <= 10:
+            raise ValueError("max_cycles must be between 1 and 10")
+        if not 5 <= self.cycle_cooldown_sec <= 900:
+            raise ValueError("cycle_cooldown_sec must be between 5 and 900 seconds")
+        for name in ("market_spend_limit", "market_loss_limit"):
+            value = getattr(self, name)
+            if not value.is_finite() or value <= 0 or value != value.quantize(CENT) or value > MAX_BUDGET:
+                raise ValueError(f"{name} must be positive dollars with at most two decimals, up to {MAX_BUDGET}")
+        if self.market_loss_limit > self.market_spend_limit:
+            raise ValueError("market_loss_limit must not exceed market_spend_limit")
+
+    def to_json(self) -> dict:
+        return {
+            "max_cycles": self.max_cycles, "cycle_cooldown_sec": self.cycle_cooldown_sec,
+            "market_spend_limit": str(self.market_spend_limit), "market_loss_limit": str(self.market_loss_limit),
+        }
+
+
 def _int(values: dict, name: str, default: int) -> int:
     raw = values.get(name)
     if raw in (None, ""):
@@ -138,6 +164,7 @@ class EntryRule:
     policy: TradingPolicy = TradingPolicy()
     max_entries: int = 1
     reentry_gap_sec: int = 60
+    scalp: ScalpPolicy | None = None
 
     def __post_init__(self) -> None:
         if not self.name or len(self.name) > 40:
@@ -156,6 +183,19 @@ class EntryRule:
             raise ValueError(f"max_entries must be between 1 and {MAX_ENTRIES}")
         if not 0 <= self.reentry_gap_sec <= 900:
             raise ValueError("reentry_gap_sec must be between 0 and 900 seconds")
+        if self.scalp is not None:
+            if self.max_entries != 1:
+                raise ValueError("Scalping requires max_entries=1 (one buy per cycle, no scale-in)")
+            if self.policy.take_profit <= 0 or self.policy.stop_loss <= 0:
+                raise ValueError("Scalping requires positive take_profit and stop_loss")
+            if self.min_edge is None or self.min_edge < CENT:
+                raise ValueError("Scalping requires min_edge of at least 0.01 after entry fees")
+            if self.min_seconds_left < 60 or self.max_seconds_left > 900:
+                raise ValueError("Scalping entry window must be between 60 and 900 seconds left")
+            if self.policy.budget > self.scalp.market_spend_limit:
+                raise ValueError("Scalping budget must not exceed market_spend_limit")
+            if self.policy.stop_loss > self.scalp.market_loss_limit:
+                raise ValueError("Scalping stop_loss must not exceed market_loss_limit")
 
     @staticmethod
     def parse(values: dict) -> "EntryRule":
@@ -168,6 +208,15 @@ class EntryRule:
         enabled = values.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be true or false")
+        scalping = values.get("scalping", False)
+        if not isinstance(scalping, bool):
+            raise ValueError("scalping must be true or false")
+        scalp = ScalpPolicy(
+            max_cycles=_int(values, "max_cycles", 3),
+            cycle_cooldown_sec=_int(values, "cycle_cooldown_sec", 30),
+            market_spend_limit=dollars(values.get("market_spend_limit", "3.00")),
+            market_loss_limit=dollars(values.get("market_loss_limit", "0.50")),
+        ) if scalping else None
         return EntryRule(
             name=str(values.get("name") or "Rule").strip()[:40] or "Rule",
             enabled=enabled,
@@ -186,10 +235,11 @@ class EntryRule:
             ),
             max_entries=_int(values, "max_entries", 1),
             reentry_gap_sec=_int(values, "reentry_gap_sec", 60),
+            scalp=scalp,
         )
 
     def to_json(self) -> dict:
-        return {
+        result = {
             "name": self.name, "enabled": self.enabled, "coin": self.coin, "side": self.side,
             "min_price": str(self.min_price), "max_price": str(self.max_price),
             "min_confidence": str(self.min_confidence),
@@ -199,6 +249,9 @@ class EntryRule:
             "stop_loss": str(self.policy.stop_loss),
             "max_entries": self.max_entries, "reentry_gap_sec": self.reentry_gap_sec,
         }
+        if self.scalp is not None:
+            result.update(scalping=True, **self.scalp.to_json())
+        return result
 
     def coin_matches(self, ticker: str) -> bool:
         return self.coin == "ANY" or self.coin in ticker.split("-")[0].upper()

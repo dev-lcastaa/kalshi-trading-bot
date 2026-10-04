@@ -37,6 +37,57 @@ const lastWrite = (method) => fetch.mock.calls.filter(([, options]) => options?.
 const goLive = (user) => user.click(screen.getByRole("radio", { name: "Real money" }));
 
 describe("Trading tab", () => {
+  it("adds an unsaved scalping preset and persists its limits without enabling either mode", async () => {
+    const user = userEvent.setup(); render(<Trading />);
+    await screen.findByRole("group", { name: "Rule 1" });
+    await user.click(screen.getByRole("button", { name: "Add scalping test rule" }));
+    const scalp = rule(2);
+    expect(scalp.getByLabelText("Repeated scalping (sell, then re-enter)").checked).toBe(true);
+    expect(scalp.getByLabelText("Buys per market").disabled).toBe(true);
+    expect(scalp.getByLabelText("Cash out when up by ($)").value).toBe("0.02");
+    expect(scalp.getByLabelText("Cycles per market").value).toBe("3");
+    expect(lastWrite("PUT")).toBeUndefined();
+    expect(lastWrite("POST")).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Save rules" }));
+    await screen.findByText("Rules saved.");
+    const saved = JSON.parse(lastWrite("PUT")[1].body);
+    expect(saved.rules[1]).toMatchObject({ scalping: true, max_cycles: 3, cycle_cooldown_sec: 30,
+      market_spend_limit: "3.00", market_loss_limit: "0.50", max_entries: 1, min_edge: "0.03",
+      take_profit: "0.02", stop_loss: "0.20", min_seconds_left: 90, max_seconds_left: 840 });
+    expect(state.live.enabled).toBe(false);
+    expect(state.paper.enabled).toBe(false);
+    expect(fromUi(toUi({ rules: [saved.rules[1]] }))).toEqual({ rules: [saved.rules[1]] });
+    for (const bad of [{ take_profit: "0" }, { stop_loss: "0" }, { max_entries: "2" }, { min_edge: "" },
+      { min_edge: "0" }, { min_seconds_left: "59" }, { max_seconds_left: "901" }, { max_cycles: "11" },
+      { cycle_cooldown_sec: "0" }, { market_spend_limit: "0.50" }, { market_loss_limit: "0" },
+      { market_loss_limit: "4.00" }]) {
+      const form = toUi({ rules: [saved.rules[1]] });
+      Object.assign(form.rules[0], bad);
+      expect(validateSettings(form)).not.toBe("");
+    }
+  });
+  it("uses server totals and isolates the activity for each scalp cycle", async () => {
+    const now = Date.now();
+    const scalp = { max_cycles: 3, cycle_cooldown_sec: 30, market_spend_limit: "3.00", market_loss_limit: "0.50" };
+    state.paper.summary = { running: 1, finished: 120, wins: 100, net_pnl: "2.40" };
+    state.paper.positions = [
+      { ticker: "KXBTC15M-CYCLES", position_id: "old", cycle_number: 1, scalp, status: "closed", side: "yes", quantity: "0", entry_cost: "0.52", exit_credit: "0.55", net_pnl: "0.03", closed_ms: now - 10000, policy: {}, closed_by: "take_profit" },
+      { ticker: "KXBTC15M-CYCLES", position_id: "new", cycle_number: 2, scalp, status: "open", side: "no", quantity: "1", entry_cost: "0.52", net_pnl: "0.01", policy: {}, close_ts_ms: now + 600000 },
+    ];
+    state.paper.events = [
+      { id: "old", ticker: "KXBTC15M-CYCLES", position_id: "old", action: "filled", reason: "Prior cycle fill", ts_ms: now - 1000 },
+      { id: "new", ticker: "KXBTC15M-CYCLES", position_id: "new", action: "filled", reason: "Current cycle fill", ts_ms: now },
+    ];
+    render(<Trading />);
+    const live = await screen.findByRole("article", { name: "Trade KXBTC15M-CYCLES" });
+    expect(within(live).getByText("2/3")).toBeTruthy();
+    expect(within(live).getByText("Current cycle fill")).toBeTruthy();
+    expect(within(live).queryByText("Prior cycle fill")).toBeNull();
+    const score = screen.getByRole("region", { name: "Scoreboard" });
+    expect(within(score).getByText("120")).toBeTruthy();
+    expect(within(score).getByText("+$2.40")).toBeTruthy();
+    expect(within(score).getByText("83% (100 of 120)")).toBeTruthy();
+  });
   it("converts rules to friendly cents/percent and back, and validates them", () => {
     expect(toUi(SETTINGS).rules[0]).toMatchObject({ min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", budget: "1.00" });
     expect(fromUi(toUi(SETTINGS))).toEqual(SETTINGS);

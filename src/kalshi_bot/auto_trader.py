@@ -14,7 +14,7 @@ import httpx
 
 from .data.store import Store
 from .trading import (
-    CENT, ONE, EntryRule, TradingPolicy, default_rules, dollars, fee_reserve, parse_rules, rules_json,
+    CENT, ONE, EntryRule, ScalpPolicy, TradingPolicy, default_rules, dollars, fee_reserve, parse_rules, rules_json,
     taker_fee,
 )
 
@@ -45,6 +45,8 @@ def can_add_to(position: dict, rule: EntryRule, now_ms: int) -> str | None:
     """None when another buy may be added to `position` under `rule`, else why not."""
     if position.get("status") != "open" or position.get("pending"):
         return f"Bot position {position.get('status')}"
+    if position.get("scalp"):
+        return "Scalping cycle open - waiting for a full exit before another buy"
     if position.get("rule") != rule.name:
         return "Bot position open (another rule)"
     if dollars(position.get("exit_credit", "0")) != 0 or position.get("exit_trigger"):
@@ -55,6 +57,55 @@ def can_add_to(position: dict, rule: EntryRule, now_ms: int) -> str | None:
     wait = int(position.get("last_entry_ms") or position.get("opened_ms") or 0) + rule.reentry_gap_sec * 1000 - now_ms
     if wait > 0:
         return f"Bot position open ({entries}/{rule.max_entries} buys, next buy allowed in {wait // 1000 + 1}s)"
+    return None
+
+
+def market_totals(history: list[dict]) -> tuple[Decimal, Decimal, Decimal]:
+    spent = sum((dollars(p.get("entry_cost", "0")) for p in history), Decimal("0"))
+    realized = [dollars(p["net_pnl"]) for p in history
+                if p.get("status") == "closed" and p.get("net_pnl") is not None]
+    return spent, sum((max(-pnl, Decimal("0")) for pnl in realized), Decimal("0")), sum(realized, Decimal("0"))
+
+
+def scalp_limits(rule: EntryRule, history: list[dict]) -> ScalpPolicy:
+    """A settings edit cannot loosen caps already committed for this market."""
+    if rule.scalp is None:
+        raise ValueError("Scalping is not enabled for this rule")
+    policies = [rule.scalp, *[
+        ScalpPolicy(**{**p["scalp"], "market_spend_limit": dollars(p["scalp"]["market_spend_limit"]),
+                       "market_loss_limit": dollars(p["scalp"]["market_loss_limit"])})
+        for p in history if p.get("scalp")
+    ]]
+    return ScalpPolicy(
+        max_cycles=min(p.max_cycles for p in policies),
+        cycle_cooldown_sec=max(p.cycle_cooldown_sec for p in policies),
+        market_spend_limit=min(p.market_spend_limit for p in policies),
+        market_loss_limit=min(p.market_loss_limit for p in policies),
+    )
+
+
+def can_start_cycle(history: list[dict], rule: EntryRule, now_ms: int) -> str | None:
+    if not history:
+        return None
+    last = history[-1]
+    if not last.get("scalp"):
+        return f"Bot position {last['status']}"
+    if rule.scalp is None or last.get("rule") != rule.name:
+        return "Scalping stopped - only the original enabled scalping rule can re-enter"
+    if (last["status"] != "closed" or last.get("pending") or dollars(last.get("quantity", "0")) != 0
+            or last.get("closed_by") != "take_profit" or dollars(last.get("net_pnl") or "0") <= 0):
+        return "Scalping stopped - re-entry requires a fully closed profitable take-profit exit"
+    limits = scalp_limits(rule, history)
+    spent, losses, _ = market_totals(history)
+    if max(int(p.get("cycle_number", 1)) for p in history) >= limits.max_cycles:
+        return f"Scalping stopped - {limits.max_cycles}/{limits.max_cycles} cycles used"
+    if losses >= limits.market_loss_limit:
+        return f"Scalping stopped - market loss limit ${limits.market_loss_limit} reached"
+    if spent >= limits.market_spend_limit:
+        return f"Scalping stopped - market spending limit ${limits.market_spend_limit} reached"
+    wait = int(last.get("closed_ms") or 0) + limits.cycle_cooldown_sec * 1000 - now_ms
+    if wait > 0:
+        return f"Scalping cooldown - next cycle allowed in {(wait + 999) // 1000}s"
     return None
 
 
@@ -125,7 +176,11 @@ class AutoTrader:
         return parse_rules(self.store.trading_record(self.settings_key))
 
     def positions(self) -> list[dict]:
-        return self.store.trading_records(self.position_kind)
+        return sorted(self.store.trading_records(self.position_kind),
+                      key=lambda p: (int(p.get("opened_ms") or 0), int(p.get("cycle_number") or 1)))
+
+    def market_history(self, ticker: str) -> list[dict]:
+        return [p for p in self.positions() if p["ticker"] == ticker]
 
     def today_pnl(self) -> Decimal:
         """Net result of bets closed since midnight UTC."""
@@ -155,12 +210,22 @@ class AutoTrader:
     def snapshot(self) -> dict:
         events = [event for event in self.store.trading_events(limit=200)
                   if event.get("mode", "live") == self.mode][:100]
+        positions = self.positions()
+        scored = [p for p in positions if p["status"] == "closed" and p.get("net_pnl") is not None
+                  and dollars(p.get("entry_cost", "0")) > 0]
+        running = [p for p in positions if p["status"] in ("pending", "open")]
+        closed = [p for p in positions if p["status"] == "closed"]
         return {
             "mode": self.mode,
             "settings": rules_json(self.rules()), "enabled": self.enabled,
             "environment": self.environment,
             "blockers": self.blockers(), "last_cycle_ms": self.last_cycle_ms, "error": self.error,
-            "positions": self.positions()[-100:], "events": events,
+            "positions": [*closed[-100:], *running], "events": events,
+            "summary": {
+                "running": len(running), "finished": len(scored),
+                "wins": sum(dollars(p["net_pnl"]) > 0 for p in scored),
+                "net_pnl": str(sum((dollars(p["net_pnl"]) for p in scored), Decimal("0"))),
+            },
             "decisions": self.store.trading_decisions(),
             "watch": self.watch,
         }
@@ -208,11 +273,13 @@ class AutoTrader:
         position.setdefault("opened_ms", now_ms)
         if position.get("status") in ("closed", "skipped"):
             position.setdefault("closed_ms", now_ms)
-        self.store.save_trading_record(f"{self.position_kind}:{position['ticker']}", self.position_kind, position)
+        suffix = f":{position['position_id']}" if position.get("position_id") else ""
+        self.store.save_trading_record(f"{self.position_kind}:{position['ticker']}{suffix}", self.position_kind, position)
 
     def event(self, action: str, reason: str, position: dict) -> None:
         self.store.record_trading_event(action, reason, ticker=position["ticker"],
-                                        environment=self.environment, mode=self.mode)
+                                        environment=self.environment, mode=self.mode,
+                                        position_id=position.get("position_id"), cycle_number=position.get("cycle_number"))
 
     async def cycle(self) -> None:
         async with self.lock:
@@ -231,6 +298,8 @@ class AutoTrader:
                             await self.reconcile(position)
                         if position["status"] == "open" and not position.get("pending"):
                             await self.monitor(position)
+                    if any(rule.scalp for rule in self.rules()):
+                        candidates = self.evaluate_rules()
                     if self.enabled and not self.blockers():
                         await self.enter_by_rules(candidates)
                 self.error = None
@@ -283,8 +352,9 @@ class AutoTrader:
         now_ms = int(time.time() * 1000)
         feed = self.market_feed() if self.market_feed is not None else []
         rules = [rule for rule in self.rules() if rule.enabled]
-        positions = {position["ticker"]: position for position in self.positions()}
-        busy_series = {series_of(p["ticker"]) for p in positions.values() if p["status"] in ("pending", "open")}
+        all_positions = self.positions()
+        positions = {position["ticker"]: position for position in all_positions if position["status"] in ("pending", "open")}
+        busy_series = {series_of(p["ticker"]) for p in all_positions if p["status"] in ("pending", "open")}
         watch, candidates = [], []
         for market in sorted(feed, key=lambda row: row.get("close_ts_ms") or 0):
             ticker = market["ticker"]
@@ -296,10 +366,21 @@ class AutoTrader:
                    "model_p_yes": market.get("model_p_yes"), "market_p_yes": market.get("market_p_yes"),
                    "side": None, "price": None, "rule": None, "status": "watching"}
             watch.append(row)
+            history = [p for p in all_positions if p["ticker"] == ticker]
+            if history and history[-1].get("scalp"):
+                spent, losses, realized = market_totals(history)
+                row["scalping"] = {
+                    "cycles": max(p.get("cycle_number", 1) for p in history),
+                    "spent": str(spent), "losses": str(losses), "realized_pnl": str(realized),
+                }
             try:
                 model_p_yes = Decimal(str(round(float(market["model_p_yes"]), 4)))
                 yes_bid = Decimal(str(market["yes_bid"]))
                 yes_ask = Decimal(str(market["yes_ask"]))
+                if (not model_p_yes.is_finite() or not yes_bid.is_finite() or not yes_ask.is_finite()
+                        or not Decimal("0") <= model_p_yes <= ONE
+                        or not Decimal("0") <= yes_bid <= yes_ask <= ONE):
+                    raise ValueError("Invalid live price or probability")
             except (KeyError, TypeError, ValueError, ArithmeticError):
                 row["status"] = "No live price"
                 continue
@@ -335,11 +416,25 @@ class AutoTrader:
                 continue
             reasons = []
             for rule in rules:
+                blocked = can_start_cycle(history, rule, now_ms)
+                if blocked:
+                    reasons.append(f"{rule.name}: {blocked}")
+                    continue
                 side = rule.pick_side(model_p_yes, yes_ask, ONE - yes_bid)
                 ask = yes_ask if side == "yes" else ONE - yes_bid
                 reason = rule.check(ticker, seconds_left, model_p_yes, side, ask)
+                if reason is None and rule.scalp:
+                    spent, _, _ = market_totals(history)
+                    available = scalp_limits(rule, history).market_spend_limit - spent
+                    if rule.policy.entry_count(ask) == 0 or ask + fee_reserve(1) > available:
+                        reason = "Scalping stopped - spending limit leaves no budget for a whole contract and fees"
+                    elif self.retry_after_ms.get(ticker, 0) > now_ms:
+                        reason = "Scalping retry - " + self.last_skip_reason.get(ticker, "waiting for a fresh execution check")
                 if reason is None:
                     row.update(side=side, price=f"{ask:.2f}", rule=rule.name, status=f"Matches '{rule.name}'")
+                    if rule.scalp:
+                        cycle_number = max((p.get("cycle_number", 1) for p in history), default=0) + 1
+                        row["status"] += f" (scalp cycle {cycle_number}/{scalp_limits(rule, history).max_cycles})"
                     if series_of(ticker) in busy_series:
                         row["status"] += " (waiting: a position on this coin is already open)"
                     else:
@@ -384,8 +479,8 @@ class AutoTrader:
         return supported
 
     async def enter_by_rules(self, candidates: list[dict]) -> None:
-        current = {p["ticker"]: p for p in self.positions()}
-        busy_series = {series_of(p["ticker"]) for p in current.values() if p["status"] in ("pending", "open")}
+        current = {p["ticker"]: p for p in self.positions() if p["status"] in ("pending", "open")}
+        busy_series = {series_of(p["ticker"]) for p in self.positions() if p["status"] in ("pending", "open")}
         for candidate in candidates:
             market, rule, side = candidate["market"], candidate["rule"], candidate["side"]
             ticker = market["ticker"]
@@ -404,6 +499,11 @@ class AutoTrader:
                     continue
                 position.setdefault("entries", entries_of(position))
             else:
+                history = self.market_history(ticker)
+                blocked = can_start_cycle(history, rule, now_ms)
+                if blocked:
+                    self.skip(ticker, blocked)
+                    continue
                 position = {
                     "ticker": ticker, "side": side, "rule": rule.name,
                     "close_ts_ms": market.get("close_ts_ms"), "opened_ms": now_ms,
@@ -411,6 +511,10 @@ class AutoTrader:
                     "policy": policy_json(policy), "pending": None, "net_pnl": None,
                     "account_identity": self.account_identity, "entries": 0,
                 }
+                if rule.scalp:
+                    limits = scalp_limits(rule, history)
+                    position.update(position_id=str(uuid4()), scalp=limits.to_json(),
+                                    cycle_number=max((p.get("cycle_number", 1) for p in history), default=0) + 1)
             if not await self.market_supported(ticker):
                 self.skip(ticker, "Market is not open or uses an unsupported fee schedule", not adding,
                           None if adding else position)
@@ -439,9 +543,18 @@ class AutoTrader:
                 self.skip(ticker, f"Rule '{rule.name}' no longer matches at the live price: {reason}")
                 continue
             count = min(policy.entry_count(ask), int(asks[0][1]))
+            if rule.scalp:
+                spent, _, _ = market_totals(self.market_history(ticker))
+                available_budget = scalp_limits(rule, self.market_history(ticker)).market_spend_limit - spent
+                while count and ask * count + fee_reserve(count) > available_budget:
+                    count -= 1
             if count == 0:
-                self.skip(ticker, f"Bet ${policy.budget} buys no whole {side.upper()} contract at {ask}"
-                          if policy.entry_count(ask) == 0 else "Not enough contracts offered at the best price")
+                reason = "Not enough contracts offered at the best price"
+                if rule.scalp:
+                    reason = "Scalping spending limit leaves no budget for a whole contract and fees"
+                elif policy.entry_count(ask) == 0:
+                    reason = f"Bet ${policy.budget} buys no whole {side.upper()} contract at {ask}"
+                self.skip(ticker, reason)
                 continue
             if policy.has_exits:
                 bids = await self.levels(ticker, side)
@@ -453,8 +566,37 @@ class AutoTrader:
                     continue
             if not self.enabled:
                 return
+            if rule.scalp:
+                # Account/book awaits can outlive a signal; never use the captured candidate blindly.
+                fresh = next((row for row in (self.market_feed() if self.market_feed else [])
+                              if row["ticker"] == ticker), None)
+                now_ms = int(time.time() * 1000)
+                blocked = can_start_cycle(self.market_history(ticker), rule, now_ms)
+                if blocked or self.blockers():
+                    self.skip(ticker, blocked or "; ".join(self.blockers()))
+                    continue
+                if fresh is None or now_ms - int(fresh.get("ts_ms") or 0) > _MAX_FEED_AGE_MS or fresh.get("quality_flags"):
+                    self.skip(ticker, "Scalping entry skipped - live prediction is stale, missing, or degraded")
+                    continue
+                fresh_p = dollars(fresh["model_p_yes"])
+                if not Decimal("0") <= fresh_p <= ONE:
+                    raise ValueError("Invalid live model probability")
+                fresh_side = rule.pick_side(fresh_p, dollars(fresh["yes_ask"]), ONE - dollars(fresh["yes_bid"]))
+                seconds_left = (fresh["close_ts_ms"] - now_ms) / 1000
+                reason = rule.check(ticker, seconds_left, fresh_p, side, ask)
+                if reason or fresh_side != side:
+                    self.skip(ticker, f"Scalping entry changed - {reason or 'the preferred entry side changed'}")
+                    continue
+                candidate["model_p_yes"] = fresh_p
+                position["entry_signal"] = {
+                    "ts_ms": fresh["ts_ms"], "model_p_yes": str(fresh_p),
+                    "confidence": str(fresh_p if side == "yes" else ONE - fresh_p),
+                    "price": str(ask),
+                }
             confidence = candidate["model_p_yes"] if side == "yes" else ONE - candidate["model_p_yes"]
             label = f" (buy {entries_of(position) + 1}/{rule.max_entries})" if rule.max_entries > 1 else ""
+            if rule.scalp:
+                label = f" (scalp cycle {position['cycle_number']}/{position['scalp']['max_cycles']})"
             await self.submit(position, "buy", Decimal(count), ask,
                               f"Rule '{rule.name}'{label}: {side.upper()} at {ask}, model {confidence:.2f}, "
                               f"fee {taker_fee(ask, count)}")
@@ -551,6 +693,8 @@ class AutoTrader:
             position["entry_cost"] = str(dollars(pending.get("base_cost", "0")) + gross + fees)
             if filled:
                 position["entries"] = entries_of(position) + 1 if "entries" in position else 1
+                if position.get("scalp"):
+                    position["bought_quantity"] = str(dollars(position.get("bought_quantity", "0")) + filled)
         else:
             remaining = dollars(position["quantity"]) - filled
             if remaining < 0:
@@ -559,6 +703,8 @@ class AutoTrader:
             position["exit_credit"] = str(dollars(position["exit_credit"]) + gross - fees)
         position["pending"] = None
         position["status"] = "open" if dollars(position["quantity"]) > 0 else "closed"
+        if position.get("scalp") and pending["action"] == "buy" and filled == 0 and not pending.get("was_open"):
+            position["status"] = "skipped"
         position["net_pnl"] = (str(dollars(position["exit_credit"]) - dollars(position["entry_cost"]))
                                if position["status"] == "closed" else None)
         if position["status"] == "closed" and pending["action"] == "sell":
@@ -567,6 +713,10 @@ class AutoTrader:
         self.event("filled" if filled else "unfilled", f"{pending['action']} filled {filled} contracts: {pending['reason']}", position)
         if dollars(position["entry_cost"]) > parse_policy(position["policy"]).budget * max(1, entries_of(position)):
             raise ValueError("Actual entry fees exceeded budget")
+        if position.get("scalp") and pending["action"] == "buy":
+            spent, _, _ = market_totals(self.market_history(position["ticker"]))
+            if spent > dollars(position["scalp"]["market_spend_limit"]):
+                raise ValueError("Actual scalp entry costs exceeded market spending limit; entries paused")
 
     async def monitor(self, position: dict) -> None:
         position["net_pnl"] = None
@@ -617,6 +767,15 @@ class AutoTrader:
             policy.exit_reason(net) if remaining == 0
             else "stop_loss" if policy.stop_loss > 0 and mark <= -policy.stop_loss else None
         )
+        if position.get("scalp"):
+            _, losses, _ = market_totals(self.market_history(position["ticker"]))
+            limits = dollars(position["scalp"]["market_loss_limit"])
+            rule = next((r for r in self.rules() if r.name == position.get("rule") and r.scalp), None)
+            if rule is not None:
+                limits = min(limits, rule.scalp.market_loss_limit)
+            liquidation_pnl = net if remaining == 0 else mark
+            if liquidation_pnl <= -(limits - losses):
+                reason = "stop_loss"
         if reason:
             if reason == "stop_loss":
                 position["exit_trigger"] = reason

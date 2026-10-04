@@ -82,6 +82,70 @@ async function noOverflow(page) {
 }
 
 for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`${name}: opt-in scalping controls, confirmation, cycle history and limits`, async ({ page }) => {
+    await page.setViewportSize(size);
+    const api = await mockTrading(page, { populated: false, environment: "prod" });
+    await page.goto("/trading");
+    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("button", { name: "Add scalping test rule" }).click();
+    const scalp = ruleGroup(page, 2);
+    await expect(scalp.getByLabel("Repeated scalping (sell, then re-enter)")).toBeChecked();
+    await expect(scalp.getByLabel("Buys per market", { exact: true })).toBeDisabled();
+    await scalp.getByLabel("Cooldown after exit (seconds)", { exact: true }).fill("0");
+    await expect(page.getByRole("button", { name: "Save rules" })).toBeDisabled();
+    await scalp.getByLabel("Cooldown after exit (seconds)", { exact: true }).fill("30");
+    await expect(scalp.getByLabel("Market loss limit ($)", { exact: true })).toHaveValue("0.50");
+    expect(api.writes).toHaveLength(0);
+    await noOverflow(page);
+    await page.getByRole("button", { name: "Save rules" }).click();
+    await expect(page.getByText("Rules saved.", { exact: true })).toBeVisible();
+    expect(api.writes[0].body.rules[1]).toMatchObject({ scalping: true, max_cycles: 3,
+      cycle_cooldown_sec: 30, market_spend_limit: "3.00", market_loss_limit: "0.50",
+      take_profit: "0.02", stop_loss: "0.20", max_entries: 1 });
+    await page.getByRole("switch").click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText(/up to 3 cycles in one market, waiting 30s/)).toBeVisible();
+    await expect(dialog.getByText(/Total spending including entry fees is capped at \$3\.00/)).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "Yes, turn it on" })).toBeDisabled();
+    await dialog.getByRole("checkbox").check();
+    await dialog.getByRole("button", { name: "Yes, turn it on" }).click();
+    await expect(page.getByRole("switch")).toBeChecked();
+    const now = Date.now();
+    const ticker = "KXBTC15M-SCALP";
+    const caps = { max_cycles: 3, cycle_cooldown_sec: 30, market_spend_limit: "3.00", market_loss_limit: "0.50" };
+    api.state.live.positions = [
+      { ticker, position_id: "cycle-1", cycle_number: 1, scalp: caps, status: "closed", side: "yes",
+        quantity: "0", entry_cost: "0.52", exit_credit: "0.55", net_pnl: "0.03",
+        closed_by: "take_profit", opened_ms: now - 60000, closed_ms: now - 30000, rule: "Early scalp test", policy: {} },
+      { ticker, position_id: "cycle-2", cycle_number: 2, scalp: caps, status: "open", side: "no",
+        quantity: "1", entry_cost: "0.52", exit_credit: "0", net_pnl: "0.01", close_ts_ms: now + 600000,
+        rule: "Early scalp test", policy: { budget: "1", take_profit: "0.02", stop_loss: "0.20" },
+        entry_signal: { ts_ms: now, confidence: "0.80", price: "0.50" } },
+    ];
+    api.state.live.watch = [{ ticker, close_ts_ms: now + 600000, model_p_yes: 0.2, market_p_yes: 0.3,
+      status: "Bot position open (1/1 buys)", scalping: { cycles: 2, spent: "1.04", realized_pnl: "0.03" } }];
+    api.state.live.summary = { running: 1, finished: 1, wins: 1, net_pnl: "0.03" };
+    api.push();
+    const running = page.getByRole("article", { name: `Trade ${ticker}` });
+    await expect(running.getByText("2/3", { exact: true })).toBeVisible();
+    await running.getByText("Why the bot made this bet", { exact: true }).click();
+    await expect(running.getByText(/estimated win chance 80.0%/)).toBeVisible();
+    const finished = page.getByRole("region", { name: "Finished bets" });
+    await finished.getByText("Trade details", { exact: true }).click();
+    await expect(finished.getByText("1/3", { exact: true })).toBeVisible();
+    const watch = page.getByRole("region", { name: "Markets the bot is watching" });
+    await expect(watch.getByText(/Scalp cycles started: 2 · Spent \$1.04 · Closed net \+\$0.03/)).toBeVisible();
+    await expect(watch.getByRole("img", { name: "Bot leans: down at 80.0%" })).toBeVisible();
+    api.state.live.watch[0].status = "No match - Early scalp test: Scalping stopped - 3/3 cycles used";
+    api.push();
+    await expect(watch.getByText(/Scalping stopped - 3\/3 cycles used/)).toBeVisible();
+    await noOverflow(page);
+    await watch.screenshot({ path: `test-results/scalping-watch-${name}.png` });
+    await page.getByRole("radio", { name: "Practice (fake money)" }).check();
+    await expect(page.getByRole("switch")).not.toBeChecked();
+    await expect(ruleGroup(page).getByLabel("Repeated scalping (sell, then re-enter)")).not.toBeChecked();
+  });
+
   test(`${name}: watched-market cards stay compact without hiding reasons`, async ({ page }) => {
     await page.setViewportSize(size);
     const api = await mockTrading(page);
