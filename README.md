@@ -37,6 +37,8 @@ Each mode has its own saved rules and its own page:
   modes resets the list to the latest two; scoreboard totals include all bets.
 - **Markets the bot is watching** — every live market with the bot's and the
   crowd's odds, probability bars, and a plain reason it is or isn't betting.
+  Compact cards use roughly half the previous height while keeping the
+  countdown, probabilities, and full betting/skip reasons visible.
   Trading updates arrive over `/ws/trading` after each bot check or settings/
   control change, without repeated API polling or page refreshes. Countdowns
   tick locally every second. The connection indicator warns when updates stop

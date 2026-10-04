@@ -191,8 +191,8 @@ function WatchCards({ watch, now, updatedAt, stale, enabled }) {
     const note = friendlyStatus(row.status).replace(/\b\d+:\d{2} left — /g, "").replace(/^Betting now — /, enabled ? "Betting now — " : "Preview only — ");
     return <article key={row.ticker} className={`watch-card${matched ? " match" : ""}`} aria-label={`Watching ${row.ticker}`}>
       <header><div className="watch-identity"><span className={`watch-coin ${coinOf(row.ticker).toLowerCase()}`} aria-hidden="true">{coinOf(row.ticker).slice(0, 1)}</span><div><strong>{coinOf(row.ticker)}</strong><small>15-minute market</small></div></div>
-        <span className={`watch-state${stale ? " stale" : ""}`}>{state}</span></header>
-      <div className={`watch-countdown${left <= 240 ? " closing" : ""}`}><span>Time left</span><strong>{clock(left)}</strong></div>
+        <span className={`watch-state${stale ? " stale" : ""}`}>{state}</span>
+        <div className={`watch-countdown${left <= 240 ? " closing" : ""}`}><span>Time left</span><strong>{clock(left)}</strong></div></header>
       <div className="watch-probabilities"><Probability label="Bot says UP" value={row.model_p_yes} /><Probability label="Crowd says UP" value={row.market_p_yes} crowd /></div>
       <footer><span className={`trading-bet ${row.side === "no" ? "down" : row.side ? "up" : ""}`}>{row.side ? `${direction(row.side)} at ${centsOf(row.price)}¢` : "No bet yet"}</span>
         <p>{note}</p></footer>

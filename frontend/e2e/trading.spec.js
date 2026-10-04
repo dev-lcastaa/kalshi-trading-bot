@@ -82,6 +82,27 @@ async function noOverflow(page) {
 }
 
 for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`${name}: watched-market cards stay compact without hiding reasons`, async ({ page }) => {
+    await page.setViewportSize(size);
+    const api = await mockTrading(page);
+    api.state.live.watch[1].status = "No match - Quick 10-cent exit: NO costs 0.92, outside 0.20-0.90; Confident hold to close: 700s left is outside 90-300s";
+    await page.goto("/trading");
+    await page.getByRole("radio", { name: "Real money" }).check();
+    const watch = page.getByRole("region", { name: "Markets the bot is watching" });
+    const cards = watch.getByRole("article");
+    await expect(cards).toHaveCount(2);
+    await expect(cards.first().getByText("UP at 80¢")).toBeVisible();
+    await expect(cards.first().getByText("Bot says UP")).toBeVisible();
+    await expect(cards.first().getByText("Crowd says UP")).toBeVisible();
+    await expect(cards.nth(1).getByText("Not yet: Quick 10-cent exit: DOWN costs 92¢, your range is 20¢–90¢; Confident hold to close: waits for 5:00 to 1:30")).toBeVisible();
+    const heights = await cards.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height));
+    for (const height of heights) expect(height).toBeLessThanOrEqual(178);
+    const reasonsFit = await cards.locator("footer p").evaluateAll((elements) => elements.every((element) =>
+      element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth));
+    expect(reasonsFit).toBe(true);
+    await noOverflow(page);
+  });
+
   test(`${name}: finished bet cards show wins, losses, and neutral outcomes`, async ({ page }) => {
     await page.setViewportSize(size);
     const api = await mockTrading(page);
