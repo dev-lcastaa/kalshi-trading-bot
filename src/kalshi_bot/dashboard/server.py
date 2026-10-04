@@ -96,7 +96,9 @@ def create_app(
             await traders[body.mode].save_settings(body.model_dump(exclude={"mode"}))
         except (ValueError, ArithmeticError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return trading_state()
+        state = trading_state()
+        await broadcaster.broadcast({"type": "trading_state", "data": state})
+        return state
 
     @app.post("/api/trading/control")
     async def control_trading(body: TradingControlBody) -> dict:
@@ -108,7 +110,9 @@ def create_app(
             )
         except (ValueError, ArithmeticError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return trading_state()
+        state = trading_state()
+        await broadcaster.broadcast({"type": "trading_state", "data": state})
+        return state
 
     @app.get("/api/version")
     def get_version() -> dict:
@@ -219,6 +223,19 @@ def create_app(
         try:
             while True:
                 await websocket.receive_text()  # unused; just detects client disconnect
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await broadcaster.unregister(websocket)
+
+    @app.websocket("/ws/trading")
+    async def ws_trading(websocket: WebSocket) -> None:
+        await websocket.accept()
+        await broadcaster.register(websocket)
+        try:
+            await websocket.send_json({"type": "trading_state", "data": trading_state()})
+            while True:
+                await websocket.receive_text()
         except WebSocketDisconnect:
             pass
         finally:

@@ -11,6 +11,27 @@ from kalshi_bot.data.store import Store
 from kalshi_bot.paper import PaperExchange
 
 
+@pytest.mark.asyncio
+async def test_run_publishes_completed_checks_with_absolute_market_deadlines(tmp_path):
+    store = Store(str(tmp_path / "stream.db"))
+    closes_at = int(time.time() * 1000) + 117000
+    trader = AutoTrader(store, None, market_feed=lambda: [
+        {"ticker": "KXBTC15M-STREAM", "close_ts_ms": closes_at},
+    ])
+    updates = []
+
+    async def publish():
+        updates.append(trader.snapshot())
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await trader.run(publish)
+    assert updates[0]["last_cycle_ms"] is not None
+    assert updates[0]["watch"][0]["close_ts_ms"] == closes_at
+    assert not trader.enabled
+    store.close()
+
+
 @pytest.mark.parametrize("side,action,book,price", [
     ("yes", "buy", "bid", "0.45"), ("yes", "sell", "ask", "0.45"),
     ("no", "buy", "ask", "0.55"), ("no", "sell", "bid", "0.55"),

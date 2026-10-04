@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from decimal import Decimal, ROUND_CEILING
 from typing import Any
@@ -18,6 +19,7 @@ from .trading import (
 )
 
 MarketFeed = Callable[[], list[dict]]
+logger = logging.getLogger(__name__)
 # A live read older than this is not acted on.
 _MAX_FEED_AGE_MS = 10_000
 # After a transient entry failure (price moved, thin book) wait before re-checking the market.
@@ -243,10 +245,15 @@ class AutoTrader:
             finally:
                 self.last_cycle_ms = int(time.time() * 1000)
 
-    async def run(self) -> None:
+    async def run(self, on_update: Callable[[], Awaitable[None]] | None = None) -> None:
         try:
             while True:
                 await self.cycle()
+                if on_update is not None:
+                    try:
+                        await on_update()
+                    except Exception:
+                        logger.exception("Could not publish trading dashboard update")
                 await asyncio.sleep(2)
         finally:
             self.enabled = False
@@ -285,6 +292,7 @@ class AutoTrader:
             if seconds_left <= 0:
                 continue
             row = {"ticker": ticker, "seconds_left": int(seconds_left),
+                   "close_ts_ms": market["close_ts_ms"],
                    "model_p_yes": market.get("model_p_yes"), "market_p_yes": market.get("market_p_yes"),
                    "side": None, "price": None, "rule": None, "status": "watching"}
             watch.append(row)

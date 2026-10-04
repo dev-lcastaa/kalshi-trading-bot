@@ -14,7 +14,14 @@ const makeSnapshot = (mode, overrides = {}) => ({ mode, settings: structuredClon
 let state;
 let fail;
 let malformed;
+let sockets;
 beforeEach(() => {
+  sockets = [];
+  vi.spyOn(globalThis, "WebSocket").mockImplementation(function (url) {
+    this.url = url;
+    this.close = vi.fn(() => this.onclose?.());
+    sockets.push(this);
+  });
   state = { live: makeSnapshot("live"), paper: makeSnapshot("paper") };
   fail = false; malformed = false;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
@@ -54,7 +61,7 @@ describe("Trading tab", () => {
     expect(screen.getByRole("radio", { name: "Practice (fake money)" }).checked).toBe(true);
     expect(within(watch).getByText("BTC")).toBeTruthy();
     expect(within(watch).getByText("UP at 80¢")).toBeTruthy();
-    expect(within(watch).getByText('Betting now — matches "Edge"')).toBeTruthy();
+    expect(within(watch).getByText('Preview only — matches "Edge"')).toBeTruthy();
     expect(rule().getByLabelText("Lowest price to pay (¢)").value).toBe("50");
     await user.click(screen.getByRole("button", { name: "Add a rule" }));
     const second = rule(2);
@@ -180,18 +187,86 @@ describe("Trading tab", () => {
     await user.click(screen.getByRole("button", { name: "Try again" }));
     await screen.findByText("No bets running right now");
   });
-  it("polls every three seconds only while mounted", async () => {
+  it("ticks the countdown without polling and cleans up the live connection", async () => {
     vi.useFakeTimers();
     try {
+      state.paper.watch = [{ ticker: "KXBTC15M-A", seconds_left: 117, close_ts_ms: Date.now() + 117000, model_p_yes: 0.71, market_p_yes: 0.7, status: "watching" }];
       const view = render(<Trading />);
       await act(async () => {});
       expect(fetch).toHaveBeenCalledTimes(1);
+      const card = screen.getByRole("article", { name: "Watching KXBTC15M-A" });
+      expect(within(card).getByText("1:57")).toBeTruthy();
       await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
-      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(within(card).getByText("1:51")).toBeTruthy();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(sockets[0].url).toMatch(/\/ws\/trading$/);
       view.unmount();
+      expect(sockets[0].close).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(6000);
-      expect(fetch).toHaveBeenCalledTimes(3);
+      expect(fetch).toHaveBeenCalledTimes(1);
     } finally { vi.useRealTimers(); }
+  });
+  it("pushes changed probabilities and new markets without overwriting unsaved rules", async () => {
+    const user = userEvent.setup(); render(<Trading />);
+    await screen.findByRole("group", { name: "Rule 1" });
+    await user.clear(rule().getByLabelText(SPEND)); await user.type(rule().getByLabelText(SPEND), "1.75");
+    state.paper.watch = [{ ticker: "KXSOL15M-NEXT", seconds_left: 900, close_ts_ms: Date.now() + 900000, model_p_yes: 0.62, market_p_yes: 0.51, status: "watching" }];
+    const reads = fetch.mock.calls.length;
+    await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+    const card = screen.getByRole("article", { name: "Watching KXSOL15M-NEXT" });
+    expect(within(card).getByText("62%")).toBeTruthy();
+    expect(within(card).getByText("51%")).toBeTruthy();
+    expect(screen.getByText("Live · 1 market")).toBeTruthy();
+    expect(rule().getByLabelText(SPEND).value).toBe("1.75");
+    expect(fetch).toHaveBeenCalledTimes(reads);
+    state.paper.watch[0].model_p_yes = 0.73;
+    await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+    expect(within(card).getByText("73%")).toBeTruthy();
+  });
+  it("marks disconnected updates stale and reconnects with a fresh snapshot", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<Trading />);
+      await act(async () => {});
+      await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+      await act(async () => sockets[0].onclose());
+      expect(screen.getByRole("switch").disabled).toBe(true);
+      expect(screen.getByText(/Live updates disconnected/)).toBeTruthy();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(sockets).toHaveLength(2);
+      await act(async () => sockets[1].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+      expect(screen.getByRole("switch").disabled).toBe(false);
+      expect(screen.queryByText(/Live updates disconnected/)).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+  it("rejects malformed pushed data and detects a stalled connection", async () => {
+    vi.useFakeTimers();
+    try {
+      render(<Trading />);
+      await act(async () => {});
+      await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: { paper: state.paper } }) }));
+      expect(screen.getByRole("switch").disabled).toBe(true);
+      expect(screen.getByText(/Couldn't read live updates/)).toBeTruthy();
+      expect(sockets[0].close).toHaveBeenCalledOnce();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      await act(async () => sockets[1].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+      expect(screen.getByRole("switch").disabled).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(16000); });
+      expect(screen.getByRole("switch").disabled).toBe(true);
+      expect(sockets[1].close).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+  it("does not let an older HTTP response replace a newer pushed snapshot", async () => {
+    let complete;
+    fetch.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    render(<Trading />);
+    const older = structuredClone(state);
+    state.paper.watch = [{ ticker: "KXBTC15M-NEW", seconds_left: 600, model_p_yes: 0.77, status: "watching" }];
+    await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+    await act(async () => complete({ ok: true, json: async () => older }));
+    expect(screen.getByRole("article", { name: "Watching KXBTC15M-NEW" })).toBeTruthy();
+    expect(screen.getByText("77%")).toBeTruthy();
   });
   it("does not flip the switch before the server answers", async () => {
     const user = userEvent.setup(); render(<Trading />);

@@ -131,6 +131,7 @@ class BotApp:
         }
         self.coin_to_index = dict(zip(settings.coin_ticks, settings.index_ids))
         self.broadcaster = Broadcaster()
+        self._trading_updated = asyncio.Event()
         self.ws: KalshiWsClient | None = None
         self._ws_task: asyncio.Task | None = None
 
@@ -335,6 +336,21 @@ class BotApp:
         await self.broadcaster.broadcast(
             {"type": "index_tick", "index_id": index_id, "ts_ms": ts_ms, "value": value}
         )
+
+    async def _notify_trading_update(self) -> None:
+        self._trading_updated.set()
+
+    async def trading_broadcast_loop(self) -> None:
+        while True:
+            await self._trading_updated.wait()
+            self._trading_updated.clear()
+            try:
+                await self.broadcaster.broadcast({
+                    "type": "trading_state",
+                    "data": {"live": self.trader.snapshot(), "paper": self.paper_trader.snapshot()},
+                })
+            except Exception:
+                logger.exception("Could not broadcast trading dashboard state")
 
     def _build_shadow_snapshot(
         self,
@@ -988,8 +1004,9 @@ class BotApp:
         server = uvicorn.Server(uv_config)
 
         await asyncio.gather(
-            self.trader.run(),
-            self.paper_trader.run(),
+            self.trader.run(self._notify_trading_update),
+            self.paper_trader.run(self._notify_trading_update),
+            self.trading_broadcast_loop(),
             self.prediction_loop(),
             self.rediscovery_loop(),
             self.outcome_polling_loop(),

@@ -1,9 +1,11 @@
 from kalshi_bot.data.store import Store
 from kalshi_bot.auto_trader import AutoTrader
 from kalshi_bot.dashboard.server import create_app
+from kalshi_bot.main import BotApp
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 import asyncio
+import pytest
 
 
 def test_dashboard_modes_have_independent_settings_and_controls(tmp_path):
@@ -61,6 +63,56 @@ def test_dashboard_default_traders_cannot_enable(tmp_path):
     assert client.post("/api/trading/control", json={"mode": "live", "enabled": True, "confirm": True, "settings": defaults}).status_code == 409
     assert client.post("/api/trading/control", json={"mode": "live", "enabled": True, "confirm": True}).status_code == 422
     store.close()
+
+def test_trading_websocket_sends_initial_state_and_settings_changes(tmp_path):
+    store = Store(str(tmp_path / "stream.db"))
+    with TestClient(create_app(store)) as client:
+        with client.websocket_connect("/ws/trading") as socket:
+            message = socket.receive_json()
+            assert message["type"] == "trading_state"
+            assert set(message["data"]) == {"live", "paper"}
+            settings = message["data"]["paper"]["settings"]
+            settings["rules"][0]["name"] = "Streamed rule"
+            response = client.put("/api/trading/settings", json={"mode": "paper", **settings})
+            assert response.status_code == 200
+            update = socket.receive_json()
+            assert update == {"type": "trading_state", "data": response.json()}
+            response = client.post("/api/trading/control", json={"mode": "paper", "enabled": False})
+            assert response.status_code == 200
+            assert socket.receive_json() == {"type": "trading_state", "data": response.json()}
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_slow_dashboard_does_not_block_trading_updates():
+    app = BotApp.__new__(BotApp)
+    app._trading_updated = asyncio.Event()
+    app.trader = Mock()
+    app.paper_trader = Mock()
+    app.trader.snapshot.return_value = {"mode": "live"}
+    app.paper_trader.snapshot.return_value = {"mode": "paper"}
+    sending = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_broadcast(_message):
+        sending.set()
+        await release.wait()
+
+    app.broadcaster = AsyncMock()
+    app.broadcaster.broadcast.side_effect = slow_broadcast
+    publisher = asyncio.create_task(app.trading_broadcast_loop())
+    try:
+        await app._notify_trading_update()
+        await asyncio.wait_for(sending.wait(), timeout=1)
+        await asyncio.wait_for(app._notify_trading_update(), timeout=1)
+        assert app._trading_updated.is_set()
+        app.broadcaster.broadcast.assert_awaited_once_with({
+            "type": "trading_state", "data": {"live": {"mode": "live"}, "paper": {"mode": "paper"}},
+        })
+    finally:
+        publisher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publisher
 
 
 def test_trading_settings_and_activity_survive_restart(tmp_path):

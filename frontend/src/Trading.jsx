@@ -173,16 +173,31 @@ export function friendlyStatus(status = "") {
   return status;
 }
 
-function WatchTable({ watch }) {
+function Probability({ label, value, crowd = false }) {
+  const percent = value == null ? null : Math.round(value * 100);
+  return <div className={`watch-probability${crowd ? " crowd" : ""}`}>
+    <div><span>{label}</span><strong>{percent == null ? "--" : `${percent}%`}</strong></div>
+    <div className="watch-meter" aria-hidden="true"><span style={{ width: `${percent ?? 0}%` }} /></div>
+  </div>;
+}
+
+function WatchCards({ watch, now, updatedAt, stale, enabled }) {
   if (!watch?.length) return <p className="trading-muted">No markets open right now</p>;
-  return <div className="trading-watch"><table>
-    <thead><tr><th>Coin</th><th>Time left</th><th>Bot says UP</th><th>Crowd says UP</th><th>Bet</th><th>What's happening</th></tr></thead>
-    <tbody>{watch.map((row) => <tr key={row.ticker} className={row.rule ? "match" : ""} title={row.ticker}>
-      <td><strong>{coinOf(row.ticker)}</strong></td><td>{clock(row.seconds_left)}</td>
-      <td>{row.model_p_yes == null ? "--" : `${Math.round(row.model_p_yes * 100)}%`}</td><td>{row.market_p_yes == null ? "--" : `${Math.round(row.market_p_yes * 100)}%`}</td>
-      <td>{row.side ? `${direction(row.side)} at ${centsOf(row.price)}¢` : "--"}</td><td>{friendlyStatus(row.status)}</td>
-    </tr>)}</tbody>
-  </table></div>;
+  return <div className="trading-watch">{watch.map((row) => {
+    const closeAt = row.close_ts_ms ?? updatedAt + num(row.seconds_left) * 1000;
+    const left = Math.max(0, (closeAt - now) / 1000);
+    const matched = Boolean(row.rule);
+    const state = stale ? "Out of date" : left <= 0 ? "Market ended" : matched ? enabled ? "Rule matched" : "Preview match" : "Watching";
+    const note = friendlyStatus(row.status).replace(/\b\d+:\d{2} left — /g, "").replace(/^Betting now — /, enabled ? "Betting now — " : "Preview only — ");
+    return <article key={row.ticker} className={`watch-card${matched ? " match" : ""}`} aria-label={`Watching ${row.ticker}`}>
+      <header><div className="watch-identity"><span className={`watch-coin ${coinOf(row.ticker).toLowerCase()}`} aria-hidden="true">{coinOf(row.ticker).slice(0, 1)}</span><div><strong>{coinOf(row.ticker)}</strong><small>15-minute market</small></div></div>
+        <span className={`watch-state${stale ? " stale" : ""}`}>{state}</span></header>
+      <div className={`watch-countdown${left <= 240 ? " closing" : ""}`}><span>Time left</span><strong>{clock(left)}</strong></div>
+      <div className="watch-probabilities"><Probability label="Bot says UP" value={row.model_p_yes} /><Probability label="Crowd says UP" value={row.market_p_yes} crowd /></div>
+      <footer><span className={`trading-bet ${row.side === "no" ? "down" : row.side ? "up" : ""}`}>{row.side ? `${direction(row.side)} at ${centsOf(row.price)}¢` : "No bet yet"}</span>
+        <p>{note}</p></footer>
+    </article>;
+  })}</div>;
 }
 
 const EVENT_NAMES = {
@@ -285,23 +300,32 @@ export default function Trading() {
   const [busy, setBusy] = React.useState(false);
   const [snapshot, setSnapshot] = React.useState(null);
   const [updatedAt, setUpdatedAt] = React.useState(null);
+  const [now, setNow] = React.useState(Date.now);
+  const [streamStatus, setStreamStatus] = React.useState("Connecting");
   const requestRef = React.useRef(null);
+  const dataVersionRef = React.useRef(0);
   const busyRef = React.useRef(false);
   const mountedRef = React.useRef(false);
 
+  const validateData = (body) => {
+    if (MODES.some(([key]) => !body?.[key] || typeof body[key] !== "object" || !body[key].settings || typeof body[key].settings !== "object" || typeof body[key].enabled !== "boolean")) throw new Error("Couldn't read the bot's status");
+  };
+
   const request = async (path, options = {}) => {
+    const version = dataVersionRef.current;
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
     const response = await fetch(path, { cache: "no-store", ...options, signal: controller.signal });
     const body = await response.json();
     if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
-    if (MODES.some(([key]) => !body?.[key] || typeof body[key] !== "object" || !body[key].settings || typeof body[key].settings !== "object" || typeof body[key].enabled !== "boolean")) throw new Error("Couldn't read the bot's status");
-    if (controller.signal.aborted || !mountedRef.current) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
+    validateData(body);
+    if (controller.signal.aborted || !mountedRef.current || (!options.method && version !== dataVersionRef.current)) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
     return body;
   };
 
   const accept = (body, resetMode = null) => {
+    dataVersionRef.current += 1;
     setData(body);
     setForms((current) => Object.fromEntries(MODES.map(([key]) => [key, resetMode === key || current[key] === null ? toUi(body[key].settings) : current[key]])));
     setStale(false); setReadError(""); setUpdatedAt(Date.now());
@@ -318,8 +342,65 @@ export default function Trading() {
   React.useEffect(() => {
     mountedRef.current = true;
     void reload();
-    const interval = window.setInterval(() => void reload(), 3000);
-    return () => { mountedRef.current = false; window.clearInterval(interval); requestRef.current?.abort(); };
+    let socket;
+    let retryTimer;
+    let retryMs = 1000;
+    let lastMessageAt = Date.now();
+    let disconnectReason = "Live updates disconnected. Reconnecting automatically";
+    let stopped = false;
+    const disconnected = (message) => {
+      setStreamStatus("Reconnecting");
+      setStale(true);
+      setReadError(message);
+    };
+    const connect = () => {
+      if (stopped) return;
+      setStreamStatus("Connecting");
+      lastMessageAt = Date.now();
+      disconnectReason = "Live updates disconnected. Reconnecting automatically";
+      socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/trading`);
+      socket.onmessage = (event) => {
+        if (stopped) return;
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type !== "trading_state") return;
+          validateData(message.data);
+          lastMessageAt = Date.now();
+          retryMs = 1000;
+          setStreamStatus("Live");
+          if (!busyRef.current) {
+            accept(message.data);
+            setLoading(false);
+          }
+        } catch (nextError) {
+          disconnectReason = `Couldn't read live updates: ${nextError.message}`;
+          disconnected(disconnectReason);
+          socket.close();
+        }
+      };
+      socket.onerror = () => { socket.close(); };
+      socket.onclose = () => {
+        if (stopped) return;
+        lastMessageAt = null;
+        disconnected(disconnectReason);
+        retryTimer = window.setTimeout(connect, retryMs);
+        retryMs = Math.min(retryMs * 2, 15_000);
+      };
+    };
+    connect();
+    const interval = window.setInterval(() => {
+      setNow(Date.now());
+      if (lastMessageAt != null && Date.now() - lastMessageAt > 15_000) {
+        disconnectReason = "Live updates stopped. Reconnecting automatically";
+        disconnected(disconnectReason);
+        socket.close();
+      }
+    }, 1000);
+    return () => {
+      stopped = true; mountedRef.current = false;
+      window.clearInterval(interval); window.clearTimeout(retryTimer);
+      socket.close(); requestRef.current?.abort();
+    };
   }, []);
 
   const snap = data?.[mode];
@@ -352,7 +433,6 @@ export default function Trading() {
     setSnapshot({ settings: structuredClone(snap.settings), environment: snap.environment });
   };
 
-  const now = Date.now();
   const events = [...(snap?.events ?? [])].sort((a, b) => b.ts_ms - a.ts_ms);
   const positions = snap?.positions ?? [];
   const decisions = snap?.decisions ?? [];
@@ -400,9 +480,10 @@ export default function Trading() {
         {finished.length ? <ol className="trading-finished-list">{finished.map((position, index) => <FinishedRow key={`${position.ticker}-${index}`} position={position} />)}</ol>
           : <p className="trading-muted">No finished bets yet</p>}
       </section>
-      <section className="trading-section" aria-label="Markets the bot is watching"><h3>Markets the bot is watching</h3>
+      <section className="trading-section" aria-label="Markets the bot is watching">
+        <div className="watch-heading"><h3>Markets the bot is watching</h3><span className={`watch-live${streamStatus === "Live" && !stale ? " connected" : ""}`} role="status"><span aria-hidden="true" />{stale ? "Out of date" : streamStatus} · {snap.watch?.length ?? 0} {snap.watch?.length === 1 ? "market" : "markets"}</span></div>
         <p className="trading-muted">Each 15-minute market, checked against your rules. "Bot says UP" is how likely the bot thinks the price ends higher; "Crowd says UP" is what other traders think.{snap.enabled ? "" : " The bot is OFF, so this is just a preview."}</p>
-        <WatchTable watch={snap.watch} />
+        <WatchCards watch={snap.watch} now={now} updatedAt={updatedAt} stale={stale} enabled={snap.enabled} />
       </section>
       <section className="trading-section" aria-label="Your betting rules"><h3>Your betting rules</h3>
         <p className="trading-muted">The bot checks your rules from top to bottom; the first one that matches is used. Each contract pays $1 if your bet wins and $0 if it loses, so a 70¢ price means you win 30¢ or lose 70¢ per contract. The bot holds one bet per coin at a time.</p>

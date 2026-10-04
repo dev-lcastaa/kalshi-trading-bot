@@ -12,8 +12,8 @@ function makeSnapshot(mode, { populated = false, environment = "demo" } = {}) {
     mode,
     settings: structuredClone(settings),
     watch: populated ? [
-      { ticker: "KXBTC15M-WATCH", seconds_left: 360, model_p_yes: 0.84, market_p_yes: 0.8, side: "yes", price: "0.80", rule: "Edge", status: "Matches 'Edge'" },
-      { ticker: "KXSOL15M-WATCH", seconds_left: 700, model_p_yes: 0.4, market_p_yes: 0.45, side: null, price: null, rule: null, status: "No match - Edge: 700s left is outside 330-390s" },
+      { ticker: "KXBTC15M-WATCH", seconds_left: 360, close_ts_ms: now + 360000, model_p_yes: 0.84, market_p_yes: 0.8, side: "yes", price: "0.80", rule: "Edge", status: "Matches 'Edge'" },
+      { ticker: "KXSOL15M-WATCH", seconds_left: 700, close_ts_ms: now + 700000, model_p_yes: 0.4, market_p_yes: 0.45, side: null, price: null, rule: null, status: "No match - Edge: 700s left is outside 330-390s" },
     ] : [],
     enabled: false,
     environment,
@@ -35,9 +35,19 @@ function makeSnapshot(mode, { populated = false, environment = "demo" } = {}) {
 }
 
 async function mockTrading(page, { populated = true, environment = "demo" } = {}) {
-  await page.routeWebSocket("**/ws/**", () => {});
   const state = { live: makeSnapshot("live", { populated, environment }), paper: makeSnapshot("paper", { environment: "demo" }) };
   let failure = false;
+  const sockets = new Set();
+  const push = () => {
+    for (const socket of sockets) socket.send(JSON.stringify({ type: "trading_state", data: state }));
+  };
+  await page.routeWebSocket("**/ws/**", (socket) => {
+    if (!socket.url().endsWith("/ws/trading")) return;
+    sockets.add(socket);
+    push();
+    const timer = setInterval(() => { if (!failure) push(); }, 2000);
+    socket.onClose(() => { clearInterval(timer); sockets.delete(socket); });
+  });
   const writes = [];
   let reads = 0;
   await page.route("**/api/**", async (route) => {
@@ -59,6 +69,8 @@ async function mockTrading(page, { populated = true, environment = "demo" } = {}
   });
   return {
     writes,
+    state,
+    push,
     get reads() { return reads; },
     fail(value) { failure = value; },
     block() { state.live.blockers = ["Trading worker is not healthy"]; },
@@ -70,6 +82,34 @@ async function noOverflow(page) {
 }
 
 for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`${name}: market cards stream changes and count down without API polling`, async ({ page }) => {
+    await page.setViewportSize(size);
+    const api = await mockTrading(page);
+    await page.clock.install();
+    await page.goto("/trading");
+    await page.getByRole("radio", { name: "Real money" }).check();
+    const watch = page.getByRole("region", { name: "Markets the bot is watching" });
+    const card = watch.getByRole("article", { name: "Watching KXBTC15M-WATCH" });
+    await expect(card.getByText("84%")).toBeVisible();
+    await expect(watch.getByText("Live · 2 markets")).toBeVisible();
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 1000));
+    const reads = api.reads;
+    const countdown = card.locator(".watch-countdown strong");
+    const [minutes, seconds] = (await countdown.textContent()).split(":").map(Number);
+    const expectedLeft = minutes * 60 + seconds - 6;
+    await page.clock.runFor(6000);
+    await expect(countdown).toHaveText(`${Math.floor(expectedLeft / 60)}:${String(expectedLeft % 60).padStart(2, "0")}`);
+    expect(api.reads).toBe(reads);
+    api.state.live.watch[0].model_p_yes = 0.71;
+    api.state.live.watch[0].market_p_yes = 0.68;
+    api.push();
+    await expect(card.getByText("71%")).toBeVisible();
+    await expect(card.getByText("68%")).toBeVisible();
+    expect(api.reads).toBe(reads);
+    await noOverflow(page);
+    await watch.screenshot({ path: `test-results/trading-watch-${name}.png` });
+  });
+
   test(`${name}: real-money journey with running and finished bets, save, dialog, and off with blockers`, async ({ page }) => {
     await page.setViewportSize(size);
     const api = await mockTrading(page);
@@ -94,7 +134,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await expect(page.getByRole("article", { name: "Trade KXSOL15M-DONE" })).toHaveCount(0);
     const watch = page.getByRole("region", { name: "Markets the bot is watching" });
     await expect(watch.getByText("UP at 80¢")).toBeVisible();
-    await expect(watch.getByText("Not yet: Edge: 11:40 left — waits for 6:30 to 5:30")).toBeVisible();
+    await expect(watch.getByText("Not yet: Edge: waits for 6:30 to 5:30")).toBeVisible();
     await ruleGroup(page).getByLabel(SPEND, { exact: true }).fill("1.75");
     await ruleGroup(page).getByLabel("Cash out when up by ($)", { exact: true }).fill("0.65");
     await ruleGroup(page).getByLabel("Cut losses when down by ($)", { exact: true }).fill("0.25");

@@ -31,7 +31,11 @@ Each mode has its own saved rules and its own page:
 - **Finished bets** — closed bets only, newest first: Won/Lost, profit, and
   how it ended (market ended / cashed out early / sold to cut losses).
 - **Markets the bot is watching** — every live market with the bot's and the
-  crowd's odds and a plain reason it is or isn't betting.
+  crowd's odds, probability bars, and a plain reason it is or isn't betting.
+  Trading updates arrive over `/ws/trading` after each bot check or settings/
+  control change, without repeated API polling or page refreshes. Countdowns
+  tick locally every second. The connection indicator warns when updates stop
+  and reconnects automatically; the bot's execution cadence is unchanged.
 - **Your betting rules** — the rule editor (prices in cents, confidence in %).
 - **Bot diary** — a collapsible log of everything the bot did.
 
@@ -787,4 +791,3 @@ modify or deploy anything to that server.
 ```
 pytest
 ```
-
