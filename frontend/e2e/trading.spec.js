@@ -92,8 +92,10 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     const cards = watch.getByRole("article");
     await expect(cards).toHaveCount(2);
     await expect(cards.first().getByText("UP at 80¢")).toBeVisible();
-    await expect(cards.first().getByText("Bot says UP")).toBeVisible();
-    await expect(cards.first().getByText("Crowd says UP")).toBeVisible();
+    await expect(cards.first().getByRole("img", { name: "Bot leans: up at 84.0%" })).toBeVisible();
+    await expect(cards.first().getByRole("img", { name: "Market leans: up at 80.0%" })).toBeVisible();
+    await expect(cards.nth(1).getByRole("img", { name: "Bot leans: down at 60.0%" })).toBeVisible();
+    await expect(cards.nth(1).getByRole("img", { name: "Market leans: down at 55.0%" })).toBeVisible();
     await expect(cards.nth(1).getByText("Not yet: Quick 10-cent exit: DOWN costs 92¢, your range is 20¢–90¢; Confident hold to close: waits for 5:00 to 1:30")).toBeVisible();
     const heights = await cards.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height));
     for (const height of heights) expect(height).toBeLessThanOrEqual(178);
@@ -161,7 +163,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await page.getByRole("radio", { name: "Real money" }).check();
     const watch = page.getByRole("region", { name: "Markets the bot is watching" });
     const card = watch.getByRole("article", { name: "Watching KXBTC15M-WATCH" });
-    await expect(card.getByText("84%")).toBeVisible();
+    await expect(card.getByRole("img", { name: "Bot leans: up at 84.0%" })).toBeVisible();
     await expect(watch.getByText("Live · 2 markets")).toBeVisible();
     await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now()) + 1000));
     const reads = api.reads;
@@ -174,8 +176,8 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     api.state.live.watch[0].model_p_yes = 0.71;
     api.state.live.watch[0].market_p_yes = 0.68;
     api.push();
-    await expect(card.getByText("71%")).toBeVisible();
-    await expect(card.getByText("68%")).toBeVisible();
+    await expect(card.getByRole("img", { name: "Bot leans: up at 71.0%" })).toBeVisible();
+    await expect(card.getByRole("img", { name: "Market leans: up at 68.0%" })).toBeVisible();
     expect(api.reads).toBe(reads);
     await noOverflow(page);
     await watch.screenshot({ path: `test-results/trading-watch-${name}.png` });

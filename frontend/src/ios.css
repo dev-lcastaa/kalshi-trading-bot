@@ -166,11 +166,12 @@ code,.eyebrow,dt,.signal-kicker,.market-time,.connection,.loading-label { font-f
 .watch-card.match .watch-state { color:var(--green);background:rgba(48,209,88,.1); }.watch-state.stale { color:var(--gold); }
 .watch-countdown { display:flex;align-items:center;gap:4px; }
 .watch-countdown>span { color:var(--muted);font-size:12px; }.watch-countdown strong { font:18px "Space Mono",monospace;font-variant-numeric:tabular-nums;letter-spacing:-1px; }.watch-countdown.closing strong { color:var(--gold); }
-.watch-probabilities { display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px; }
-.watch-probability>div:first-child { display:flex;align-items:center;justify-content:space-between;gap:4px; }.watch-probability span { color:var(--muted);font-size:11px; }.watch-probability strong { font:18px "Space Mono",monospace;color:var(--green); }.watch-probability.crowd strong { color:var(--text); }
-.watch-meter { height:3px;margin-top:4px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden; }.watch-meter>span { display:block;height:100%;border-radius:inherit;background:var(--green);transition:width .3s ease; }.crowd .watch-meter>span { background:var(--muted); }
+.watch-card .directions { grid-template-columns:repeat(2,minmax(0,1fr));margin:6px 0 0;gap:8px; }
+.watch-card .direction-head { flex-wrap:wrap;gap:4px; }
+.watch-card .direction-track { margin-top:3px; }
+.watch-card .direction-rail { height:6px; }
 .watch-card footer { margin-top:4px;padding-top:2px;border-top:1px solid var(--line); }.watch-card footer p { margin:4px 0 0;color:var(--muted);font-size:12px;line-height:1.4;overflow-wrap:anywhere; }
-@media (prefers-reduced-motion:reduce) { .watch-meter>span { transition:none; } }
+@media (prefers-reduced-motion:reduce) { .direction-fill { transition:none; } }
 .trading-field { display:grid;gap:4px;min-width:0; }.trading-fields small { color:var(--dim);font-size:10px; }
 .trading-status { margin:18px 0 0;padding:20px;border:1px solid var(--line-strong);border-left:4px solid var(--muted);border-radius:var(--radius);background:rgba(5,9,15,.35); }
 .trading-status.on { border-left-color:var(--green);background:rgba(48,209,88,.06); }

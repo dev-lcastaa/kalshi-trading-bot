@@ -54,6 +54,19 @@ describe("Trading tab", () => {
     expect(friendlyStatus("No match - Edge: 500s left is outside 330-390s")).toBe("Not yet: Edge: 8:20 left — waits for 6:30 to 5:30");
     expect(friendlyStatus("Live read is stale")).toBe("Skipping — price data is out of date");
   });
+  it("shows live opposite leans separately from the rule's entry side", async () => {
+    state.paper.watch = [{ ticker: "KXBTC15M-LEAN", seconds_left: 360, model_p_yes: 0.2, market_p_yes: 0.7, side: "yes", price: "0.15", rule: "Edge", status: "Matches 'Edge'" }];
+    render(<Trading />);
+    const card = await screen.findByRole("article", { name: "Watching KXBTC15M-LEAN" });
+    expect(within(card).getByRole("img", { name: "Bot leans: down at 80.0%" })).toBeTruthy();
+    expect(within(card).getByRole("img", { name: "Market leans: up at 70.0%" })).toBeTruthy();
+    expect(within(card).getByText("UP at 15¢")).toBeTruthy();
+    state.paper.watch[0].model_p_yes = 0.9;
+    await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+    expect(within(card).getByRole("img", { name: "Bot leans: up at 90.0%" })).toBeTruthy();
+    expect(within(card).queryByRole("img", { name: "Bot leans: down at 80.0%" })).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it("starts on practice mode and adds/removes rules, saving in the API format", async () => {
     state.paper.watch = [{ ticker: "KXBTC15M-A", seconds_left: 360, model_p_yes: 0.84, market_p_yes: 0.8, side: "yes", price: "0.80", rule: "Edge", status: "Matches 'Edge'" }];
     const user = userEvent.setup(); render(<Trading />);
@@ -214,14 +227,14 @@ describe("Trading tab", () => {
     const reads = fetch.mock.calls.length;
     await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
     const card = screen.getByRole("article", { name: "Watching KXSOL15M-NEXT" });
-    expect(within(card).getByText("62%")).toBeTruthy();
-    expect(within(card).getByText("51%")).toBeTruthy();
+    expect(within(card).getByRole("img", { name: "Bot leans: up at 62.0%" })).toBeTruthy();
+    expect(within(card).getByRole("img", { name: "Market leans: up at 51.0%" })).toBeTruthy();
     expect(screen.getByText("Live · 1 market")).toBeTruthy();
     expect(rule().getByLabelText(SPEND).value).toBe("1.75");
     expect(fetch).toHaveBeenCalledTimes(reads);
     state.paper.watch[0].model_p_yes = 0.73;
     await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
-    expect(within(card).getByText("73%")).toBeTruthy();
+    expect(within(card).getByRole("img", { name: "Bot leans: up at 73.0%" })).toBeTruthy();
   });
   it("marks disconnected updates stale and reconnects with a fresh snapshot", async () => {
     vi.useFakeTimers();
@@ -266,7 +279,7 @@ describe("Trading tab", () => {
     await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
     await act(async () => complete({ ok: true, json: async () => older }));
     expect(screen.getByRole("article", { name: "Watching KXBTC15M-NEW" })).toBeTruthy();
-    expect(screen.getByText("77%")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Bot leans: up at 77.0%" })).toBeTruthy();
   });
   it("does not flip the switch before the server answers", async () => {
     const user = userEvent.setup(); render(<Trading />);

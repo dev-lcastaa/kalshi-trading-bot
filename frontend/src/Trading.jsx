@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertTriangle, Check, ChevronDown, Plus, Power, RefreshCw, Save, Trash2, X } from "lucide-react";
 import { friendlyCheckName } from "./utils";
+import DirectionBars from "./DirectionBars";
 
 const MODES = [["paper", "Practice (fake money)"], ["live", "Real money"]];
 export const MAX_BUDGET = 25;
@@ -173,14 +174,6 @@ export function friendlyStatus(status = "") {
   return status;
 }
 
-function Probability({ label, value, crowd = false }) {
-  const percent = value == null ? null : Math.round(value * 100);
-  return <div className={`watch-probability${crowd ? " crowd" : ""}`}>
-    <div><span>{label}</span><strong>{percent == null ? "--" : `${percent}%`}</strong></div>
-    <div className="watch-meter" aria-hidden="true"><span style={{ width: `${percent ?? 0}%` }} /></div>
-  </div>;
-}
-
 function WatchCards({ watch, now, updatedAt, stale, enabled }) {
   if (!watch?.length) return <p className="trading-muted">No markets open right now</p>;
   return <div className="trading-watch">{watch.map((row) => {
@@ -193,7 +186,7 @@ function WatchCards({ watch, now, updatedAt, stale, enabled }) {
       <header><div className="watch-identity"><span className={`watch-coin ${coinOf(row.ticker).toLowerCase()}`} aria-hidden="true">{coinOf(row.ticker).slice(0, 1)}</span><div><strong>{coinOf(row.ticker)}</strong><small>15-minute market</small></div></div>
         <span className={`watch-state${stale ? " stale" : ""}`}>{state}</span>
         <div className={`watch-countdown${left <= 240 ? " closing" : ""}`}><span>Time left</span><strong>{clock(left)}</strong></div></header>
-      <div className="watch-probabilities"><Probability label="Bot says UP" value={row.model_p_yes} /><Probability label="Crowd says UP" value={row.market_p_yes} crowd /></div>
+      <DirectionBars modelProbability={row.model_p_yes} marketProbability={row.market_p_yes} />
       <footer><span className={`trading-bet ${row.side === "no" ? "down" : row.side ? "up" : ""}`}>{row.side ? `${direction(row.side)} at ${centsOf(row.price)}¢` : "No bet yet"}</span>
         <p>{note}</p></footer>
     </article>;
@@ -505,7 +498,7 @@ export default function Trading() {
       </section>
       <section className="trading-section" aria-label="Markets the bot is watching">
         <div className="watch-heading"><h3>Markets the bot is watching</h3><span className={`watch-live${streamStatus === "Live" && !stale ? " connected" : ""}`} role="status"><span aria-hidden="true" />{stale ? "Out of date" : streamStatus} · {snap.watch?.length ?? 0} {snap.watch?.length === 1 ? "market" : "markets"}</span></div>
-        <p className="trading-muted">Each 15-minute market, checked against your rules. "Bot says UP" is how likely the bot thinks the price ends higher; "Crowd says UP" is what other traders think.{snap.enabled ? "" : " The bot is OFF, so this is just a preview."}</p>
+        <p className="trading-muted">Each 15-minute market, checked against your rules. Bot leans and Market leans show the current favored direction and its estimated chance, not the saved final pick. A lean is not a bet; the entry side below follows your rule and prices.{snap.enabled ? "" : " The bot is OFF, so this is just a preview."}</p>
         <WatchCards watch={snap.watch} now={now} updatedAt={updatedAt} stale={stale} enabled={snap.enabled} />
       </section>
       <section className="trading-section" aria-label="Your betting rules"><h3>Your betting rules</h3>

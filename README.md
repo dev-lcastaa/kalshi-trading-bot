@@ -36,7 +36,12 @@ Each mode has its own saved rules and its own page:
   Expand **Trade details** for contracts and the rule used. Switching money
   modes resets the list to the latest two; scoreboard totals include all bets.
 - **Markets the bot is watching** — every live market with the bot's and the
-  crowd's odds, probability bars, and a plain reason it is or isn't betting.
+  market's current UP/DOWN lean, centered direction bars, and a plain reason it
+  is or isn't betting, using the same indicators as Live Picks. The percentage
+  is the favored side's estimated probability (DOWN is one minus UP), not the
+  saved final-pick confidence. Exactly 50% shows EVEN; missing/invalid odds
+  show `--`. A lean is not an order: the entry side still follows the rule and
+  available prices, and can differ from the favored direction.
   Compact cards use roughly half the previous height while keeping the
   countdown, probabilities, and full betting/skip reasons visible.
   Trading updates arrive over `/ws/trading` after each bot check or settings/

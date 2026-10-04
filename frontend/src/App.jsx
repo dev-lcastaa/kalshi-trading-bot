@@ -7,6 +7,7 @@ import {
 import { useDashboardData, useTelemetry } from "./hooks/useDashboardData";
 import { useLivePrices } from "./hooks/useLivePrices";
 import Trading from "./Trading";
+import DirectionBars from "./DirectionBars";
 import { coinMeta, countdown, formatDecision, friendlyBlocker, friendlyCheckName, money, percent, recommendationLabel } from "./utils";
 
 const TABS = [
@@ -41,34 +42,6 @@ function CopyTicker({ ticker }) {
   return <button className="icon-button copy-button" type="button" onClick={copy} title="Copy market ticker" aria-label={`Copy ${ticker}`}>
     {copied ? <Check size={15} /> : <Copy size={15} />}<span className="copy-label">{copied ? "Copied" : "Copy"}</span>
   </button>;
-}
-
-function DirectionBar({ label, probability }) {
-  const numeric = Number(probability);
-  const valid = Number.isFinite(numeric);
-  // 0.5 is dead center; the fill grows right (green) for UP, left (red) for DOWN.
-  const lean = valid ? Math.min(1, Math.max(-1, (numeric - 0.5) * 2)) : 0;
-  const up = lean >= 0;
-  const widthPct = Math.abs(lean) * 50;
-  const strength = valid ? (up ? numeric : 1 - numeric) : null;
-  return <div className="direction" role="img" aria-label={valid ? `${label}: ${up ? "up" : "down"} at ${percent(strength)}` : `${label}: waiting`}>
-    <div className="direction-head"><span>{label}</span><strong className={valid ? (up ? "up" : "down") : ""}>{valid ? `${up ? "UP" : "DOWN"} \u00b7 ${percent(strength)}` : "--"}</strong></div>
-    <div className="direction-track" aria-hidden="true">
-      <i>DOWN</i>
-      <div className="direction-rail">
-        <span className="direction-center" />
-        <span className={`direction-fill ${up ? "up" : "down"}`} style={up ? { left: "50%", width: `${widthPct}%` } : { right: "50%", width: `${widthPct}%` }} />
-      </div>
-      <i>UP</i>
-    </div>
-  </div>;
-}
-
-function DirectionBars({ modelProbability, marketProbability }) {
-  return <section className="directions" aria-label="Bot and market direction">
-    <DirectionBar label="Bot leans" probability={modelProbability} />
-    <DirectionBar label="Market leans" probability={marketProbability} />
-  </section>;
 }
 
 function Confirmation({ market }) {
