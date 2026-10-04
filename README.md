@@ -30,8 +30,11 @@ Each mode has its own saved rules and its own page:
   that triggered it, its exit plan, what the bot did, and why.
 - **Finished bets** — responsive cards for closed bets only, newest first:
   Won/Lost/Broke even, prominent net profit or loss, amount paid and returned,
-  contracts, rule used, completion time, and how it ended (market ended /
-  cashed out early / sold to cut losses).
+  completion time, and how it ended (market ended / cashed out early / sold to
+  cut losses). Compact cards show the two newest bets by default; **Load more**
+  reveals two more at a time and **Show fewer** returns to the latest two.
+  Expand **Trade details** for contracts and the rule used. Switching money
+  modes resets the list to the latest two; scoreboard totals include all bets.
 - **Markets the bot is watching** — every live market with the bot's and the
   crowd's odds, probability bars, and a plain reason it is or isn't betting.
   Trading updates arrive over `/ws/trading` after each bot check or settings/

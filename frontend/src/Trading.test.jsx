@@ -345,4 +345,32 @@ describe("Trading tab", () => {
     expect(unknown.querySelector("time").hasAttribute("datetime")).toBe(false);
     expect(within(unknown).queryByText("$0.00")).toBeNull();
   });
+  it("shows the newest two, loads two at a time, collapses, and resets when switching modes", async () => {
+    const user = userEvent.setup();
+    state.paper.positions = Array.from({ length: 5 }, (_, index) => ({
+      ticker: `KXBTC15M-${index}`, status: "closed", side: "yes", closed_ms: index + 1,
+      net_pnl: "0.10", entry_cost: "1.00", exit_credit: "1.10",
+    }));
+    state.live.positions = structuredClone(state.paper.positions);
+    render(<Trading />);
+    const finished = await screen.findByRole("region", { name: "Finished bets" });
+    const visible = () => within(finished).getAllByRole("listitem").map((card) => card.getAttribute("aria-label"));
+    expect(visible()).toEqual(["Finished trade KXBTC15M-4", "Finished trade KXBTC15M-3"]);
+    expect(within(screen.getByRole("region", { name: "Scoreboard" })).getByText("+$0.50")).toBeTruthy();
+    await user.click(within(finished).getByRole("button", { name: "Load more" }));
+    expect(visible()).toHaveLength(4);
+    await user.click(within(finished).getByRole("button", { name: "Load more" }));
+    expect(visible()).toHaveLength(5);
+    expect(within(finished).queryByRole("button", { name: "Load more" })).toBeNull();
+    await user.click(within(finished).getByRole("button", { name: "Show fewer" }));
+    expect(visible()).toHaveLength(2);
+    await user.click(within(finished).getByRole("button", { name: "Load more" }));
+    await goLive(user);
+    expect(visible()).toHaveLength(2);
+    await user.click(screen.getByRole("radio", { name: "Practice (fake money)" }));
+    expect(visible()).toHaveLength(2);
+    state.paper.positions.push({ ...state.paper.positions[0], ticker: "KXBTC15M-NEW", closed_ms: 100 });
+    await act(async () => sockets[0].onmessage({ data: JSON.stringify({ type: "trading_state", data: state }) }));
+    expect(visible()).toEqual(["Finished trade KXBTC15M-NEW", "Finished trade KXBTC15M-4"]);
+  });
 });

@@ -95,7 +95,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await page.getByRole("radio", { name: "Real money" }).check();
     const finished = page.getByRole("region", { name: "Finished bets" });
     const cards = finished.getByRole("listitem");
-    await expect(cards).toHaveCount(4);
+    await expect(cards).toHaveCount(2);
     await expect(cards.first()).toHaveAttribute("aria-label", "Finished trade KXBTC15M-LOSS");
     await expect(cards.first().getByText("Lost", { exact: true })).toBeVisible();
     await expect(cards.first().getByText("-$0.50")).toBeVisible();
@@ -104,10 +104,18 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await expect(cards.nth(1).getByText("+$0.90")).toBeVisible();
     await expect(cards.nth(1).getByText("$2.10")).toBeVisible();
     await expect(cards.nth(1).getByText("$3.00")).toBeVisible();
+    const compactBoxes = await cards.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().height));
+    for (const height of compactBoxes) expect(height).toBeLessThanOrEqual(name === "mobile" ? 174 : 187);
+    await finished.getByRole("button", { name: "Load more" }).click();
+    await expect(cards).toHaveCount(4);
+    await expect(finished.getByRole("button", { name: "Load more" })).toHaveCount(0);
     await expect(cards.nth(2).getByText("Broke even")).toBeVisible();
     await expect(cards.nth(2).getByText("$0.00")).toBeVisible();
     await expect(cards.nth(2).getByText("Cashed out early")).toBeVisible();
     await expect(cards.nth(3).locator(".finished-result strong")).toHaveText("--");
+    await cards.nth(2).getByText("Trade details", { exact: true }).click();
+    await expect(cards.nth(2).getByText("A long saved rule name for this trade")).toBeVisible();
+    await cards.nth(2).getByText("Trade details", { exact: true }).click();
     const boxes = await cards.evaluateAll((elements) => elements.map((element) => {
       const { x, y, width } = element.getBoundingClientRect();
       return { x, y, width };
@@ -119,6 +127,9 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     }
     await noOverflow(page);
     await finished.screenshot({ path: `test-results/finished-bets-${name}.png` });
+    await finished.getByRole("button", { name: "Show fewer" }).click();
+    await expect(cards).toHaveCount(2);
+    await expect(cards.first()).toHaveAttribute("aria-label", "Finished trade KXBTC15M-LOSS");
   });
 
   test(`${name}: market cards stream changes and count down without API polling`, async ({ page }) => {

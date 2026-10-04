@@ -271,11 +271,25 @@ function FinishedCard({ position }) {
     <dl className="finished-details">
       <Stat label="You paid" value={money(position.entry_cost)} />
       <Stat label="Got back" value={money(position.exit_credit)} />
+    </dl>
+    <details className="finished-extra"><summary>Trade details</summary><dl className="finished-details">
       <Stat label="Contracts" value={position.quantity ?? "--"} />
       <Stat label="Rule used" value={position.rule ?? "--"} />
-    </dl>
+    </dl></details>
     <footer><span>{ENDINGS[position.closed_by] ?? "Closed"}</span><time dateTime={endedAt == null ? undefined : new Date(endedAt).toISOString()}>{timestamp(endedAt)}</time></footer>
   </li>;
+}
+
+function FinishedBets({ positions }) {
+  const [visibleCount, setVisibleCount] = React.useState(2);
+  return <>
+    <ol className="trading-cards trading-finished-list">{positions.slice(0, visibleCount).map((position, index) => <FinishedCard key={`${position.ticker}-${index}`} position={position} />)}</ol>
+    {positions.length > 2 && <div className="trading-buttons finished-controls">
+      <span className="trading-muted">Showing {Math.min(visibleCount, positions.length)} of {positions.length} finished bets</span>
+      {visibleCount < positions.length && <button className="secondary-button" onClick={() => setVisibleCount((count) => count + 2)}>Load more</button>}
+      {visibleCount > 2 && <button className="secondary-button" onClick={() => setVisibleCount(2)}>Show fewer</button>}
+    </div>}
+  </>;
 }
 
 function EnableDialog({ snapshot, blocked, busy, onCancel, onConfirm }) {
@@ -486,7 +500,7 @@ export default function Trading() {
           : <p className="trading-muted">No bets running right now</p>}
       </section>
       <section className="trading-section" aria-label="Finished bets"><h3>Finished bets</h3>
-        {finished.length ? <ol className="trading-cards trading-finished-list">{finished.map((position, index) => <FinishedCard key={`${position.ticker}-${index}`} position={position} />)}</ol>
+        {finished.length ? <FinishedBets key={mode} positions={finished} />
           : <p className="trading-muted">No finished bets yet</p>}
       </section>
       <section className="trading-section" aria-label="Markets the bot is watching">
