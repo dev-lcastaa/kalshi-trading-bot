@@ -58,7 +58,6 @@ class TradingSettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rules: list[TradingRuleBody] = Field(min_length=1, max_length=10)
     risk: TradingRiskBody | None = None
-    start_at_ms: int | None = Field(default=None, gt=0)
 
 
 class TradingSettingsUpdateBody(TradingSettingsBody):

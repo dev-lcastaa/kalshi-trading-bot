@@ -39,7 +39,6 @@ execution checks.
 - **Confidence** (50-99%, initially 65%) is the moving side's market-implied
   settlement probability from the bid/ask midpoint. It is **not** a calibrated
   probability of profitable scalping or the settlement model's prediction.
-- **Start trading at** (optional) schedules the start. Turn the bot on beforehand and it waits, placing no trades, until that date and time (your browser's time zone), then trades normally. Leave it empty, or use a time already passed, to trade immediately. Turning the bot off cancels the wait.
 - **Amount per trade** is a maximum purchase budget including reserved entry
   fees, up to $25. Whole-contract sizing can spend less or buy nothing.
 - **Stop loss** must be positive and smaller than the trade amount. It is a
@@ -106,7 +105,7 @@ The trading page also shows:
   control change, without repeated API polling or page refreshes. Countdowns
   tick locally every second. The connection indicator warns when updates stop
   and reconnects automatically; the bot's execution cadence is unchanged.
-- **Scalp market movement** — the four controls plus an optional start time, with automatic limits in a
+- **Scalp market movement** — the four controls, with automatic limits in a
   collapsed explanation rather than a separate rule/safeguard editor.
 - **Bot diary** — a collapsible log of everything the bot did.
 
