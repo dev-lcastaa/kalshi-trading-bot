@@ -4,7 +4,7 @@ import { friendlyCheckName } from "./utils";
 import DirectionBars from "./DirectionBars";
 import ScalpControls, { scalpForm, scalpSettings, validateScalp } from "./ScalpControls";
 
-const MODES = [["paper", "Practice (fake money)"], ["live", "Real money"]];
+const MODES = [["paper", "Bot Simulation trading"], ["live", "Bot Real Trading"]];
 export const MAX_BUDGET = 25;
 export const MAX_RULES = 10;
 const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss", "max_entries", "reentry_gap_sec", "scalping", "max_cycles", "cycle_cooldown_sec", "market_spend_limit", "market_loss_limit"];
@@ -500,7 +500,6 @@ export default function Trading() {
         {blockers.length > 0 && <div className="trading-blockers"><strong>Why the bot can't bet right now:</strong><ul>{blockers.map((blocker, index) => <li key={index}>{friendlyBlocker(blocker)}</li>)}</ul></div>}
         {!snap.enabled && dirty && <p className="trading-muted">Save your scalping settings before turning the bot on.</p>}
         {snap.error && <p className="negative" role="alert">{snap.error}</p>}
-        <p className="trading-muted">Turning the bot off stops new bets only — bets already made keep going until the market ends (or your cash-out / cut-loss amount is hit). Last market check: {timestamp(snap.last_cycle_ms)}</p>
       </section>
       <section className="trading-section" aria-label="Scalping controls"><h3>Scalp market movement</h3>
         {!strategySaved && <p className="trading-muted">Your previous strategy is still saved. Turn the bot off and save here to replace it with momentum scalping. Existing trades keep their original exit plan.</p>}
@@ -520,11 +519,6 @@ export default function Trading() {
         <Stat label="Total won / lost" value={finishedCount ? signedMoney(total) : "--"} tone={total > 0 ? "positive" : total < 0 ? "negative" : ""} />
         <Stat label="Win rate" value={finishedCount ? `${Math.round((wins / finishedCount) * 100)}% (${wins} of ${finishedCount})` : "--"} />
       </dl></section>
-      {snap.execution && <section className="trading-section" aria-label="Execution costs"><h3>Execution costs</h3>
-        <p className="trading-muted">{snap.execution.filled_orders} of {snap.execution.orders} reconciled orders filled at least partly. Buy fees: {money(snap.execution.entry_fees)}. Entry cost above the checked midpoint, including fees: {signedMoney(snap.execution.entry_cost_above_mid)}. Open money at risk: {money(snap.risk_state?.open_cost)}.</p>
-        <p className="trading-muted">Practice fills still ignore queue position and market impact. High win rate alone does not mean positive expected profit.</p>
-        {snap.execution.settlement_comparison && <p className="trading-muted">For {snap.execution.settlement_comparison.measured_bets} measured hold-to-settlement bets: model-predicted net {signedMoney(snap.execution.settlement_comparison.predicted_net)}, realized net {signedMoney(snap.execution.settlement_comparison.realized_net)}. Early exits and older unmeasured bets are excluded; small samples are not proof of an edge.</p>}
-      </section>}
       <section className="trading-section" aria-label="Bets happening now"><h3>Bets happening now</h3>
         {running.length ? <div className="trading-cards">{running.map((position, index) => <LiveCard key={position.position_id ?? `${position.ticker}-${index}`} position={position} now={now} events={events.filter((event) => position.position_id ? event.position_id === position.position_id : event.ticker === position.ticker)} decision={decisionFor(position.ticker)} />)}</div>
           : <p className="trading-muted">No bets running right now</p>}

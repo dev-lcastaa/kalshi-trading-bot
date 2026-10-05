@@ -83,13 +83,16 @@ async function noOverflow(page) {
 }
 
 for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
-  test(`${name}: three-control settings stay practice-only and save automatic limits`, async ({ page }) => {
+  test(`${name}: compact settings stay practice-only and save custom trade limits`, async ({ page }) => {
     await page.setViewportSize(size);
     const api = await mockTrading(page, { populated: false, environment: "prod" });
     await page.goto("/trading");
-    await expect(ruleGroup(page).getByRole("textbox")).toHaveCount(3);
+    await expect(ruleGroup(page).getByRole("textbox")).toHaveCount(4);
     await expect(page.getByRole("button", { name: "Add a rule" })).toHaveCount(0);
     await ruleGroup(page).getByLabel(SPEND).fill("1.50");
+    await ruleGroup(page).getByLabel("Trades per 15-minute market").fill("11");
+    await expect(page.getByRole("button", { name: "Save settings" })).toBeDisabled();
+    await ruleGroup(page).getByLabel("Trades per 15-minute market").fill("5");
     expect(api.writes).toHaveLength(0);
     await noOverflow(page);
     await page.getByRole("button", { name: "Save settings" }).click();
@@ -97,18 +100,21 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     expect(api.writes).toHaveLength(1);
     expect(api.writes[0].body).toMatchObject({ mode: "paper", risk: { max_open_cost: "3.00",
       min_edge: "0.00", uncertainty_buffer: "0.00", max_spread: "0.03" } });
+    expect(api.writes[0].body.rules[0]).toMatchObject({ max_cycles: 5, market_spend_limit: "7.50" });
+    await expect(ruleGroup(page).getByLabel("Trades per 15-minute market")).toHaveValue("5");
     expect(api.state.live.settings).toEqual(settings);
     expect(api.state.paper.enabled).toBe(false);
     expect(api.state.live.enabled).toBe(false);
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     await expect(ruleGroup(page).getByLabel(SPEND)).toHaveValue("1.00");
+    await expect(ruleGroup(page).getByLabel("Trades per 15-minute market")).toHaveValue("3");
     await noOverflow(page);
   });
   test(`${name}: opt-in scalping controls, confirmation, cycle history and limits`, async ({ page }) => {
     await page.setViewportSize(size);
     const api = await mockTrading(page, { populated: false, environment: "prod" });
     await page.goto("/trading");
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     const scalp = ruleGroup(page);
     await scalp.getByLabel("Stop loss amount ($)", { exact: true }).fill("0");
     await expect(page.getByRole("button", { name: "Save settings" })).toBeDisabled();
@@ -159,7 +165,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await expect(watch.getByText(/Scalping stopped - 3\/3 cycles used/)).toBeVisible();
     await noOverflow(page);
     await watch.screenshot({ path: `test-results/scalping-watch-${name}.png` });
-    await page.getByRole("radio", { name: "Practice (fake money)" }).check();
+    await page.getByRole("radio", { name: "Bot Simulation trading" }).check();
     await expect(page.getByRole("switch")).not.toBeChecked();
     await expect(ruleGroup(page).getByLabel("Stop loss amount ($)")).toHaveValue("0.20");
   });
@@ -169,7 +175,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     const api = await mockTrading(page);
     api.state.live.watch[1].status = "No match - Quick 10-cent exit: NO costs 0.92, outside 0.20-0.90; Confident hold to close: 700s left is outside 90-300s";
     await page.goto("/trading");
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     const watch = page.getByRole("region", { name: "Markets the bot is watching" });
     const cards = watch.getByRole("article");
     await expect(cards).toHaveCount(2);
@@ -197,7 +203,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
       { ...won, ticker: "KXBTC15M-UNKNOWN", net_pnl: null, closed_by: null, closed_ms: won.closed_ms - 2000 },
     );
     await page.goto("/trading");
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     const finished = page.getByRole("region", { name: "Finished bets" });
     const cards = finished.getByRole("listitem");
     await expect(cards).toHaveCount(2);
@@ -242,7 +248,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     const api = await mockTrading(page);
     await page.clock.install();
     await page.goto("/trading");
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     const watch = page.getByRole("region", { name: "Markets the bot is watching" });
     const card = watch.getByRole("article", { name: "Watching KXBTC15M-WATCH" });
     await expect(card.getByRole("img", { name: "Bot leans: up at 84.0%" })).toBeVisible();
@@ -270,8 +276,8 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     const api = await mockTrading(page);
     await page.goto("/trading");
     await expect(page.getByRole("tab", { name: "Trading", exact: true })).toHaveAttribute("aria-selected", "true");
-    await expect(page.getByRole("radio", { name: "Practice (fake money)" })).toBeChecked();
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await expect(page.getByRole("radio", { name: "Bot Simulation trading" })).toBeChecked();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     await expect(page.getByText("Real-money mode — Kalshi demo account (still not real money)")).toBeVisible();
     const card = page.getByRole("article", { name: "Trade KXBTC15M-POSITION" });
     await expect(card).toBeVisible();
@@ -335,7 +341,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await page.clock.fastForward(6000);
     expect(api.reads).toBe(reads);
     await page.getByRole("tab", { name: "Trading", exact: true }).click();
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     await expect(ruleGroup(page).getByLabel(SPEND, { exact: true })).toHaveValue("1.75");
   });
 
@@ -356,10 +362,10 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await expect(page.getByText("Practice bot turned off.", { exact: true })).toBeVisible();
     expect(api.writes[1].body).toEqual({ mode: "paper", enabled: false, confirm: false });
     await ruleGroup(page).getByLabel(SPEND, { exact: true }).fill("1.40");
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     await expect(page.getByText("Real-money mode — uses your real Kalshi money")).toBeVisible();
     await expect(ruleGroup(page).getByLabel(SPEND, { exact: true })).toHaveValue("1.00");
-    await page.getByRole("radio", { name: "Practice (fake money)" }).check();
+    await page.getByRole("radio", { name: "Bot Simulation trading" }).check();
     await expect(ruleGroup(page).getByLabel(SPEND, { exact: true })).toHaveValue("1.40");
     await noOverflow(page);
     await page.screenshot({ path: `test-results/trading-paper-${name}.png`, fullPage: true });
@@ -369,7 +375,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await page.setViewportSize(size);
     const api = await mockTrading(page, { populated: false, environment: "prod" });
     await page.goto("/trading");
-    await page.getByRole("radio", { name: "Real money" }).check();
+    await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     await expect(page.getByText("No bets running right now", { exact: true })).toBeVisible();
     await page.getByRole("switch").click();
     await expect(page.getByRole("dialog").getByText("The bot will spend your real money.")).toBeVisible();

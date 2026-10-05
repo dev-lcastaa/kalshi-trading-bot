@@ -12,16 +12,17 @@ opt-in automatic trading, saved dollar thresholds, and an activity journal.
 The **Trading** tab (or `/trading`) is written in plain language and has two
 independent modes (it opens on Practice):
 
-- **Practice (fake money)** — simulates fills against the live order books and
+- **Bot Simulation trading** — simulates fills against the live order books and
   tracks a pretend account. No orders are ever sent. Practice results are
   estimates: they ignore queue position and your order's market impact,
   so real fills can be worse.
-- **Real money** — places real orders on your Kalshi account
+- **Bot Real Trading** — places real orders on your Kalshi account
   (demo or production, depending on `KALSHI_ENV`; the tab says which).
 
 Each mode has independent saved settings. The strategy editor now has just
-three controls: **Confidence level (%)**, **Amount per trade ($)**, and
-**Stop loss amount ($)**. Saving installs a single momentum-scalping strategy
+four controls: **Confidence level (%)**, **Amount per trade ($)**,
+**Stop loss amount ($)**, and **Trades per 15-minute market**.
+Saving installs a single momentum-scalping strategy
 for that mode; it never enables trading or changes the other mode.
 
 ### Simple momentum scalping
@@ -43,14 +44,18 @@ execution checks.
 - **Stop loss** must be positive and smaller than the trade amount. It is a
   net-loss sell trigger, not a guaranteed maximum loss. Illiquid exits can
   lose the full purchase cost.
+- **Trades per 15-minute market** sets 1-10 buy/sell cycles per individual
+  ticker (default 3), not a total across coins. The cumulative spending cap
+  is the smaller of $25 or the trade amount times this limit. Existing markets
+  retain their original caps; changing this setting cannot raise them.
 - The automatic profit target is **$0.02 net per position**, after paid entry
   costs and reserved exit fees. The bot checks that the actual sized order has
   enough price room for this target, and rejects entries whose spread and
   reserved round-trip fees already reach the stop loss. This is a target,
   **not a promise of profit**.
 - Automatic limits: 5-95 cent entries with 90-840 seconds left, maximum
-  3-cent spread, three cycles per ticker, 30 seconds after a fully closed
-  profitable exit, cumulative market spending of `min($25, 3 x trade amount)`,
+  3-cent spread, your configured cycle limit, 30 seconds after a fully closed
+  profitable exit, cumulative market spending of `min($25, cycles x trade amount)`,
   and a market-loss trigger equal to the stop-loss amount. No re-entry after
   a loss or settlement. At most two open positions, open cost at most twice
   the trade amount, and a daily loss budget of three times the trade amount,
@@ -61,7 +66,7 @@ execution checks.
   settlement-value edge and are excluded from settlement-model P/L comparisons.
 
 Existing saved rules are **not silently migrated**. Turn the bot off, set the
-three controls, and select **Save settings** to replace that mode's old rules
+four controls, and select **Save settings** to replace that mode's old rules
 and risk settings. Existing positions keep their original exits and market
 caps. Start in Practice; Real money still requires explicit confirmation.
 Deploy/restart the updated backend and build/deploy the frontend to use this
@@ -100,7 +105,7 @@ The trading page also shows:
   control change, without repeated API polling or page refreshes. Countdowns
   tick locally every second. The connection indicator warns when updates stop
   and reconnects automatically; the bot's execution cadence is unchanged.
-- **Scalp market movement** — the three controls, with automatic limits in a
+- **Scalp market movement** — the four controls, with automatic limits in a
   collapsed explanation rather than a separate rule/safeguard editor.
 - **Bot diary** — a collapsible log of everything the bot did.
 
@@ -206,8 +211,9 @@ For **every entry**, not just scalping, the bot now:
   differences can reject otherwise valid trades, and neither feed settles
   Kalshi contracts.
 
-The **Execution costs** panel summarizes newly reconciled orders, buy fees,
-and entry cost above the checked midpoint (spread/slippage plus fees).
+The dashboard omits the former Execution costs panel to keep the page compact.
+The trading API still summarizes reconciled orders, buy fees, and entry cost
+above the checked midpoint (spread/slippage plus fees).
 Each order's requested/filled quantity, actual costs, checked quotes/depth,
 prediction, and timestamps are retained in its persistent position journal.
 For measured hold-to-settlement bets, it also compares predicted net return
