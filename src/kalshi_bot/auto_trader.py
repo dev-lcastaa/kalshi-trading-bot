@@ -15,8 +15,8 @@ import httpx
 from .data.store import Store
 from .risk import RiskLimits
 from .trading import (
-    CENT, ONE, EntryRule, ScalpPolicy, TradingPolicy, default_rules, dollars, fee_reserve, parse_rules, rules_json,
-    taker_fee,
+    CENT, ONE, STOP_HEADROOM, EntryRule, ScalpPolicy, TradingPolicy, default_rules, dollars, fee_reserve, parse_rules,
+    round_trip_cost, rules_json, taker_fee,
 )
 
 MarketFeed = Callable[[], list[dict]]
@@ -787,7 +787,13 @@ class AutoTrader:
                 if not bids or bids[0][1] < count:
                     self.skip(ticker, "Insufficient sell liquidity for the take-profit/stop-loss exits")
                     continue
-                if policy.stop_loss > 0 and (ask - bids[0][0]) * count + 2 * fee_reserve(count) >= policy.stop_loss:
+                if rule.scalp:
+                    cost = round_trip_cost(ask, bids[0][0], count)
+                    if cost + STOP_HEADROOM > policy.stop_loss:
+                        self.skip(ticker, f"Spread and fees would cost ${cost} to enter and exit right away, leaving "
+                                          f"less than ${STOP_HEADROOM} of room before the ${policy.stop_loss} stop loss")
+                        continue
+                elif policy.stop_loss > 0 and (ask - bids[0][0]) * count + 2 * fee_reserve(count) >= policy.stop_loss:
                     self.skip(ticker, "Quoted spread and reserved fees already reach the stop loss")
                     continue
             if not self.enabled:
@@ -1032,10 +1038,12 @@ class AutoTrader:
         levels = await self.levels(position["ticker"], position["side"])
         remaining = quantity
         proceeds = Decimal("0")
+        exit_fees = Decimal("0")
         worst_price = None
         for price, available in levels:
             matched = min(available, remaining)
             proceeds += price * matched
+            exit_fees += taker_fee(price, int(matched.to_integral_value(rounding=ROUND_CEILING)))
             remaining -= matched
             worst_price = price
             if remaining == 0:
@@ -1047,6 +1055,9 @@ class AutoTrader:
                 self.event("waiting_for_liquidity", "No sell liquidity; exit cannot be filled yet", position)
             return
         reserve = fee_reserve(int(quantity.to_integral_value(rounding=ROUND_CEILING)))
+        if position.get("scalp") and remaining == 0:
+            # Scalp targets are a few cents, so use the real exit fee instead of the flat worst case.
+            reserve = exit_fees
         net = dollars(position["exit_credit"]) + proceeds - reserve - dollars(position["entry_cost"])
         position["net_pnl"] = str(net) if remaining == 0 else None
         position["liquidity_warning"] = remaining > 0

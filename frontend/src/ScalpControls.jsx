@@ -3,13 +3,17 @@ import React from "react";
 const MARKET_SECONDS = 900;
 const DEFAULT_START = 60;
 const MIN_SECONDS_LEFT = 90;
+// A few cents either way; the stop needs ~2 cents of room beyond the spread and fees to avoid instant stop-outs.
+const DEFAULT_TAKE_PROFIT = 0.03;
+const DEFAULT_STOP_LOSS = 0.05;
 
 export function scalpForm(settings) {
   const rule = settings?.rules?.[0];
   return {
     confidence: rule?.side === "momentum" ? String(Math.round(Number(rule.min_confidence) * 100)) : "65",
     budget: Number(rule?.budget ?? 1).toFixed(2),
-    stop_loss: Number(rule?.stop_loss > 0 ? rule.stop_loss : Math.min(0.20, Number(rule?.budget ?? 1) / 5)).toFixed(2),
+    take_profit: Number(rule?.side === "momentum" && rule.take_profit > 0 ? rule.take_profit : DEFAULT_TAKE_PROFIT).toFixed(2),
+    stop_loss: Number(rule?.stop_loss > 0 ? rule.stop_loss : Math.min(DEFAULT_STOP_LOSS, Number(rule?.budget ?? 1) / 5)).toFixed(2),
     max_cycles: String(rule?.max_cycles ?? 3),
     start_after: String(MARKET_SECONDS - Number(rule?.max_seconds_left ?? MARKET_SECONDS - DEFAULT_START)),
   };
@@ -23,7 +27,7 @@ export function scalpSettings(form) {
       name: "Momentum scalp", enabled: true, coin: "ANY", side: "momentum",
       min_price: "0.05", max_price: "0.95", min_confidence: (Number(form.confidence) / 100).toFixed(2),
       min_edge: null, min_seconds_left: MIN_SECONDS_LEFT, max_seconds_left: MARKET_SECONDS - Number(form.start_after ?? DEFAULT_START),
-      budget: budget.toFixed(2), take_profit: "0.02", stop_loss: Number(form.stop_loss).toFixed(2),
+      budget: budget.toFixed(2), take_profit: Number(form.take_profit ?? 0.02).toFixed(2), stop_loss: Number(form.stop_loss).toFixed(2),
       max_entries: 1, reentry_gap_sec: 60, scalping: true, max_cycles: cycles, cycle_cooldown_sec: 30,
       market_spend_limit: Math.min(25, budget * cycles).toFixed(2),
       market_loss_limit: Number(form.stop_loss).toFixed(2),
@@ -41,9 +45,10 @@ export function validateScalp(form) {
   if (!/^\d+$/.test(form.confidence) || Number(form.confidence) < 50 || Number(form.confidence) > 99) {
     return "Confidence must be a whole percentage from 50 to 99.";
   }
-  for (const key of ["budget", "stop_loss"]) {
+  for (const key of ["budget", "stop_loss", ...(form.take_profit === undefined ? [] : ["take_profit"])]) {
     if (!/^\d+(\.\d{1,2})?$/.test(form[key])) return "Enter money in dollars with at most two decimals.";
   }
+  if (form.take_profit !== undefined && (Number(form.take_profit) <= 0 || Number(form.take_profit) >= Number(form.budget))) return "Profit target must be positive and less than the amount per trade.";
   if (Number(form.budget) <= 0 || Number(form.budget) > 25) return "Amount per trade must be more than $0 and no more than $25.";
   if (Number(form.stop_loss) <= 0 || Number(form.stop_loss) >= Number(form.budget)) return "Stop loss must be positive and less than the amount per trade.";
   const cycles = String(form.max_cycles ?? 3);
@@ -57,6 +62,7 @@ export default function ScalpControls({ form, disabled, onChange }) {
   const fields = [
     ["confidence", "Confidence level (%)", "numeric"],
     ["budget", "Amount per trade ($)", "decimal"],
+    ["take_profit", "Profit target ($)", "decimal"],
     ["stop_loss", "Stop loss amount ($)", "decimal"],
     ["max_cycles", "Trades per 15-minute market", "numeric"],
     ["start_after", "Start trading after (seconds into market)", "numeric"],
@@ -67,7 +73,7 @@ export default function ScalpControls({ form, disabled, onChange }) {
       {label}<input type="text" inputMode={inputMode} value={form[key]} onChange={(event) => onChange({ ...form, [key]: event.target.value })} />
     </label>)}</div>
     <p className="trading-muted">The bot follows UP or DOWN movement. Confidence is the market's win estimate, not a profit guarantee.</p>
-    <p className="trading-muted">Amount includes buy fees. Profit target: $0.02 after fees. Stop loss triggers a sale, but losses can exceed it.</p>
+    <p className="trading-muted">Amount includes buy fees. Profit target and stop loss are net dollars after fees (try $0.03 and $0.05). The bot skips trades whose spread and fees leave under 2 cents of room before the stop loss. A stop loss triggers a sale, but losses can exceed it.</p>
     <details className="trading-decision"><summary>Automatic safety limits</summary>
       <p className="trading-muted">Your trade limit counts buy/sell cycles in each individual 15-minute market, not different coins. Spending is capped at the smaller of $25 or your trade amount times that limit. Wait 30 seconds after a profitable exit; no re-entry after a loss. At most 2 open trades; daily loss budget is 3 times your trade amount, including open trades. Entry prices: 5-95 cents, starting at your chosen second of the market and until 90 seconds are left, and at most a 3-cent spread. Existing markets keep their original caps. Fees, liquidity, and these limits may prevent a trade.</p>
     </details>

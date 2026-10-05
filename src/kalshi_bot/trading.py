@@ -67,13 +67,24 @@ class TradingPolicy:
         return None
 
     def profit_target_reachable(self, ask: Decimal, count: int) -> bool:
-        return (Decimal("0.99") - ask) * count - 2 * fee_reserve(count) >= self.take_profit
+        best_exit = Decimal("0.99")
+        return (best_exit - ask) * count - taker_fee(ask, count) - taker_fee(best_exit, count) >= self.take_profit
 
 
 def taker_fee(price: Decimal, count: int = 1) -> Decimal:
     """Kalshi quadratic taker fee for an order, rounded up to the cent."""
     raw = Decimal("0.07") * count * price * (ONE - price)
     return (raw / CENT).to_integral_value(rounding=ROUND_CEILING) * CENT
+
+
+# A scalp must start with at least this much room between its immediate round-trip
+# cost and the stop loss, otherwise a one-cent wiggle sells it at a loss.
+STOP_HEADROOM = Decimal("0.02")
+
+
+def round_trip_cost(ask: Decimal, bid: Decimal, count: int) -> Decimal:
+    """What buying at `ask` and selling straight back at `bid` costs: spread plus both taker fees."""
+    return (ask - bid) * count + taker_fee(ask, count) + taker_fee(bid, count)
 
 
 MAX_RULES = 10

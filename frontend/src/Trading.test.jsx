@@ -83,7 +83,7 @@ describe("Trading tab", () => {
     await screen.findByRole("group", { name: "Scalping settings" });
     expect(screen.queryByRole("region", { name: "Execution costs" })).toBeNull();
     expect(screen.queryByText(/Last market check:/)).toBeNull();
-    expect(screen.getByText("Amount includes buy fees. Profit target: $0.02 after fees. Stop loss triggers a sale, but losses can exceed it.")).toBeTruthy();
+    expect(screen.getByText(/Profit target and stop loss are net dollars after fees/)).toBeTruthy();
   });
   it("shows structured API validation errors and keeps failed settings unsaved", async () => {
     const user = userEvent.setup(); render(<Trading />);
@@ -122,7 +122,7 @@ describe("Trading tab", () => {
     const user = userEvent.setup(); render(<Trading />);
     await screen.findByRole("group", { name: "Scalping settings" });
     expect(rule().getByLabelText(SPEND).value).toBe("1.00");
-    expect(rule().getAllByRole("textbox")).toHaveLength(5);
+    expect(rule().getAllByRole("textbox")).toHaveLength(6);
     expect(screen.queryByRole("button", { name: "Add a rule" })).toBeNull();
     expect(screen.queryByLabelText("Minimum expected profit (¢)")).toBeNull();
     expect(screen.getByRole("switch").disabled).toBe(true);
@@ -134,7 +134,7 @@ describe("Trading tab", () => {
     expect(saved.mode).toBe("paper");
     expect(saved.rules).toHaveLength(1);
     expect(saved.rules[0]).toMatchObject({ side: "momentum", min_confidence: "0.65", min_edge: null,
-      budget: "1.00", stop_loss: "0.10", take_profit: "0.02", scalping: true });
+      budget: "1.00", stop_loss: "0.10", take_profit: "0.03", scalping: true });
     expect(state.live.settings).toEqual(CURRENT);
     expect(state.live.enabled).toBe(false);
     expect(state.paper.enabled).toBe(false);

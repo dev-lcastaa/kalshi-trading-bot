@@ -41,18 +41,28 @@ execution checks.
   probability of profitable scalping or the settlement model's prediction.
 - **Amount per trade** is a maximum purchase budget including reserved entry
   fees, up to $25. Whole-contract sizing can spend less or buy nothing.
-- **Stop loss** must be positive and smaller than the trade amount. It is a
-  net-loss sell trigger, not a guaranteed maximum loss. Illiquid exits can
-  lose the full purchase cost.
+- **Profit target** (default $0.03) and **Stop loss** (default $0.05) are net
+  dollars after entry fees, spread and the exit fee. Entry fees and exit fees
+  use the real quadratic taker fee at the actual price (about 1 cent each at
+  85 cents or more, 2 cents nearer 50 cents), not a flat 2-cent worst case.
+  A trade is only taken when buying and immediately selling back (spread plus
+  both fees) leaves at least 2 cents of room before the stop loss; otherwise it
+  is skipped with the reason logged. With a 1-cent spread that means a $0.05
+  stop trades at about 83 cents and above, and cheaper entries need a wider
+  stop. The stop is a net-loss sell trigger, not a guaranteed maximum loss;
+  illiquid exits can lose more. A tight stop sells on small dips, so expect more
+  small losses than with a wide stop; the profit target must be reached from
+  roughly 5-6 cents above the quote, so check results in Practice first.
+- **Stop loss** must be positive and smaller than the trade amount.
 - **Trades per 15-minute market** sets 1-10 buy/sell cycles per individual
   ticker (default 3), not a total across coins. The cumulative spending cap
   is the smaller of $25 or the trade amount times this limit. Existing markets
   retain their original caps; changing this setting cannot raise them.
 - **Start trading after** sets how many seconds into each 15-minute market the bot may begin entering (0-810, default 60). Enter 360 to start at the 6-minute mark. It is saved as the rule's `max_seconds_left` (900 minus this value); the bot stops entering when 90 seconds remain.
-- The automatic profit target is **$0.02 net per position**, after paid entry
-  costs and reserved exit fees. The bot checks that the actual sized order has
+- The default profit target is **$0.03 net per position**, after paid entry
+  costs and the exit fee at the quoted price. The bot checks that the actual sized order has
   enough price room for this target, and rejects entries whose spread and
-  reserved round-trip fees already reach the stop loss. This is a target,
+  fees leave under 2 cents of room before the stop loss. This is a target,
   **not a promise of profit**.
 - Automatic limits: 5-95 cent entries from your start time until 90 seconds are left, maximum
   3-cent spread, your configured cycle limit, 30 seconds after a fully closed

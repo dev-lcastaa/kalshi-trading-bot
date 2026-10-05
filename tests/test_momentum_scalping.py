@@ -161,21 +161,21 @@ async def test_momentum_stop_loss_sells_and_never_chases_the_loss(tmp_path, cloc
 
 def test_profit_room_reserves_both_entry_and_exit_fees():
     policy = parse_rules(momentum_rules())[0].policy
-    assert policy.profit_target_reachable(Decimal("0.93"), 1)
-    assert not policy.profit_target_reachable(Decimal("0.94"), 1)
+    assert policy.profit_target_reachable(Decimal("0.95"), 1)
+    assert not policy.profit_target_reachable(Decimal("0.96"), 1)
 
 
 @pytest.mark.asyncio
 async def test_actual_liquidity_size_must_still_have_room_for_profit(tmp_path, clock):
     store, rest, feed, trader = await moving_trader(tmp_path, clock)
     settings = momentum_rules()
-    settings["rules"][0].update(budget="3.00", max_price="0.95")
+    settings["rules"][0].update(budget="3.00", max_price="0.97")
     await trader.control(False, False)
     await trader.save_settings(settings)
     await trader.control(True, True)
-    feed[0].update(yes_bid=0.93, yes_ask=0.94)
+    feed[0].update(yes_bid=0.95, yes_ask=0.96)
     # Three contracts have theoretical room, but only one is actually offered.
-    rest.get_market_orderbook.return_value = book("0.93", "0.06", "1")
+    rest.get_market_orderbook.return_value = book("0.95", "0.04", "1")
     await trader.cycle()
     assert trader.positions() == []
     assert any("Not enough price room" in event["reason"] for event in trader.snapshot()["events"])
