@@ -181,6 +181,21 @@ Test in Practice before using real money. Settlement probability is not a
 prediction of a price rise over the next few seconds; no preset is a proven
 profitable scalping strategy.
 
+### Starting a clean scoreboard
+
+To wipe one mode's placed bets and diary (saved settings are kept), turn the
+bot off, wait for running bets to finish, then run on the machine hosting the
+database. With Docker:
+
+```
+docker compose exec bot python -m kalshi_bot.clear_bets --mode paper
+docker compose cp bot:/app/data/. ./bets-backups   # copy the JSON backup out
+```
+
+Use `--mode live` for real-money (or Kalshi demo) bets. A JSON backup is written
+first (`--backup PATH` to choose where) and the command refuses while bets are
+still running unless `--force` is given. Without Docker, run
+`python -m kalshi_bot.clear_bets --mode paper`.
 ### Practice-first safeguards and validation
 
 Existing saved Practice and Real-money rules remain unchanged until explicitly

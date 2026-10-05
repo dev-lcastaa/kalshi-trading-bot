@@ -14,6 +14,7 @@ import os
 import sqlite3
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -354,6 +355,27 @@ class Store:
             (limit,),
         ).fetchall()
         return [json.loads(row[0]) for row in rows]
+
+    def clear_trading_history(self, mode: str, backup: Callable[[dict], None] | None = None) -> dict[str, int]:
+        """Delete one mode's bets and diary, keeping saved settings. Paper also resets its simulated account."""
+        kinds = (["position:paper", "paper_order", "paper_account"] if mode == "paper"
+                 else ["position:demo", "position:prod"])
+        where, params = f"kind IN ({', '.join('?' for _ in kinds)})", tuple(kinds)
+        with self._lock:
+            records = self._raw_execute(
+                f"SELECT record_key, kind, value_json FROM trading_records WHERE {where}", params).fetchall()
+            events = [(row[0], row[1]) for row in self._raw_execute(
+                "SELECT event_id, event_json FROM trading_events").fetchall()]
+            event_ids = {event_id for event_id, text in events if json.loads(text).get("mode", "live") == mode}
+            if backup is not None:
+                backup({"records": [{"record_key": key, "kind": kind, "value": json.loads(text)}
+                                    for key, kind, text in records],
+                        "events": [json.loads(text) for event_id, text in events if event_id in event_ids]})
+            self._raw_execute(f"DELETE FROM trading_records WHERE {where}", params)
+            for event_id in event_ids:
+                self._raw_execute("DELETE FROM trading_events WHERE event_id = ?", (event_id,))
+            self._conn.commit()
+        return {"records": len(records), "events": len(event_ids)}
 
     def trading_decisions(self, limit: int = 100) -> list[dict]:
         cursor = self._query(
