@@ -1,5 +1,9 @@
 import React from "react";
 
+const MARKET_SECONDS = 900;
+const DEFAULT_START = 60;
+const MIN_SECONDS_LEFT = 90;
+
 export function scalpForm(settings) {
   const rule = settings?.rules?.[0];
   return {
@@ -7,6 +11,7 @@ export function scalpForm(settings) {
     budget: Number(rule?.budget ?? 1).toFixed(2),
     stop_loss: Number(rule?.stop_loss > 0 ? rule.stop_loss : Math.min(0.20, Number(rule?.budget ?? 1) / 5)).toFixed(2),
     max_cycles: String(rule?.max_cycles ?? 3),
+    start_after: String(MARKET_SECONDS - Number(rule?.max_seconds_left ?? MARKET_SECONDS - DEFAULT_START)),
   };
 }
 
@@ -17,7 +22,7 @@ export function scalpSettings(form) {
     rules: [{
       name: "Momentum scalp", enabled: true, coin: "ANY", side: "momentum",
       min_price: "0.05", max_price: "0.95", min_confidence: (Number(form.confidence) / 100).toFixed(2),
-      min_edge: null, min_seconds_left: 90, max_seconds_left: 840,
+      min_edge: null, min_seconds_left: MIN_SECONDS_LEFT, max_seconds_left: MARKET_SECONDS - Number(form.start_after ?? DEFAULT_START),
       budget: budget.toFixed(2), take_profit: "0.02", stop_loss: Number(form.stop_loss).toFixed(2),
       max_entries: 1, reentry_gap_sec: 60, scalping: true, max_cycles: cycles, cycle_cooldown_sec: 30,
       market_spend_limit: Math.min(25, budget * cycles).toFixed(2),
@@ -43,6 +48,8 @@ export function validateScalp(form) {
   if (Number(form.stop_loss) <= 0 || Number(form.stop_loss) >= Number(form.budget)) return "Stop loss must be positive and less than the amount per trade.";
   const cycles = String(form.max_cycles ?? 3);
   if (!/^\d+$/.test(cycles) || Number(cycles) < 1 || Number(cycles) > 10) return "Trades per 15-minute market must be a whole number from 1 to 10.";
+  const startAfter = String(form.start_after ?? DEFAULT_START);
+  if (!/^\d+$/.test(startAfter) || Number(startAfter) > MARKET_SECONDS - MIN_SECONDS_LEFT) return `Start time must be whole seconds into the market, from 0 to ${MARKET_SECONDS - MIN_SECONDS_LEFT} (360 = the 6 minute mark).`;
   return "";
 }
 
@@ -52,6 +59,7 @@ export default function ScalpControls({ form, disabled, onChange }) {
     ["budget", "Amount per trade ($)", "decimal"],
     ["stop_loss", "Stop loss amount ($)", "decimal"],
     ["max_cycles", "Trades per 15-minute market", "numeric"],
+    ["start_after", "Start trading after (seconds into market)", "numeric"],
   ];
   return <fieldset className="trading-rule" disabled={disabled}>
     <legend>Scalping settings</legend>
@@ -61,7 +69,7 @@ export default function ScalpControls({ form, disabled, onChange }) {
     <p className="trading-muted">The bot follows UP or DOWN movement. Confidence is the market's win estimate, not a profit guarantee.</p>
     <p className="trading-muted">Amount includes buy fees. Profit target: $0.02 after fees. Stop loss triggers a sale, but losses can exceed it.</p>
     <details className="trading-decision"><summary>Automatic safety limits</summary>
-      <p className="trading-muted">Your trade limit counts buy/sell cycles in each individual 15-minute market, not different coins. Spending is capped at the smaller of $25 or your trade amount times that limit. Wait 30 seconds after a profitable exit; no re-entry after a loss. At most 2 open trades; daily loss budget is 3 times your trade amount, including open trades. Entry prices: 5-95 cents with 90-840 seconds left and at most a 3-cent spread. Existing markets keep their original caps. Fees, liquidity, and these limits may prevent a trade.</p>
+      <p className="trading-muted">Your trade limit counts buy/sell cycles in each individual 15-minute market, not different coins. Spending is capped at the smaller of $25 or your trade amount times that limit. Wait 30 seconds after a profitable exit; no re-entry after a loss. At most 2 open trades; daily loss budget is 3 times your trade amount, including open trades. Entry prices: 5-95 cents, starting at your chosen second of the market and until 90 seconds are left, and at most a 3-cent spread. Existing markets keep their original caps. Fees, liquidity, and these limits may prevent a trade.</p>
     </details>
   </fieldset>;
 }

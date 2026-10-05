@@ -58,6 +58,16 @@ describe("Trading tab", () => {
     expect(scalpForm(state.paper.settings).max_cycles).toBe("5");
     expect(scalpSettings({ ...scalpForm(state.paper.settings), budget: "10.00" }).rules[0].market_spend_limit).toBe("25.00");
   });
+  it("maps the start-after-seconds setting to the entry window", () => {
+    const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
+    expect(scalpSettings(form).rules[0].max_seconds_left).toBe(840);
+    expect(scalpForm(scalpSettings(form)).start_after).toBe("60");
+    const sixMinutes = scalpSettings({ ...form, start_after: "360" });
+    expect(sixMinutes.rules[0].max_seconds_left).toBe(540);
+    expect(scalpForm(sixMinutes).start_after).toBe("360");
+    for (const value of ["0", "810"]) expect(validateScalp({ ...form, start_after: value })).toBe("");
+    for (const value of ["", "811", "-1", "1.5", "six"]) expect(validateScalp({ ...form, start_after: value })).toContain("whole seconds into the market");
+  });
   it("validates trade counts from 1 to 10 and retains the default for older forms", () => {
     const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
     expect(scalpSettings(form).rules[0].max_cycles).toBe(3);
@@ -112,7 +122,7 @@ describe("Trading tab", () => {
     const user = userEvent.setup(); render(<Trading />);
     await screen.findByRole("group", { name: "Scalping settings" });
     expect(rule().getByLabelText(SPEND).value).toBe("1.00");
-    expect(rule().getAllByRole("textbox")).toHaveLength(4);
+    expect(rule().getAllByRole("textbox")).toHaveLength(5);
     expect(screen.queryByRole("button", { name: "Add a rule" })).toBeNull();
     expect(screen.queryByLabelText("Minimum expected profit (¢)")).toBeNull();
     expect(screen.getByRole("switch").disabled).toBe(true);

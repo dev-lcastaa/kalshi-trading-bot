@@ -48,12 +48,13 @@ execution checks.
   ticker (default 3), not a total across coins. The cumulative spending cap
   is the smaller of $25 or the trade amount times this limit. Existing markets
   retain their original caps; changing this setting cannot raise them.
+- **Start trading after** sets how many seconds into each 15-minute market the bot may begin entering (0-810, default 60). Enter 360 to start at the 6-minute mark. It is saved as the rule's `max_seconds_left` (900 minus this value); the bot stops entering when 90 seconds remain.
 - The automatic profit target is **$0.02 net per position**, after paid entry
   costs and reserved exit fees. The bot checks that the actual sized order has
   enough price room for this target, and rejects entries whose spread and
   reserved round-trip fees already reach the stop loss. This is a target,
   **not a promise of profit**.
-- Automatic limits: 5-95 cent entries with 90-840 seconds left, maximum
+- Automatic limits: 5-95 cent entries from your start time until 90 seconds are left, maximum
   3-cent spread, your configured cycle limit, 30 seconds after a fully closed
   profitable exit, cumulative market spending of `min($25, cycles x trade amount)`,
   and a market-loss trigger equal to the stop-loss amount. No re-entry after

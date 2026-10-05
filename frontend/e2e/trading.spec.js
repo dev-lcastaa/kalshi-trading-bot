@@ -87,7 +87,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await page.setViewportSize(size);
     const api = await mockTrading(page, { populated: false, environment: "prod" });
     await page.goto("/trading");
-    await expect(ruleGroup(page).getByRole("textbox")).toHaveCount(4);
+    await expect(ruleGroup(page).getByRole("textbox")).toHaveCount(5);
     await expect(page.getByRole("button", { name: "Add a rule" })).toHaveCount(0);
     await ruleGroup(page).getByLabel(SPEND).fill("1.50");
     await ruleGroup(page).getByLabel("Trades per 15-minute market").fill("11");
