@@ -8,6 +8,50 @@ import asyncio
 import pytest
 
 
+@pytest.mark.parametrize("mode", ["paper", "live"])
+def test_simple_momentum_settings_save_and_confirmation_schema(tmp_path, mode):
+    store = Store(str(tmp_path / "momentum-api.db"))
+    client = TestClient(create_app(store))
+    settings = {
+        "rules": [{
+            "name": "Momentum scalp", "enabled": True, "coin": "ANY", "side": "momentum",
+            "min_price": "0.05", "max_price": "0.95", "min_confidence": "0.65",
+            "min_edge": None, "min_seconds_left": 90, "max_seconds_left": 840,
+            "budget": "1.00", "take_profit": "0.02", "stop_loss": "0.95",
+            "max_entries": 1, "reentry_gap_sec": 60, "scalping": True,
+            "max_cycles": 3, "cycle_cooldown_sec": 30, "market_spend_limit": "3.00",
+            "market_loss_limit": "0.95",
+        }],
+        "risk": {
+            "daily_loss_limit": "3.00", "max_open_cost": "2.00", "max_open_positions": 2,
+            "min_edge": "0.00", "uncertainty_buffer": "0.00", "max_spread": "0.03",
+            "max_signal_age_ms": 5000, "max_book_age_ms": 2000,
+            "require_reference_agreement": False, "require_fair_value": False,
+        },
+    }
+    other = "live" if mode == "paper" else "paper"
+    before = client.get("/api/trading").json()[other]["settings"]
+    response = client.put("/api/trading/settings", json={"mode": mode, **settings})
+    assert response.status_code == 200, response.text
+    assert response.json()[mode]["settings"] == settings
+    assert response.json()[other]["settings"] == before
+    assert not response.json()[mode]["enabled"]
+    assert client.get("/api/trading").json()[mode]["settings"] == settings
+    response = client.post("/api/trading/control", json={
+        "mode": mode, "enabled": True, "confirm": True, "settings": settings,
+    })
+    # Unconfigured traders cannot execute, but momentum must pass request validation.
+    assert response.status_code == 409, response.text
+    assert "literal_error" not in response.text
+    invalid = {**settings, "rules": [{**settings["rules"][0], "side": "invalid"}]}
+    assert client.put("/api/trading/settings", json={"mode": mode, **invalid}).status_code == 422
+    unsafe = {**settings, "rules": [{**settings["rules"][0], "scalping": False}]}
+    response = client.put("/api/trading/settings", json={"mode": mode, **unsafe})
+    assert response.status_code == 422
+    assert "protected exits" in response.text
+    store.close()
+
+
 def test_dashboard_modes_have_independent_settings_and_controls(tmp_path):
     store = Store(str(tmp_path / "api.db"))
     live = AutoTrader(store, AsyncMock(), execution_allowed=True, account_identity="test-account")

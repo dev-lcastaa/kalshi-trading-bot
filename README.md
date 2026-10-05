@@ -67,6 +67,10 @@ caps. Start in Practice; Real money still requires explicit confirmation.
 Deploy/restart the updated backend and build/deploy the frontend to use this
 strategy. There is no live-profit validation for these thresholds.
 
+The settings and confirmation APIs accept `side: "momentum"` as well as
+legacy sides. Validation failures display the affected field and reason in
+the dashboard; a rejected save leaves the previous saved settings unchanged.
+
 The trading page also shows:
 
 - **Bot status** — a big ON/OFF card with the switch and a plain list of

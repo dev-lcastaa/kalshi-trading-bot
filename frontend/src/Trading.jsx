@@ -24,6 +24,17 @@ const clock = (secs) => { const value = Math.max(0, Math.round(num(secs) || 0));
 const direction = (side) => side === "no" ? "DOWN" : "UP";
 const coinOf = (ticker = "") => /^KX([A-Z]+?)15M/.exec(ticker)?.[1] ?? ticker.split("-")[0];
 const modeName = (mode) => mode === "paper" ? "Practice bot" : "Real-money bot";
+export function tradingErrorMessage(detail, status) {
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.filter((item) => typeof item?.msg === "string").map((item) => {
+      const path = Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(".") : "";
+      return path ? `${path}: ${item.msg}` : item.msg;
+    });
+    if (messages.length) return messages.join("; ");
+  }
+  return `Request failed (${status})`;
+}
 const modeLabel = (mode, environment) => mode === "paper" ? "Practice mode — pretend money, nothing real is spent"
   : environment === "prod" ? "Real-money mode — uses your real Kalshi money" : "Real-money mode — Kalshi demo account (still not real money)";
 
@@ -342,7 +353,7 @@ export default function Trading() {
     requestRef.current = controller;
     const response = await fetch(path, { cache: "no-store", ...options, signal: controller.signal });
     const body = await response.json();
-    if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
+    if (!response.ok) throw new Error(tradingErrorMessage(body.detail, response.status));
     validateData(body);
     if (controller.signal.aborted || !mountedRef.current || (!options.method && version !== dataVersionRef.current)) throw Object.assign(new Error("Aborted"), { name: "AbortError" });
     return body;

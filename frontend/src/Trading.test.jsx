@@ -2,7 +2,7 @@ import React from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import Trading, { friendlyStatus, fromUi, toUi, validateSettings } from "./Trading";
+import Trading, { friendlyStatus, fromUi, toUi, tradingErrorMessage, validateSettings } from "./Trading";
 import { scalpSettings, validateScalp } from "./ScalpControls";
 
 const RULE = { name: "Edge", enabled: true, coin: "ANY", side: "model", min_price: "0.50", max_price: "0.95", min_confidence: "0.50", min_edge: "0.00", min_seconds_left: 330, max_seconds_left: 390, budget: "1.00", take_profit: "0.50", stop_loss: "0.10", max_entries: 1, reentry_gap_sec: 60 };
@@ -39,6 +39,38 @@ const lastWrite = (method) => fetch.mock.calls.filter(([, options]) => options?.
 const goLive = (user) => user.click(screen.getByRole("radio", { name: "Real money" }));
 
 describe("Trading tab", () => {
+  it("shows structured API validation errors and keeps failed settings unsaved", async () => {
+    const user = userEvent.setup(); render(<Trading />);
+    const amount = await screen.findByLabelText(SPEND);
+    await user.clear(amount); await user.type(amount, "1.50");
+    fetch.mockImplementationOnce(async () => ({
+      ok: false, status: 422, json: async () => ({ detail: [{
+        type: "literal_error", loc: ["body", "rules", 0, "side"],
+        msg: "Input should be 'model', 'yes' or 'no'", input: "momentum",
+      }] }),
+    }));
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    expect(await screen.findByText("rules.0.side: Input should be 'model', 'yes' or 'no'")).toBeTruthy();
+    expect(screen.queryByText("[object Object]")).toBeNull();
+    expect(screen.queryByText("Scalping settings saved.")).toBeNull();
+    expect(state.paper.settings).toEqual(CURRENT);
+    expect(screen.getByRole("switch").checked).toBe(false);
+    expect(amount.value).toBe("1.50");
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save settings" }).disabled).toBe(false));
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Scalping settings saved.");
+    expect(state.paper.settings.rules[0].budget).toBe("1.50");
+  });
+  it("formats string and multi-field validation errors without object coercion", () => {
+    expect(tradingErrorMessage("Pause trading before changing settings", 422)).toBe("Pause trading before changing settings");
+    expect(tradingErrorMessage([
+      { loc: ["body", "rules", 0, "side"], msg: "Invalid side" },
+      { loc: ["body", "risk", "max_spread"], msg: "Invalid spread" },
+    ], 422)).toBe("rules.0.side: Invalid side; risk.max_spread: Invalid spread");
+    expect(tradingErrorMessage({ invalid: true }, 500)).toBe("Request failed (500)");
+    expect(tradingErrorMessage([], 422)).toBe("Request failed (422)");
+  });
   it("replaces legacy complexity only after saving, without enabling or touching the other mode", async () => {
     state.paper.settings = structuredClone(SETTINGS);
     const user = userEvent.setup(); render(<Trading />);

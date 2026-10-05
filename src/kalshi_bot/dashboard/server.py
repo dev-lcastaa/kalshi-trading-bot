@@ -21,7 +21,7 @@ class TradingRuleBody(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     enabled: StrictBool = True
     coin: str = Field(default="ANY", min_length=1, max_length=10)
-    side: Literal["model", "yes", "no"] = "model"
+    side: Literal["model", "yes", "no", "momentum"] = "model"
     min_price: str = Field(min_length=1, max_length=24)
     max_price: str = Field(min_length=1, max_length=24)
     min_confidence: str = Field(default="0", max_length=24)
