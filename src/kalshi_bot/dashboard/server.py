@@ -40,9 +40,24 @@ class TradingRuleBody(BaseModel):
     market_loss_limit: str = Field(default="0.50", min_length=1, max_length=24)
 
 
+class TradingRiskBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    daily_loss_limit: str = Field(default="0", max_length=24)
+    max_open_cost: str = Field(default="0", max_length=24)
+    max_open_positions: int = Field(default=0, ge=0, le=100)
+    min_edge: str = Field(default="0", max_length=24)
+    uncertainty_buffer: str = Field(default="0", max_length=24)
+    max_spread: str = Field(default="0", max_length=24)
+    max_signal_age_ms: int = Field(default=10000, ge=100, le=10000)
+    max_book_age_ms: int = Field(default=2000, ge=100, le=10000)
+    require_reference_agreement: StrictBool = False
+    require_fair_value: StrictBool = False
+
+
 class TradingSettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rules: list[TradingRuleBody] = Field(min_length=1, max_length=10)
+    risk: TradingRiskBody | None = None
 
 
 class TradingSettingsUpdateBody(TradingSettingsBody):

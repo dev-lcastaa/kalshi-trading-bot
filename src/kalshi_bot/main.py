@@ -90,12 +90,14 @@ class BotApp:
             account_identity=hashlib.sha256(settings.key_id.encode()).hexdigest() if settings.key_id else "",
             worker_id=worker_id, market_feed=self.market_feed,
             daily_loss_limit=getattr(settings, "daily_loss_limit", Decimal("0")),
+            execution_feed=self.execution_market,
         )
         self.paper_trader = AutoTrader(
             self.store, PaperExchange(self.store, self.rest), defaults=settings.trading_policy,
             environment=settings.env, execution_allowed=True, mode="paper",
             account_identity="paper", worker_id=worker_id, market_feed=self.market_feed,
             daily_loss_limit=getattr(settings, "daily_loss_limit", Decimal("0")),
+            execution_feed=self.execution_market,
         )
         self.live_market: dict[str, dict] = {}
         self.market_recalibrator = MarketRecalibrator(
@@ -187,6 +189,60 @@ class BotApp:
     def market_feed(self) -> list[dict]:
         """Latest live read per active market, consumed by the rule-based auto-traders."""
         return [row for ticker, row in list(self.live_market.items()) if ticker in self.markets]
+
+    def execution_market(
+        self, ticker: str, bid: Decimal, ask: Decimal, bid_size: Decimal, ask_size: Decimal, now_ms: int,
+    ) -> dict | None:
+        """Reprice the current model without changing the saved decision or live quotes."""
+        state = self.markets.get(ticker)
+        if state is None:
+            return None
+        ticks = list(self.index_ticks.get(state.index_id, []))
+        if len(ticks) < 2:
+            return None
+        features = build_features(
+            ticks, strike=state.strike, seconds_to_expiry=(state.close_ts_ms - now_ms) / 1000,
+            yes_bid_size=float(bid_size), yes_ask_size=float(ask_size),
+            close_ts_ms=state.close_ts_ms,
+        )
+        features = self._enrich_features(features, ticker, state.index_id, now_ms)
+        # Executable quotes and entry depth were just checked directly by AutoTrader.
+        flags = [flag for flag in self._quality_flags(state, features, ticks, now_ms)
+                 if flag not in ("stale_quote", "missing_quote", "invalid_quote", "insufficient_quote_size")]
+        signal, model = self.priced_signal(ticker, state, features, now_ms, float(bid), float(ask))
+        return {
+            "ticker": ticker, "index_id": state.index_id, "ts_ms": now_ms,
+            "close_ts_ms": state.close_ts_ms, "model_p_yes": signal.model_p_yes,
+            "market_p_yes": signal.market_p_yes, "model": model,
+            "yes_bid": float(bid), "yes_ask": float(ask), "quality_flags": flags,
+            "index_price": features.index_price, "strike": state.strike,
+        }
+
+    def priced_signal(
+        self, ticker: str, state: MarketState, features: Features, now_ms: int, bid: float, ask: float,
+    ) -> tuple[Signal, str]:
+        use_recal = self._uses_market_recal()
+        fair_p = None
+        if self._uses_fair_value():
+            fair_p = fair_value_from_ticks(
+                getattr(self, "index_history", {}).get(state.index_id, []), state.strike, state.close_ts_ms,
+                now_ms, (bid + ask) / 2, state.index_id,
+            )
+        signal = generate_signal(
+            ticker=ticker, index_id=state.index_id, features=features, predictor=self.predictor,
+            yes_bid_dollars=bid, yes_ask_dollars=ask,
+            edge_threshold=(getattr(self.settings, "market_recal_edge_threshold", 0.0)
+                            if use_recal and self.market_recalibrator.is_fitted else self.settings.edge_threshold),
+            fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
+            slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
+            market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
+            calibrator=self._calibrator(state.index_id),
+            market_recalibrator=self.market_recalibrator if use_recal else None, fair_value_p=fair_p,
+            ts_ms=now_ms,
+        )
+        model = ("fair-value" if fair_p is not None else "market-recal"
+                 if use_recal and self.market_recalibrator.is_fitted else "legacy")
+        return signal, model
 
     def _index_for_ticker(self, ticker: str) -> str | None:
         for coin, index_id in self.coin_to_index.items():
@@ -542,10 +598,10 @@ class BotApp:
         if len(ticks) < min_history_ticks or features.history_span_sec < min_history_sec:
             flags.append("short_index_history")
         index_tick_age_ms = now_ms - ticks[-1][0] if ticks else None
-        if index_tick_age_ms is None or index_tick_age_ms > max_input_age_ms:
+        if index_tick_age_ms is None or not 0 <= index_tick_age_ms <= max_input_age_ms:
             flags.append("stale_index_tick")
         quote_age_ms = now_ms - state.quote_ts_ms if state.quote_ts_ms is not None else None
-        if quote_age_ms is None or quote_age_ms > max_input_age_ms:
+        if quote_age_ms is None or not 0 <= quote_age_ms <= max_input_age_ms:
             flags.append("stale_quote")
         if state.yes_bid_dollars is None or state.yes_ask_dollars is None:
             flags.append("missing_quote")
@@ -662,26 +718,8 @@ class BotApp:
                         "Decision window reached for %s with degraded inputs; locking NO_EDGE: %s",
                         ticker, ", ".join(quality_flags),
                     )
-                use_recal = self._uses_market_recal()
-                fair_p = self._fair_value(state, now_ms)
-                signal = generate_signal(
-                    ticker=ticker,
-                    index_id=state.index_id,
-                    features=features,
-                    predictor=self.predictor,
-                    yes_bid_dollars=state.yes_bid_dollars,
-                    yes_ask_dollars=state.yes_ask_dollars,
-                    edge_threshold=(
-                        getattr(self.settings, "market_recal_edge_threshold", 0.0)
-                        if use_recal and self.market_recalibrator.is_fitted
-                        else self.settings.edge_threshold
-                    ),
-                    fee_multiplier=getattr(self.settings, "fee_multiplier", 1.0),
-                    slippage_per_contract=getattr(self.settings, "slippage_per_contract", 0.0),
-                    market_blend_weight=getattr(self.settings, "market_blend_weight", 0.0),
-                    calibrator=self._calibrator(state.index_id),
-                    market_recalibrator=self.market_recalibrator if use_recal else None,
-                    fair_value_p=fair_p,
+                signal, model = self.priced_signal(
+                    ticker, state, features, now_ms, state.yes_bid_dollars, state.yes_ask_dollars,
                 )
                 self.store.insert_signal(signal)
                 self.live_market[ticker] = {
@@ -690,7 +728,8 @@ class BotApp:
                     "ts_ms": signal.ts_ms,
                     "close_ts_ms": state.close_ts_ms,
                     "model_p_yes": signal.model_p_yes,
-                    "model": "fair-value" if fair_p is not None else "market-recal",
+                    "model": model,
+                    "index_price": features.index_price, "strike": state.strike,
                     "market_p_yes": signal.market_p_yes,
                     "yes_bid": state.yes_bid_dollars,
                     "yes_ask": state.yes_ask_dollars,

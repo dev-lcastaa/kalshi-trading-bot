@@ -275,7 +275,7 @@ async def test_zero_fill_cycle_is_not_scored_and_cannot_retry_as_a_new_cycle(tmp
     rest = entry_rest()
     feed = [live_market("KXBTC15M-SCALP", 0.8, 0.49, 0.50, seconds_left=800)]
     trader = await enabled(paper_trader(store, rest, feed), scalp_rules())
-    rest.get_market_orderbook.side_effect = [book("0.49", "0.50"), book("0.49", "0.50"), book("0.79", "0.20")]
+    rest.get_market_orderbook.side_effect = [book("0.49", "0.50"), book("0.79", "0.20")]
     await trader.cycle()
     assert trader.positions()[0]["status"] == "skipped"
     assert trader.snapshot()["summary"]["finished"] == 0

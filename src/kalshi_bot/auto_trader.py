@@ -13,15 +13,15 @@ from uuid import uuid4
 import httpx
 
 from .data.store import Store
+from .risk import RiskLimits
 from .trading import (
     CENT, ONE, EntryRule, ScalpPolicy, TradingPolicy, default_rules, dollars, fee_reserve, parse_rules, rules_json,
     taker_fee,
 )
 
 MarketFeed = Callable[[], list[dict]]
+ExecutionFeed = Callable[[str, Decimal, Decimal, Decimal, Decimal, int], dict | None]
 logger = logging.getLogger(__name__)
-# A live read older than this is not acted on.
-_MAX_FEED_AGE_MS = 10_000
 # After a transient entry failure (price moved, thin book) wait before re-checking the market.
 _RETRY_AFTER_MS = 6_000
 
@@ -133,6 +133,7 @@ class AutoTrader:
         environment: str = "demo", execution_allowed: bool = False, mode: str = "live",
         account_identity: str = "", worker_id: str | None = None, market_feed: MarketFeed | None = None,
         daily_loss_limit: Decimal = Decimal("0"),
+        execution_feed: ExecutionFeed | None = None,
     ):
         if mode not in ("live", "paper"):
             raise ValueError("mode must be 'live' or 'paper'")
@@ -145,6 +146,7 @@ class AutoTrader:
         self.worker_id = worker_id or str(uuid4())
         self.market_feed = market_feed
         self.daily_loss_limit = daily_loss_limit
+        self.execution_feed = execution_feed
         self.worker_claimed = False
         self.control_revision = 0
         self.enabled = False
@@ -175,6 +177,39 @@ class AutoTrader:
     def rules(self) -> list[EntryRule]:
         return parse_rules(self.store.trading_record(self.settings_key))
 
+    def risk_limits(self) -> RiskLimits:
+        return RiskLimits.parse((self.store.trading_record(self.settings_key) or {}).get("risk"))
+
+    def settings(self) -> dict:
+        settings = rules_json(self.rules())
+        risk = self.risk_limits()
+        if risk != RiskLimits():
+            settings["risk"] = risk.to_json()
+        return settings
+
+    def open_cost(self) -> Decimal:
+        return sum((max(dollars(p["entry_cost"]) - dollars(p.get("exit_credit", "0")), Decimal("0"))
+                    for p in self.positions() if p["status"] in ("pending", "open")), Decimal("0"))
+
+    def risk_blockers(self) -> list[str]:
+        risk = self.risk_limits()
+        blockers = []
+        limits = [value for value in (risk.daily_loss_limit, self.daily_loss_limit) if value > 0]
+        if limits and max(-self.today_pnl(), Decimal("0")) + self.open_cost() >= min(limits):
+            blockers.append("Daily loss budget exhausted or reserved by open positions")
+        if risk.max_open_cost > 0 and self.open_cost() >= risk.max_open_cost:
+            blockers.append("Maximum open-position cost reached")
+        if risk.max_open_positions and sum(p["status"] in ("pending", "open") for p in self.positions()) >= risk.max_open_positions:
+            blockers.append("Maximum simultaneous positions reached")
+        return blockers
+
+    def entry_risk_reason(self, confidence: Decimal, ask: Decimal, bid: Decimal) -> str | None:
+        risk = self.risk_limits()
+        reason = risk.quote_reason(confidence, ask, bid)
+        if reason is None and risk.affordable_count(1, ask, self.open_cost(), self.today_pnl(), self.daily_loss_limit) == 0:
+            reason = "Risk limit: remaining exposure or daily loss budget buys no whole contract"
+        return reason
+
     def positions(self) -> list[dict]:
         return sorted(self.store.trading_records(self.position_kind),
                       key=lambda p: (int(p.get("opened_ms") or 0), int(p.get("cycle_number") or 1)))
@@ -191,6 +226,7 @@ class AutoTrader:
 
     def blockers(self) -> list[str]:
         blockers = []
+        blockers.extend(self.risk_blockers())
         if self.daily_loss_limit > 0 and self.today_pnl() <= -self.daily_loss_limit:
             blockers.append(f"Daily loss limit of ${self.daily_loss_limit} reached; new bets resume tomorrow (UTC)")
         if not self.execution_allowed or self.rest is None:
@@ -215,9 +251,25 @@ class AutoTrader:
                   and dollars(p.get("entry_cost", "0")) > 0]
         running = [p for p in positions if p["status"] in ("pending", "open")]
         closed = [p for p in positions if p["status"] == "closed"]
+        execution = [entry for p in positions for entry in p.get("execution_history", [])]
+        bought = [entry for entry in execution if entry["action"] == "buy" and dollars(entry["filled"]) > 0]
+        bought_quantity = sum((dollars(entry["filled"]) for entry in bought), Decimal("0"))
+        measured_settlements = []
+        for position in scored:
+            history = position.get("execution_history", [])
+            buys = [entry for entry in history if entry["action"] == "buy" and dollars(entry["filled"]) > 0]
+            if (position.get("closed_by") != "settled" or not buys
+                    or any(entry["action"] == "sell" for entry in history)
+                    or any(not entry.get("quote") or entry["quote"].get("confidence") is None for entry in buys)):
+                continue
+            if sum((dollars(entry["gross"]) + dollars(entry["fees"]) for entry in buys), Decimal("0")) != dollars(position["entry_cost"]):
+                continue
+            expected = sum((dollars(entry["quote"]["confidence"]) * dollars(entry["filled"])
+                            - dollars(entry["gross"]) - dollars(entry["fees"]) for entry in buys), Decimal("0"))
+            measured_settlements.append((expected, dollars(position["net_pnl"])))
         return {
             "mode": self.mode,
-            "settings": rules_json(self.rules()), "enabled": self.enabled,
+            "settings": self.settings(), "enabled": self.enabled,
             "environment": self.environment,
             "blockers": self.blockers(), "last_cycle_ms": self.last_cycle_ms, "error": self.error,
             "positions": [*closed[-100:], *running], "events": events,
@@ -226,18 +278,36 @@ class AutoTrader:
                 "wins": sum(dollars(p["net_pnl"]) > 0 for p in scored),
                 "net_pnl": str(sum((dollars(p["net_pnl"]) for p in scored), Decimal("0"))),
             },
+            "risk_state": {"open_cost": str(self.open_cost()), "today_pnl": str(self.today_pnl())},
+            "execution": {
+                "orders": len(execution),
+                "filled_orders": sum(dollars(entry["filled"]) > 0 for entry in execution),
+                "entry_fees": str(sum((dollars(entry["fees"]) for entry in bought), Decimal("0"))),
+                "entry_cost_above_mid": str(sum((dollars(entry["cost_above_mid"]) for entry in bought
+                                               if entry.get("cost_above_mid") is not None), Decimal("0"))),
+                "bought_quantity": str(bought_quantity),
+                "settlement_comparison": {
+                    "measured_bets": len(measured_settlements),
+                    "predicted_net": str(sum((expected for expected, _ in measured_settlements), Decimal("0"))),
+                    "realized_net": str(sum((actual for _, actual in measured_settlements), Decimal("0"))),
+                },
+            },
             "decisions": self.store.trading_decisions(),
             "watch": self.watch,
         }
 
     async def save_settings(self, values: dict) -> dict:
         rules = parse_rules(values)
+        risk = RiskLimits.parse(values.get("risk")) if values.get("risk") is not None else self.risk_limits()
+        settings = rules_json(rules)
+        if risk != RiskLimits():
+            settings["risk"] = risk.to_json()
         async with self.lock:
             if self.enabled:
                 raise ValueError("Pause trading before changing settings")
-            self.store.save_trading_record(self.settings_key, "settings", rules_json(rules))
+            self.store.save_trading_record(self.settings_key, "settings", settings)
             self.store.record_trading_event("settings_saved", f"{len(rules)} trading rule(s) saved",
-                                            settings=rules_json(rules), mode=self.mode)
+                                            settings=settings, mode=self.mode)
             return self.snapshot()
 
     async def control(self, enabled: bool, confirm: bool, expected_settings: dict | None = None) -> dict:
@@ -255,6 +325,8 @@ class AutoTrader:
                 raise ValueError("Confirm the saved settings and trading risk before enabling")
             if expected_settings is not None and parse_rules(expected_settings) != self.rules():
                 raise ValueError("Saved settings changed; review and confirm again")
+            if expected_settings is not None and RiskLimits.parse(expected_settings.get("risk")) != self.risk_limits():
+                raise ValueError("Saved risk limits changed; review and confirm again")
             if not any(rule.enabled for rule in self.rules()):
                 raise ValueError("Enable at least one rule before starting auto trading")
             blockers = self.blockers()
@@ -264,7 +336,7 @@ class AutoTrader:
             self.enabled = True
             self.store.record_trading_event(
                 "enabled", "Auto trading enabled; entering every market that matches a rule",
-                environment=self.environment, settings=rules_json(self.rules()), mode=self.mode,
+                environment=self.environment, settings=self.settings(), mode=self.mode,
             )
             return self.snapshot()
 
@@ -331,11 +403,41 @@ class AutoTrader:
 
     async def levels(self, ticker: str, side: str) -> list[tuple[Decimal, Decimal]]:
         data = await self.rest.get_market_orderbook(ticker)
-        book = data["orderbook_fp"]
+        return self.book_levels(data["orderbook_fp"], side)
+
+    @staticmethod
+    def book_levels(book: dict, side: str) -> list[tuple[Decimal, Decimal]]:
         levels = [(dollars(price), dollars(count)) for price, count in book[f"{side}_dollars"]]
         if any(not Decimal("0") < price < ONE or count < 0 for price, count in levels):
             raise ValueError("Invalid order book")
         return sorted((level for level in levels if level[1] > 0), reverse=True)
+
+    def reference_reason(self, market: dict, now_ms: int) -> str | None:
+        if self.risk_limits().require_fair_value and market.get("model") != "fair-value":
+            return "Risk limit: fair-value model unavailable; fallback entries are disabled"
+        if not self.risk_limits().require_reference_agreement:
+            return None
+        if market.get("index_price") is None or market.get("strike") is None:
+            return "Reference guard: settlement index or strike is missing"
+        index_price, strike = dollars(market["index_price"]), dollars(market["strike"])
+        if index_price <= 0 or strike <= 0 or index_price == strike:
+            return "Reference guard: index direction is undefined"
+        latest: dict[str, dict] = {}
+        for tick in self.store.recent_external_ticks(now_ms - 5_000):
+            if tick["index_id"] != market.get("index_id"):
+                continue
+            if not 0 <= now_ms - tick["ts_ms"] <= 5_000 or not 0 <= now_ms - tick["received_at_ms"] <= 5_000:
+                continue
+            source = tick["source"]
+            if source not in latest or tick["ts_ms"] > latest[source]["ts_ms"]:
+                latest[source] = tick
+        if not {"coinbase", "kraken"} <= latest.keys():
+            return "Reference guard: fresh Coinbase and Kraken prices are required"
+        for source in ("coinbase", "kraken"):
+            price = dollars(latest[source]["price"])
+            if price <= 0 or price == strike or (price > strike) != (index_price > strike):
+                return f"Reference guard: {source} disagrees with the settlement index"
+        return None
 
     async def account_quantity(self, ticker: str) -> Decimal:
         data = await self.rest.get_positions(ticker)
@@ -349,9 +451,10 @@ class AutoTrader:
         Returns candidates (market + first matching rule) whose quoted price
         satisfies a rule. Runs even while paused so the user can preview matches.
         """
-        now_ms = int(time.time() * 1000)
         feed = self.market_feed() if self.market_feed is not None else []
+        now_ms = int(time.time() * 1000)
         rules = [rule for rule in self.rules() if rule.enabled]
+        risk = self.risk_limits()
         all_positions = self.positions()
         positions = {position["ticker"]: position for position in all_positions if position["status"] in ("pending", "open")}
         busy_series = {series_of(p["ticker"]) for p in all_positions if p["status"] in ("pending", "open")}
@@ -388,11 +491,16 @@ class AutoTrader:
             if existing is not None and existing["status"] != "open":
                 row["status"] = f"Bot position {existing['status']}"
                 continue
-            if now_ms - int(market.get("ts_ms") or 0) > _MAX_FEED_AGE_MS:
+            if not 0 <= now_ms - int(market.get("ts_ms") or 0) <= risk.max_signal_age_ms:
                 row["status"] = "Live read is stale"
                 continue
             if market.get("quality_flags"):
                 row["status"] = "Degraded inputs: " + ", ".join(market["quality_flags"])
+                continue
+            risk_reasons = self.risk_blockers()
+            reference_reason = self.reference_reason(market, now_ms)
+            if risk_reasons or reference_reason:
+                row["status"] = "; ".join(risk_reasons) or reference_reason
                 continue
             if not rules:
                 row["status"] = "No enabled rules"
@@ -406,6 +514,9 @@ class AutoTrader:
                 side = existing["side"]
                 ask = yes_ask if side == "yes" else ONE - yes_bid
                 reason = rule.check(ticker, seconds_left, model_p_yes, side, ask)
+                if reason is None:
+                    confidence = model_p_yes if side == "yes" else ONE - model_p_yes
+                    reason = self.entry_risk_reason(confidence, ask, yes_bid if side == "yes" else ONE - yes_ask)
                 if reason:
                     row["status"] = f"Bot position open ({entries_of(existing)}/{rule.max_entries} buys) - {reason}"
                     continue
@@ -423,6 +534,9 @@ class AutoTrader:
                 side = rule.pick_side(model_p_yes, yes_ask, ONE - yes_bid)
                 ask = yes_ask if side == "yes" else ONE - yes_bid
                 reason = rule.check(ticker, seconds_left, model_p_yes, side, ask)
+                if reason is None:
+                    confidence = model_p_yes if side == "yes" else ONE - model_p_yes
+                    reason = self.entry_risk_reason(confidence, ask, yes_bid if side == "yes" else ONE - yes_ask)
                 if reason is None and rule.scalp:
                     spent, _, _ = market_totals(history)
                     available = scalp_limits(rule, history).market_spend_limit - spent
@@ -490,9 +604,16 @@ class AutoTrader:
                 continue
             if not adding and series_of(ticker) in busy_series:
                 continue
-            if not self.enabled or (market.get("close_ts_ms") or 0) <= now_ms:
+            if not self.enabled:
                 return
+            if (market.get("close_ts_ms") or 0) <= now_ms:
+                self.skip(ticker, "Entry skipped - market expired during execution checks")
+                continue
             policy = rule.policy
+            risk = self.risk_limits()
+            if self.risk_blockers():
+                self.skip(ticker, "; ".join(self.risk_blockers()))
+                continue
             if adding:
                 position = current.get(ticker)
                 if position is None or position["side"] != side or can_add_to(position, rule, now_ms):
@@ -532,7 +653,10 @@ class AutoTrader:
                 self.skip(ticker, "Existing or incompletely checked account orders in this market")
                 continue
             opposite = "no" if side == "yes" else "yes"
-            asks = await self.levels(ticker, opposite)
+            book_started_ms = int(time.time() * 1000)
+            book = (await self.rest.get_market_orderbook(ticker))["orderbook_fp"]
+            asks = self.book_levels(book, opposite)
+            bids = self.book_levels(book, side)
             if not asks:
                 self.skip(ticker, f"Rule '{rule.name}' matched but there is no {side.upper()} liquidity")
                 continue
@@ -543,6 +667,7 @@ class AutoTrader:
                 self.skip(ticker, f"Rule '{rule.name}' no longer matches at the live price: {reason}")
                 continue
             count = min(policy.entry_count(ask), int(asks[0][1]))
+            count = risk.affordable_count(count, ask, self.open_cost(), self.today_pnl(), self.daily_loss_limit)
             if rule.scalp:
                 spent, _, _ = market_totals(self.market_history(ticker))
                 available_budget = scalp_limits(rule, self.market_history(ticker)).market_spend_limit - spent
@@ -550,14 +675,15 @@ class AutoTrader:
                     count -= 1
             if count == 0:
                 reason = "Not enough contracts offered at the best price"
-                if rule.scalp:
+                if risk.affordable_count(1, ask, self.open_cost(), self.today_pnl(), self.daily_loss_limit) == 0:
+                    reason = "Risk limit: remaining exposure or daily loss budget buys no whole contract"
+                elif rule.scalp:
                     reason = "Scalping spending limit leaves no budget for a whole contract and fees"
                 elif policy.entry_count(ask) == 0:
                     reason = f"Bet ${policy.budget} buys no whole {side.upper()} contract at {ask}"
                 self.skip(ticker, reason)
                 continue
             if policy.has_exits:
-                bids = await self.levels(ticker, side)
                 if not bids or bids[0][1] < count:
                     self.skip(ticker, "Insufficient sell liquidity for the take-profit/stop-loss exits")
                     continue
@@ -566,34 +692,73 @@ class AutoTrader:
                     continue
             if not self.enabled:
                 return
+            # Recompute with current index data and these executable quotes when available.
+            now_ms = int(time.time() * 1000)
+            yes_bids = bids if side == "yes" else asks
+            no_bids = asks if side == "yes" else bids
+            yes_bid = yes_bids[0][0] if yes_bids else Decimal("0")
+            yes_ask = ONE - no_bids[0][0] if no_bids else ONE
+            if not 0 <= now_ms - book_started_ms <= risk.max_book_age_ms:
+                self.skip(ticker, "Entry skipped - order book request exceeded the freshness limit")
+                continue
+            if yes_bid > yes_ask:
+                self.skip(ticker, "Entry skipped - order book is crossed")
+                continue
+            if self.execution_feed:
+                fresh = self.execution_feed(
+                    ticker, yes_bid, yes_ask, yes_bids[0][1] if yes_bids else Decimal("0"),
+                    no_bids[0][1] if no_bids else Decimal("0"), now_ms,
+                )
+            elif self.market_feed:
+                fresh = next((row for row in self.market_feed() if row["ticker"] == ticker), None)
+            else:
+                fresh = market
+            now_ms = int(time.time() * 1000)
+            if not 0 <= now_ms - book_started_ms <= risk.max_book_age_ms:
+                self.skip(ticker, "Entry skipped - prediction recomputation exceeded book freshness")
+                continue
+            if fresh is None or not 0 <= now_ms - int(fresh.get("ts_ms") or 0) <= risk.max_signal_age_ms or fresh.get("quality_flags"):
+                self.skip(ticker, "Entry skipped - live prediction is stale, missing, or degraded")
+                continue
+            fresh_p = dollars(fresh["model_p_yes"])
+            if not Decimal("0") <= fresh_p <= ONE:
+                raise ValueError("Invalid live model probability")
+            fresh_side = rule.pick_side(fresh_p, yes_ask, ONE - yes_bid)
+            seconds_left = (fresh["close_ts_ms"] - now_ms) / 1000
+            reason = rule.check(ticker, seconds_left, fresh_p, side, ask)
+            confidence = fresh_p if side == "yes" else ONE - fresh_p
+            reason = reason or risk.quote_reason(confidence, ask, bids[0][0] if bids else None)
+            reason = reason or self.reference_reason(fresh, now_ms)
+            if reason or (not adding and fresh_side != side):
+                self.skip(ticker, f"Entry changed - {reason or 'the preferred entry side changed'}")
+                continue
+            if self.blockers():
+                self.skip(ticker, "; ".join(self.blockers()))
+                continue
             if rule.scalp:
-                # Account/book awaits can outlive a signal; never use the captured candidate blindly.
-                fresh = next((row for row in (self.market_feed() if self.market_feed else [])
-                              if row["ticker"] == ticker), None)
-                now_ms = int(time.time() * 1000)
                 blocked = can_start_cycle(self.market_history(ticker), rule, now_ms)
-                if blocked or self.blockers():
-                    self.skip(ticker, blocked or "; ".join(self.blockers()))
+                if blocked:
+                    self.skip(ticker, blocked)
                     continue
-                if fresh is None or now_ms - int(fresh.get("ts_ms") or 0) > _MAX_FEED_AGE_MS or fresh.get("quality_flags"):
-                    self.skip(ticker, "Scalping entry skipped - live prediction is stale, missing, or degraded")
-                    continue
-                fresh_p = dollars(fresh["model_p_yes"])
-                if not Decimal("0") <= fresh_p <= ONE:
-                    raise ValueError("Invalid live model probability")
-                fresh_side = rule.pick_side(fresh_p, dollars(fresh["yes_ask"]), ONE - dollars(fresh["yes_bid"]))
-                seconds_left = (fresh["close_ts_ms"] - now_ms) / 1000
-                reason = rule.check(ticker, seconds_left, fresh_p, side, ask)
-                if reason or fresh_side != side:
-                    self.skip(ticker, f"Scalping entry changed - {reason or 'the preferred entry side changed'}")
-                    continue
-                candidate["model_p_yes"] = fresh_p
-                position["entry_signal"] = {
-                    "ts_ms": fresh["ts_ms"], "model_p_yes": str(fresh_p),
-                    "confidence": str(fresh_p if side == "yes" else ONE - fresh_p),
-                    "price": str(ask),
-                }
-            confidence = candidate["model_p_yes"] if side == "yes" else ONE - candidate["model_p_yes"]
+            now_ms = int(time.time() * 1000)
+            if not 0 <= now_ms - book_started_ms <= risk.max_book_age_ms:
+                self.skip(ticker, "Entry skipped - final safeguards exceeded book freshness")
+                continue
+            reason = rule.check(ticker, (fresh["close_ts_ms"] - now_ms) / 1000, fresh_p, side, ask)
+            if reason:
+                self.skip(ticker, f"Entry changed before submission - {reason}")
+                continue
+            position["entry_signal"] = {
+                "ts_ms": fresh["ts_ms"], "model_p_yes": str(fresh_p),
+                "confidence": str(confidence), "price": str(ask),
+            }
+            position["execution_quote"] = {
+                "signal_ts_ms": fresh["ts_ms"], "book_started_ms": book_started_ms,
+                "decision_ms": now_ms, "ask": str(ask),
+                "mid": str((yes_bid + yes_ask) / 2 if side == "yes" else ONE - (yes_bid + yes_ask) / 2),
+                "best_size": str(asks[0][1]), "expected_edge": str(confidence - ask - taker_fee(ask)),
+                "confidence": str(confidence), "model": fresh.get("model"),
+            }
             label = f" (buy {entries_of(position) + 1}/{rule.max_entries})" if rule.max_entries > 1 else ""
             if rule.scalp:
                 label = f" (scalp cycle {position['cycle_number']}/{position['scalp']['max_cycles']})"
@@ -609,6 +774,9 @@ class AutoTrader:
         client_id = str(uuid4())
         payload = order_payload(position["ticker"], position["side"], action, quantity, price, client_id)
         position["pending"] = {"client_order_id": client_id, "action": action, "quantity": str(quantity), "reason": reason}
+        position["pending"]["submitted_ms"] = int(time.time() * 1000)
+        if action == "buy" and position.get("execution_quote"):
+            position["pending"]["execution_quote"] = dict(position["execution_quote"])
         if action == "buy":
             # An add-on buy keeps what is already held; reconcile adds the new fill on top.
             position["pending"]["base_quantity"] = position.get("quantity", "0")
@@ -701,6 +869,16 @@ class AutoTrader:
                 raise ValueError("Exit exceeded bot position")
             position["quantity"] = str(remaining)
             position["exit_credit"] = str(dollars(position["exit_credit"]) + gross - fees)
+        quote = pending.get("execution_quote")
+        position.setdefault("execution_history", []).append({
+            "order_id": order_id, "client_order_id": pending["client_order_id"],
+            "action": pending["action"], "requested": pending["quantity"],
+            "filled": str(filled), "gross": str(gross), "fees": str(fees),
+            "average_price": str(gross / filled) if filled else None,
+            "cost_above_mid": str(gross + fees - dollars(quote["mid"]) * filled) if quote else None,
+            "submitted_ms": pending.get("submitted_ms"), "reconciled_ms": int(time.time() * 1000),
+            "quote": quote,
+        })
         position["pending"] = None
         position["status"] = "open" if dollars(position["quantity"]) > 0 else "closed"
         if position.get("scalp") and pending["action"] == "buy" and filled == 0 and not pending.get("was_open"):

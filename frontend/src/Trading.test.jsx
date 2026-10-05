@@ -27,7 +27,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockImplementation(async (url, options) => {
     if (fail) return { ok: false, json: async () => ({ detail: "Control rejected" }) };
     if (malformed) return { ok: true, json: async () => ({ live: structuredClone(state.live) }) };
-    if (options?.method === "PUT") { const body = JSON.parse(options.body); state[body.mode].settings = { rules: body.rules }; }
+    if (options?.method === "PUT") { const body = JSON.parse(options.body); state[body.mode].settings = { rules: body.rules, ...(body.risk ? { risk: body.risk } : {}) }; }
     if (options?.method === "POST") { const body = JSON.parse(options.body); state[body.mode].enabled = body.enabled; }
     return { ok: true, json: async () => structuredClone(state) };
   });
@@ -37,6 +37,43 @@ const lastWrite = (method) => fetch.mock.calls.filter(([, options]) => options?.
 const goLive = (user) => user.click(screen.getByRole("radio", { name: "Real money" }));
 
 describe("Trading tab", () => {
+  it("loads a conservative unsaved practice preset without touching real-money settings or enabling trading", async () => {
+    const user = userEvent.setup(); render(<Trading />);
+    await screen.findByRole("group", { name: "Rule 1" });
+    await user.click(screen.getByRole("button", { name: "Load conservative practice preset" }));
+    expect(rule().getByLabelText(SPEND).value).toBe("1.00");
+    expect(screen.getByLabelText("Probability uncertainty buffer (cents)").value).toBe("2");
+    expect(screen.getByLabelText("Require fair-value model; skip fallback predictions").checked).toBe(true);
+    expect(lastWrite("PUT")).toBeUndefined();
+    expect(lastWrite("POST")).toBeUndefined();
+    await user.click(screen.getByRole("button", { name: "Save rules" }));
+    await screen.findByText("Rules saved.");
+    const saved = JSON.parse(lastWrite("PUT")[1].body);
+    expect(saved.mode).toBe("paper");
+    expect(saved.rules).toHaveLength(1);
+    expect(saved.rules[0]).toMatchObject({ min_price: "0.60", max_price: "0.95", max_entries: 1,
+      min_seconds_left: 240, max_seconds_left: 660, take_profit: "0.00", stop_loss: "0.00" });
+    expect(saved.risk).toMatchObject({ daily_loss_limit: "5.00", max_open_cost: "2.00",
+      max_open_positions: 2, uncertainty_buffer: "0.02", min_edge: "0.03", require_fair_value: true });
+    expect(fromUi(toUi(state.paper.settings))).toEqual(state.paper.settings);
+    expect(state.live.settings).toEqual(SETTINGS);
+    expect(state.live.enabled).toBe(false);
+    expect(state.paper.enabled).toBe(false);
+    await goLive(user);
+    expect(screen.queryByRole("button", { name: "Load conservative practice preset" })).toBeNull();
+  });
+  it("validates risk controls and treats risk-only changes as unsaved", async () => {
+    const user = userEvent.setup(); render(<Trading />);
+    const field = await screen.findByLabelText("Maximum money at risk across open bets ($)");
+    await user.clear(field); await user.type(field, "2.00");
+    expect(screen.getByRole("button", { name: "Save rules" }).disabled).toBe(false);
+    const form = toUi({ ...SETTINGS, risk: { max_open_cost: "2" } });
+    expect(validateSettings(form)).toBe("");
+    for (const bad of [{ max_open_cost: "-1" }, { max_open_cost: "0.001" }, { max_spread: "101" },
+      { max_signal_age_ms: "0" }, { max_book_age_ms: "10001" }, { max_open_positions: "1.5" }]) {
+      expect(validateSettings({ ...form, risk: { ...form.risk, ...bad } })).not.toBe("");
+    }
+  });
   it("adds an unsaved scalping preset and persists its limits without enabling either mode", async () => {
     const user = userEvent.setup(); render(<Trading />);
     await screen.findByRole("group", { name: "Rule 1" });

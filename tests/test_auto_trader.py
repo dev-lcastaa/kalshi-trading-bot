@@ -316,6 +316,7 @@ async def test_delayed_fill_history_keeps_pending_and_recovery_is_not_double_cou
     await trader.cycle()
     assert trader.positions()[0]["pending"] is None
     assert Decimal(trader.positions()[0]["entry_cost"]) == Decimal("0.94")
+    assert len(trader.positions()[0]["execution_history"]) == 1
     rest.create_event_order.assert_not_called()
     store.close()
 

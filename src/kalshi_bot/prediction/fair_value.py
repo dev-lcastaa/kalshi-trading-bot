@@ -3,10 +3,8 @@
 Kalshi's 15-minute crypto prices lag the underlying index by seconds to a minute.
 This model turns "how far the index is from the strike, measured in expected
 remaining moves" into a probability, then blends it with the market price using
-weights fitted on 5,694 settled markets (30 days of 1-minute Kalshi quotes plus
-Coinbase prices). Out of sample on 179 later markets replayed tick-by-tick with
-1-10s execution delay, buying when the after-fee edge was >= 3c returned about
-+10c per contract.
+previously fitted weights. Historical replay of fixed coefficients is not proof
+of future profitability; execution costs and independent forward results matter.
 """
 from __future__ import annotations
 
@@ -44,7 +42,11 @@ def coin_z_score(
 ) -> tuple[float, float] | None:
     """(z, minutes_left): index distance from the strike in standard deviations of the
     remaining move, using 1-minute volatility over the last 30 minutes."""
-    if not ticks or strike <= 0:
+    if not ticks or not math.isfinite(strike) or strike <= 0:
+        return None
+    if any(not math.isfinite(ts) or not math.isfinite(value) or value <= 0 for ts, value in ticks):
+        return None
+    if any(right[0] <= left[0] for left, right in zip(ticks, ticks[1:])):
         return None
     ts = [t for t, _ in ticks]
     values = [v for _, v in ticks]
@@ -52,14 +54,14 @@ def coin_z_score(
     if latest is None or now_ms - latest[0] > MAX_TICK_GAP_MS or latest[1] <= 0:
         return None
     minutes_left = (close_ts_ms - now_ms) / 60_000
-    if minutes_left < MIN_MINUTES_LEFT:
+    if not math.isfinite(minutes_left) or not MIN_MINUTES_LEFT <= minutes_left <= 15:
         return None
     returns = []
     for n in range(VOL_LOOKBACK_MIN):
         start_ms = now_ms - 60_000 * (n + 1)
         a = _value_at(ts, values, start_ms)
         b = _value_at(ts, values, now_ms - 60_000 * n)
-        if a and b and start_ms - a[0] <= MAX_TICK_GAP_MS and a[1] > 0:
+        if a and b and start_ms - a[0] <= MAX_TICK_GAP_MS and now_ms - 60_000 * n - b[0] <= MAX_TICK_GAP_MS:
             returns.append(math.log(b[1] / a[1]))
     if len(returns) < MIN_VOL_SAMPLES:
         return None
@@ -72,6 +74,9 @@ def coin_z_score(
 
 
 def fair_value_p_yes(market_p: float, z: float, minutes_left: float, is_btc: bool) -> float:
+    if (not all(math.isfinite(value) for value in (market_p, z, minutes_left))
+            or not 0 <= market_p <= 1 or not MIN_MINUTES_LEFT <= minutes_left <= 15):
+        raise ValueError("Fair-value inputs must be finite probabilities and a 1-15 minute horizon")
     lm, lz = _logit(market_p), _logit(_phi(z))
     m = min(minutes_left, 15.0) / 15
     c0, c1, c2, c3, c4, c5 = COEFFICIENTS

@@ -124,6 +124,77 @@ Test in Practice before using real money. Settlement probability is not a
 prediction of a price rise over the next few seconds; no preset is a proven
 profitable scalping strategy.
 
+### Practice-first safeguards and validation
+
+Existing saved Practice and Real-money rules are **not changed** by this upgrade.
+No mode is turned on automatically. **Load conservative practice preset** replaces
+only the unsaved Practice form; explicitly save it before enabling Practice.
+It uses 60-95 cent prices, 4-11 minutes left, one buy per market, $1 per buy,
+hold to settlement, a 3-cent after-fee edge plus a 2-cent probability uncertainty
+buffer, maximum 3-cent spread, $2 total open cost, two simultaneous positions,
+and a $5 daily loss budget. It also requires the fair-value model: missing
+history or final-minute fallback predictions are not traded by this preset.
+These thresholds are research choices, **not evidence of profitability**.
+
+The **Entry safeguards** editor persists optional limits independently for
+each mode. Dollar, position, and spread limits of zero are disabled. The daily
+budget is conservative: it subtracts net realized losses since midnight UTC
+and reserves the entire remaining cost of open positions, assuming they can
+all lose. The server's `KALSHI_DAILY_LOSS_LIMIT_USD`, when positive, is an
+additional ceiling; mode settings cannot weaken it. These limits block new
+entries and scale-ins, but never prevent reconciliation or existing exits.
+They cover this bot's journal, not unrelated manual trades or other accounts.
+
+For **every entry**, not just scalping, the bot now:
+
+- Fetches both sides of the book together, caps quantity to best-price depth,
+  and retains a 2-cent-per-contract fee reserve to cover fragmented fills.
+- Rejects book requests/checks older than the configured limit (2 seconds by
+  default), crossed books, future/stale predictions, and degraded inputs.
+- Recomputes the active model using current index data and the executable
+  bid/ask midpoint after the asynchronous account/book checks. It rechecks
+  price, side, timing, confidence, buffered edge, and risk limits immediately
+  before submitting a price-limited IOC order.
+- Optionally requires fresh Coinbase **and** Kraken prices to agree with the
+  settlement index's direction relative to the strike. Both event and receive
+  timestamps must be within 5 seconds. This is off by default: exchange basis
+  differences can reject otherwise valid trades, and neither feed settles
+  Kalshi contracts.
+
+The **Execution costs** panel summarizes newly reconciled orders, buy fees,
+and entry cost above the checked midpoint (spread/slippage plus fees).
+Each order's requested/filled quantity, actual costs, checked quotes/depth,
+prediction, and timestamps are retained in its persistent position journal.
+For measured hold-to-settlement bets, it also compares predicted net return
+with realized net return; early exits are excluded to keep the comparison
+meaningful.
+Old positions without these measurements are not reconstructed. Practice
+still ignores queue position and market impact; it is not proof of live fills.
+
+Run a read-only, market-level validation locally:
+
+```powershell
+python -m kalshi_bot.backtest.walk_forward --database data\kalshi_bot.db
+```
+
+This command takes one as-of decision per settled market at T-6:30, compares
+fixed fair-value forecasts with market odds, and trains market recalibration
+and logistic challengers only on outcomes recorded before each test fold.
+It reports Brier/log loss, per-coin results, fees, net returns, and drawdown
+with 0/2/10-second delayed quotes, 1-cent extra execution cost, and a 2-cent
+uncertainty buffer. It requires recorded size for simulated trades and never
+looks forward to fill missing quotes. A minimum 300 prior markets is needed
+to fit challengers; smaller samples do not silently count as fitted models.
+Use `--help` for research parameters.
+
+The frozen model was previously fitted: replay is **not an untouched holdout**.
+The runner never writes to the database, changes coefficients, promotes a
+model, places orders, or enables either bot. Validate over multiple future
+market periods and both coins, including losing runs, before considering
+real-money changes. Maker execution and Kelly sizing remain disabled/not
+implemented: their fills and probability calibration need separate evidence.
+No accuracy or profitability is guaranteed.
+
 On a match the bot re-checks the rule against the **real order book** (not the
 quote), sizes the order to the budget and top-of-book size, and submits a
 price-limited immediate-or-cancel buy. It holds **at most one open position per
@@ -131,12 +202,15 @@ coin** (a BTC and a SOL position can run concurrently). The "Markets the bot is 
 shows every live market, the side/price a rule would buy, and why other markets
 don't match; it also previews matches while trading is paused.
 
-The default rule (`Model edge at T-6:30`) mirrors the walk-forward backtest:
-follow the model's side whenever it shows any after-fee edge, price 0.50–0.95,
-held to settlement. **Rules that ignore edge (blank Min edge, Always YES/NO)
+The existing first-run default rule (`Coin price edge`) buys the side with the
+larger after-fee edge when that edge is at least 3 cents, at prices 0.03-0.97
+with 4-14 minutes left. It allows up to five buys, 60 seconds apart, and holds
+to settlement. The new conservative Practice preset is a separate opt-in
+experiment, not a replacement for saved/default rules.
+**Rules that ignore edge (blank Min edge, Always YES/NO)
 trade more often but can lose money steadily after fees — test them in Paper
 mode first.** Older saved settings (budget/take profit/stop loss only) migrate
-automatically to this default rule.
+automatically to the existing first-run default rule.
 
 Environment values seed the first-run default rule only:
 

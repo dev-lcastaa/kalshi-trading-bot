@@ -59,7 +59,7 @@ async function mockTrading(page, { populated = true, environment = "demo" } = {}
       if (request.method() !== "GET") {
         const body = request.postDataJSON();
         writes.push({ path, body, auth: request.headers().authorization });
-        if (path.endsWith("settings")) state[body.mode].settings = { rules: body.rules };
+        if (path.endsWith("settings")) state[body.mode].settings = { rules: body.rules, ...(body.risk ? { risk: body.risk } : {}) };
         else state[body.mode].enabled = body.enabled;
       }
       await route.fulfill({ json: state });
@@ -82,6 +82,27 @@ async function noOverflow(page) {
 }
 
 for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  test(`${name}: conservative preset stays practice-only and saves explicit risk limits`, async ({ page }) => {
+    await page.setViewportSize(size);
+    const api = await mockTrading(page, { populated: false, environment: "prod" });
+    await page.goto("/trading");
+    await page.getByRole("button", { name: "Load conservative practice preset" }).click();
+    await expect(page.getByLabel("Probability uncertainty buffer (cents)", { exact: true })).toHaveValue("2");
+    await expect(page.getByLabel("Require fair-value model; skip fallback predictions")).toBeChecked();
+    expect(api.writes).toHaveLength(0);
+    await noOverflow(page);
+    await page.getByRole("button", { name: "Save rules" }).click();
+    await expect(page.getByText("Rules saved.", { exact: true })).toBeVisible();
+    expect(api.writes).toHaveLength(1);
+    expect(api.writes[0].body).toMatchObject({ mode: "paper", risk: { max_open_cost: "2.00",
+      min_edge: "0.03", uncertainty_buffer: "0.02", require_fair_value: true } });
+    expect(api.state.live.settings).toEqual(settings);
+    expect(api.state.paper.enabled).toBe(false);
+    expect(api.state.live.enabled).toBe(false);
+    await page.getByRole("radio", { name: "Real money" }).check();
+    await expect(page.getByRole("button", { name: "Load conservative practice preset" })).toHaveCount(0);
+    await noOverflow(page);
+  });
   test(`${name}: opt-in scalping controls, confirmation, cycle history and limits`, async ({ page }) => {
     await page.setViewportSize(size);
     const api = await mockTrading(page, { populated: false, environment: "prod" });

@@ -31,6 +31,22 @@ def test_z_score_needs_fresh_history_and_time_left():
     assert coin_z_score(ticks(100.5), 100.0, NOW + 5 * 60_000, NOW + 10_000) is None
 
 
+def test_z_score_rejects_invalid_ticks_and_stale_minute_endpoints():
+    rows = ticks(100.5)
+    for invalid in (list(reversed(rows)), rows + [rows[-1]], rows[:-1] + [(NOW, float("nan"))]):
+        assert coin_z_score(invalid, 100, NOW + 300000, NOW) is None
+    # Only fresh starts, with no fresh endpoints: these are not valid minute returns.
+    sparse = [(NOW - minute * 60000, 100 + minute * .01) for minute in range(31, 0, -2)]
+    sparse.append((NOW, 100.5))
+    assert coin_z_score(sparse, 100, NOW + 300000, NOW) is None
+
+
+@pytest.mark.parametrize("p,z,t", [(float("nan"), 0, 5), (.5, float("inf"), 5), (1.1, 0, 5), (.5, 0, .5)])
+def test_fair_value_invalid_inputs_surface_explicitly(p, z, t):
+    with pytest.raises(ValueError):
+        fair_value_p_yes(p, z, t, True)
+
+
 def test_coin_above_strike_raises_fair_value_above_market():
     above = fair_value_from_ticks(ticks(100.5), 100.0, NOW + 10 * 60_000, NOW, 0.5, "BRTI")
     below = fair_value_from_ticks(ticks(99.5), 100.0, NOW + 10 * 60_000, NOW, 0.5, "BRTI")

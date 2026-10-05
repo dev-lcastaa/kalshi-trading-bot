@@ -12,12 +12,15 @@ const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "m
 const NEW_RULE = { name: "New rule", enabled: true, coin: "ANY", side: "model", min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", max_seconds_left: "390", budget: "1.00", take_profit: "0.00", stop_loss: "0.00", max_entries: "1", reentry_gap_sec: "60" };
 const SCALP_DEFAULTS = { scalping: false, max_cycles: "3", cycle_cooldown_sec: "30", market_spend_limit: "3.00", market_loss_limit: "0.50" };
 const SCALP_PRESET = { ...NEW_RULE, ...SCALP_DEFAULTS, name: "Early scalp test", scalping: true, min_price: "20", max_price: "85", min_confidence: "60", min_edge: "3", min_seconds_left: "90", max_seconds_left: "840", take_profit: "0.02", stop_loss: "0.20" };
+const RISK_DEFAULTS = { daily_loss_limit: "0.00", max_open_cost: "0.00", max_open_positions: "0", min_edge: "0", uncertainty_buffer: "0", max_spread: "0", max_signal_age_ms: "10000", max_book_age_ms: "2000", require_reference_agreement: false, require_fair_value: false };
+const PRACTICE_PRESET = { ...NEW_RULE, ...SCALP_DEFAULTS, name: "Conservative practice test", min_price: "60", max_price: "95", min_confidence: "0", min_edge: "3", min_seconds_left: "240", max_seconds_left: "660", take_profit: "0.00", stop_loss: "0.00" };
+const PRACTICE_RISK = { ...RISK_DEFAULTS, daily_loss_limit: "5.00", max_open_cost: "2.00", max_open_positions: "2", min_edge: "3", uncertainty_buffer: "2", max_spread: "3", max_signal_age_ms: "5000", require_fair_value: true };
 const WHOLE = /^\d+$/;
 const SIGNED_WHOLE = /^-?\d+$/;
 const MONEY = /^\d+(\.\d{1,2})?$/;
 
 const rulesOf = (settings) => Array.isArray(settings?.rules) ? settings.rules : [];
-const formKey = (form) => JSON.stringify(rulesOf(form).map((rule) => UI_KEYS.map((key) => rule?.[key] == null ? "" : String(rule[key]))));
+const formKey = (form) => JSON.stringify([rulesOf(form).map((rule) => UI_KEYS.map((key) => rule?.[key] == null ? "" : String(rule[key]))), { ...RISK_DEFAULTS, ...form?.risk }]);
 const num = (value) => Number(value);
 const centsOf = (dollars) => String(Math.round(num(dollars) * 100));
 const timestamp = (value) => value == null ? "--" : new Date(value).toLocaleString();
@@ -31,7 +34,13 @@ const modeLabel = (mode, environment) => mode === "paper" ? "Practice mode — p
   : environment === "prod" ? "Real-money mode — uses your real Kalshi money" : "Real-money mode — Kalshi demo account (still not real money)";
 
 export function toUi(settings) {
-  return { rules: rulesOf(settings).map((rule) => ({
+  const risk = settings?.risk;
+  return { ...(risk ? { risk: Object.fromEntries(Object.keys(RISK_DEFAULTS).map((key) => [
+    key, ["min_edge", "uncertainty_buffer", "max_spread"].includes(key) ? centsOf(risk[key] ?? 0)
+      : key.startsWith("require_") ? Boolean(risk[key])
+      : ["daily_loss_limit", "max_open_cost"].includes(key) ? num(risk[key] ?? 0).toFixed(2)
+      : String(risk[key] ?? RISK_DEFAULTS[key]),
+  ])) } : {}), rules: rulesOf(settings).map((rule) => ({
     name: String(rule.name ?? ""), enabled: Boolean(rule.enabled), coin: rule.coin ?? "ANY", side: rule.side ?? "model",
     min_price: centsOf(rule.min_price), max_price: centsOf(rule.max_price), min_confidence: centsOf(rule.min_confidence),
     min_edge: rule.min_edge == null || rule.min_edge === "" ? "" : centsOf(rule.min_edge),
@@ -47,7 +56,11 @@ export function toUi(settings) {
 
 export function fromUi(form) {
   const dollars = (cents) => (num(cents) / 100).toFixed(2);
-  return { rules: rulesOf(form).map((rule) => ({
+  return { ...(form.risk ? { risk: Object.fromEntries(Object.entries(form.risk).map(([key, value]) => [
+    key, ["min_edge", "uncertainty_buffer", "max_spread"].includes(key) ? dollars(value)
+      : key.startsWith("require_") ? Boolean(value)
+      : ["daily_loss_limit", "max_open_cost"].includes(key) ? num(value).toFixed(2) : num(value),
+  ])) } : {}), rules: rulesOf(form).map((rule) => ({
     name: String(rule.name).trim(), enabled: Boolean(rule.enabled), coin: rule.coin, side: rule.side,
     min_price: dollars(rule.min_price), max_price: dollars(rule.max_price), min_confidence: dollars(rule.min_confidence),
     min_edge: String(rule.min_edge ?? "").trim() === "" ? null : dollars(rule.min_edge),
@@ -95,7 +108,36 @@ export function validateSettings(form) {
   if (!rules.length) return "Add at least one rule.";
   if (rules.length > MAX_RULES) return `You can have up to ${MAX_RULES} rules.`;
   for (const [index, rule] of rules.entries()) { const problem = validateRule(rule); if (problem) return `Rule ${index + 1}: ${problem}`; }
+  const risk = form.risk;
+  if (risk) {
+    for (const key of ["daily_loss_limit", "max_open_cost"]) if (!MONEY.test(String(risk[key]))) return "Risk limits must be non-negative dollars with at most two decimals.";
+    for (const key of ["min_edge", "uncertainty_buffer", "max_spread"]) if (!WHOLE.test(String(risk[key])) || num(risk[key]) > 100) return "Risk edge, buffer, and spread must be whole cents from 0 to 100.";
+    if (!WHOLE.test(String(risk.max_open_positions)) || num(risk.max_open_positions) > 100) return "Maximum simultaneous positions must be from 0 to 100.";
+    for (const key of ["max_signal_age_ms", "max_book_age_ms"]) if (!WHOLE.test(String(risk[key])) || num(risk[key]) < 100 || num(risk[key]) > 10000) return "Freshness limits must be from 100 to 10000 milliseconds.";
+  }
   return "";
+}
+
+function RiskEditor({ risk, disabled, onChange }) {
+  const value = { ...RISK_DEFAULTS, ...risk };
+  const fields = [
+    ["daily_loss_limit", "Daily loss budget including open bets ($)"],
+    ["max_open_cost", "Maximum money at risk across open bets ($)"],
+    ["max_open_positions", "Maximum simultaneous positions"],
+    ["min_edge", "Minimum edge after buffer and fees (cents)"],
+    ["uncertainty_buffer", "Probability uncertainty buffer (cents)"],
+    ["max_spread", "Maximum bid/ask spread (cents)"],
+    ["max_signal_age_ms", "Maximum prediction age (milliseconds)"],
+    ["max_book_age_ms", "Maximum book-check age (milliseconds)"],
+  ];
+  return <fieldset disabled={disabled} className="trading-rule">
+    <legend>Entry safeguards</legend>
+    <p className="trading-muted">Dollar, position, and spread limits of 0 are off. The loss budget reserves the full cost of open bets; it blocks new entries, not existing exits. The uncertainty buffer is a safety margin, not a statistical confidence interval.</p>
+    <div className="trading-fields">{fields.map(([key, label]) => <label key={key}>{label}<input aria-label={label} inputMode={key.endsWith("cost") || key === "daily_loss_limit" ? "decimal" : "numeric"} value={value[key]} onChange={(event) => onChange({ ...value, [key]: event.target.value })} /></label>)}</div>
+    <label className="trading-ack"><input type="checkbox" checked={value.require_reference_agreement} onChange={(event) => onChange({ ...value, require_reference_agreement: event.target.checked })} />Require fresh Coinbase and Kraken agreement with the settlement index</label>
+    <label className="trading-ack"><input type="checkbox" checked={value.require_fair_value} onChange={(event) => onChange({ ...value, require_fair_value: event.target.checked })} />Require fair-value model; skip fallback predictions</label>
+    <p className="trading-muted">Reference feeds are not the settlement source. This optional guard can reject valid trades because of exchange basis differences. Test it in Practice first.</p>
+  </fieldset>;
 }
 
 function exitPlan(policy) {
@@ -525,6 +567,11 @@ export default function Trading() {
         <Stat label="Total won / lost" value={finishedCount ? signedMoney(total) : "--"} tone={total > 0 ? "positive" : total < 0 ? "negative" : ""} />
         <Stat label="Win rate" value={finishedCount ? `${Math.round((wins / finishedCount) * 100)}% (${wins} of ${finishedCount})` : "--"} />
       </dl></section>
+      {snap.execution && <section className="trading-section" aria-label="Execution costs"><h3>Execution costs</h3>
+        <p className="trading-muted">{snap.execution.filled_orders} of {snap.execution.orders} reconciled orders filled at least partly. Buy fees: {money(snap.execution.entry_fees)}. Entry cost above the checked midpoint, including fees: {signedMoney(snap.execution.entry_cost_above_mid)}. Open money at risk: {money(snap.risk_state?.open_cost)}.</p>
+        <p className="trading-muted">Practice fills still ignore queue position and market impact. High win rate alone does not mean positive expected profit.</p>
+        {snap.execution.settlement_comparison && <p className="trading-muted">For {snap.execution.settlement_comparison.measured_bets} measured hold-to-settlement bets: model-predicted net {signedMoney(snap.execution.settlement_comparison.predicted_net)}, realized net {signedMoney(snap.execution.settlement_comparison.realized_net)}. Early exits and older unmeasured bets are excluded; small samples are not proof of an edge.</p>}
+      </section>}
       <section className="trading-section" aria-label="Bets happening now"><h3>Bets happening now</h3>
         {running.length ? <div className="trading-cards">{running.map((position, index) => <LiveCard key={position.position_id ?? `${position.ticker}-${index}`} position={position} now={now} events={events.filter((event) => position.position_id ? event.position_id === position.position_id : event.ticker === position.ticker)} decision={decisionFor(position.ticker)} />)}</div>
           : <p className="trading-muted">No bets running right now</p>}
@@ -544,14 +591,17 @@ export default function Trading() {
           {rulesOf(form).map((rule, index) => <RuleEditor key={index} rule={rule} index={index} count={rulesOf(form).length} disabled={snap.enabled || busy}
             onChange={(next) => updateRules(rulesOf(form).map((item, position) => position === index ? next : item))}
             onRemove={() => updateRules(rulesOf(form).filter((_, position) => position !== index))} />)}
+          <RiskEditor risk={form?.risk} disabled={snap.enabled || busy} onChange={(risk) => { setForms({ ...forms, [mode]: { ...form, risk } }); setSuccess(""); setError(""); }} />
           {validation && <p className="negative" role="alert">{validation}</p>}
           <div className="trading-buttons">
             <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...NEW_RULE, ...SCALP_DEFAULTS, name: `Rule ${rulesOf(form).length + 1}` }])}><Plus size={16} />Add a rule</button>
             <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...SCALP_PRESET }])}><Plus size={16} />Add scalping test rule</button>
+            {mode === "paper" && <button className="secondary-button" type="button" disabled={snap.enabled || busy} onClick={() => { setForms({ ...forms, paper: { rules: [{ ...PRACTICE_PRESET }], risk: { ...PRACTICE_RISK } } }); setSuccess(""); setError(""); }}>Load conservative practice preset</button>}
             <button className="secondary-button" type="submit" disabled={snap.enabled || busy || stale || !dirty || !!validation}><Save size={16} />Save rules</button>
             <span className="trading-muted">{snap.enabled ? "Turn the bot off to change rules." : dirty ? "You have unsaved changes" : "All changes saved"}</span>
           </div>
           <p className="trading-muted">The scalping preset only adds an unsaved rule; it does not start trading. Rules run top to bottom, so earlier rules can take priority. Test in Practice first. A profitable exit is required before re-entry; a stop loss ends trading in that market.</p>
+          {mode === "paper" && <p className="trading-muted">The conservative preset replaces only this unsaved Practice form: 60-95 cent entries, 4-11 minutes left, one buy per market, hold to settlement, 3 cent buffered edge, and a 2 cent uncertainty buffer. It is an experiment, not a proven profitable strategy. Save explicitly; it never changes Real money or turns either bot on.</p>}
         </form>
       </section>
       <section className="trading-section" aria-label="Bot diary">
