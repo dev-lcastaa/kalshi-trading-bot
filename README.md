@@ -19,7 +19,55 @@ independent modes (it opens on Practice):
 - **Real money** — places real orders on your Kalshi account
   (demo or production, depending on `KALSHI_ENV`; the tab says which).
 
-Each mode has its own saved rules and its own page:
+Each mode has independent saved settings. The strategy editor now has just
+three controls: **Confidence level (%)**, **Amount per trade ($)**, and
+**Stop loss amount ($)**. Saving installs a single momentum-scalping strategy
+for that mode; it never enables trading or changes the other mode.
+
+### Simple momentum scalping
+
+The bot can buy either UP or DOWN, following observed movement rather than
+choosing whichever side has the largest estimated settlement-value edge.
+It compares both YES bid and ask against a quote at least 10 seconds old
+(no older than 60 seconds), requiring both to move at least 1 cent in the
+same direction and agree with the coin's trailing 60-second log-price slope.
+An isolated high UP probability is not evidence of rising quotes. The bot
+warms up again after a restart and rejects movement that reverses during
+execution checks.
+
+- **Confidence** (50-99%, initially 65%) is the moving side's market-implied
+  settlement probability from the bid/ask midpoint. It is **not** a calibrated
+  probability of profitable scalping or the settlement model's prediction.
+- **Amount per trade** is a maximum purchase budget including reserved entry
+  fees, up to $25. Whole-contract sizing can spend less or buy nothing.
+- **Stop loss** must be positive and smaller than the trade amount. It is a
+  net-loss sell trigger, not a guaranteed maximum loss. Illiquid exits can
+  lose the full purchase cost.
+- The automatic profit target is **$0.02 net per position**, after paid entry
+  costs and reserved exit fees. The bot checks that the actual sized order has
+  enough price room for this target, and rejects entries whose spread and
+  reserved round-trip fees already reach the stop loss. This is a target,
+  **not a promise of profit**.
+- Automatic limits: 5-95 cent entries with 90-840 seconds left, maximum
+  3-cent spread, three cycles per ticker, 30 seconds after a fully closed
+  profitable exit, cumulative market spending of `min($25, 3 x trade amount)`,
+  and a market-loss trigger equal to the stop-loss amount. No re-entry after
+  a loss or settlement. At most two open positions, open cost at most twice
+  the trade amount, and a daily loss budget of three times the trade amount,
+  including reserved open-position cost. A stricter server daily limit still
+  applies. High confidence settings may leave no qualifying entry prices.
+- Fresh-data, executable-liquidity, account-reconciliation, and IOC execution
+  checks remain mandatory. Momentum entries do not pretend to have positive
+  settlement-value edge and are excluded from settlement-model P/L comparisons.
+
+Existing saved rules are **not silently migrated**. Turn the bot off, set the
+three controls, and select **Save settings** to replace that mode's old rules
+and risk settings. Existing positions keep their original exits and market
+caps. Start in Practice; Real money still requires explicit confirmation.
+Deploy/restart the updated backend and build/deploy the frontend to use this
+strategy. There is no live-profit validation for these thresholds.
+
+The trading page also shows:
 
 - **Bot status** — a big ON/OFF card with the switch and a plain list of
   anything stopping the bot from betting. Turning Real money on requires a
@@ -48,17 +96,18 @@ Each mode has its own saved rules and its own page:
   control change, without repeated API polling or page refreshes. Countdowns
   tick locally every second. The connection indicator warns when updates stop
   and reconnects automatically; the bot's execution cadence is unchanged.
-- **Your betting rules** — the rule editor (prices in cents, confidence in %).
+- **Scalp market movement** — the three controls, with automatic limits in a
+  collapsed explanation rather than a separate rule/safeguard editor.
 - **Bot diary** — a collapsible log of everything the bot did.
 
-Save rules before turning the bot on. Rules are stored in the bot database,
+Save settings before turning the bot on. Settings are stored in the bot database,
 not the browser; they survive refreshes and restarts and do not require a bot
 restart to change.
 
-### Entry rules (rules-driven trading)
+### Legacy/API entry rules
 
-Trading is rule-driven: you decide in advance exactly what the bot buys, and it
-executes without second-guessing. Every few seconds the bot checks each live
+The API continues to accept legacy rules for compatibility; the dashboard
+no longer exposes their multi-field editor. Every few seconds the bot checks each live
 market against your enabled rules (top to bottom, first match wins). A rule
 matches when **all** of its conditions hold:
 
@@ -75,13 +124,10 @@ matches when **all** of its conditions hold:
 
 ### Repeated scalping (opt-in)
 
-Each rule can opt into **Repeated scalping (sell, then re-enter)** in Practice
-or Real money. Existing rules do not opt in automatically. **Add scalping test
-rule** adds an unsaved preset: 20-85 cents, at least 60% confidence and 3 cents
-after-entry-fee edge, entry window 14:00-1:30, $1 per buy, 2-cent net profit
-target, 20-cent stop-loss trigger, three cycles, 30-second cooldown, $3 total
-entry spending and a 50-cent market-loss trigger. Saving the rule does not
-enable trading; real money still requires the existing confirmation.
+Legacy API rules can opt into repeated scalping in Practice or Real money.
+The former multi-field scalping preset is no longer shown in the dashboard.
+The simple momentum strategy uses the same persistent cycle and exit engine.
+Saving never enables trading; real money still requires confirmation.
 
 Scalping is one buy per cycle, with no scale-in. After the entire position is
 sold at a **take-profit exit with positive realized net P/L**, the bot waits
@@ -99,7 +145,8 @@ cycles end trading in that ticker; the bot does not chase losses.
 | Market loss limit | Up to $25; blocks entries after realized losses and triggers a stop-loss exit when remaining loss allowance is breached |
 
 Scalping requires positive take-profit and stop-loss amounts, a minimum
-after-entry-fee edge of 1 cent, and an entry window between 60 and 900 seconds
+after-entry-fee edge of 1 cent for legacy settlement-value rules (momentum
+requires `min_edge: null` instead), and an entry window between 60 and 900 seconds
 left. The loss limit cannot exceed spending; the buy budget cannot exceed
 spending; the per-position stop-loss cannot exceed the market-loss limit.
 Each market retains its original caps: settings edits cannot raise its cycle,
@@ -126,18 +173,12 @@ profitable scalping strategy.
 
 ### Practice-first safeguards and validation
 
-Existing saved Practice and Real-money rules are **not changed** by this upgrade.
-No mode is turned on automatically. **Load conservative practice preset** replaces
-only the unsaved Practice form; explicitly save it before enabling Practice.
-It uses 60-95 cent prices, 4-11 minutes left, one buy per market, $1 per buy,
-hold to settlement, a 3-cent after-fee edge plus a 2-cent probability uncertainty
-buffer, maximum 3-cent spread, $2 total open cost, two simultaneous positions,
-and a $5 daily loss budget. It also requires the fair-value model: missing
-history or final-minute fallback predictions are not traded by this preset.
-These thresholds are research choices, **not evidence of profitability**.
-
-The **Entry safeguards** editor persists optional limits independently for
-each mode. Dollar, position, and spread limits of zero are disabled. The daily
+Existing saved Practice and Real-money rules remain unchanged until explicitly
+replaced with **Save settings**. No mode is turned on automatically. The old
+conservative-practice preset and Entry safeguards editor have been removed;
+the simple controls derive automatic limits described above. Optional API
+limits remain supported independently for each mode. Dollar, position, and
+spread limits of zero are disabled. The daily
 budget is conservative: it subtracts net realized losses since midnight UTC
 and reserves the entire remaining cost of open positions, assuming they can
 all lose. The server's `KALSHI_DAILY_LOSS_LIMIT_USD`, when positive, is an

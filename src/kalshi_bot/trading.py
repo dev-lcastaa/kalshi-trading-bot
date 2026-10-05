@@ -66,6 +66,9 @@ class TradingPolicy:
             return "stop_loss"
         return None
 
+    def profit_target_reachable(self, ask: Decimal, count: int) -> bool:
+        return (Decimal("0.99") - ask) * count - 2 * fee_reserve(count) >= self.take_profit
+
 
 def taker_fee(price: Decimal, count: int = 1) -> Decimal:
     """Kalshi quadratic taker fee for an order, rounded up to the cent."""
@@ -74,7 +77,7 @@ def taker_fee(price: Decimal, count: int = 1) -> Decimal:
 
 
 MAX_RULES = 10
-RULE_SIDES = ("model", "yes", "no")
+RULE_SIDES = ("model", "yes", "no", "momentum")
 _COIN_RE = re.compile(r"^(ANY|[A-Z0-9]{2,10})$")
 
 
@@ -147,8 +150,9 @@ class EntryRule:
 
     The bot does not second-guess a matching rule; every check here is
     something the user chose. Prices are the cost of one contract of the side
-    being bought; confidence is the model's probability that side wins; edge is
-    that probability minus the price and the taker fee.
+    being bought; confidence is the model's probability that side wins (or the
+    market midpoint for momentum entries); edge is that probability minus the
+    price and the taker fee for settlement-value strategies.
     """
 
     name: str = "Rule"
@@ -172,7 +176,9 @@ class EntryRule:
         if not _COIN_RE.match(self.coin):
             raise ValueError("coin must be ANY or a ticker symbol such as BTC")
         if self.side not in RULE_SIDES:
-            raise ValueError("side must be model, yes, or no")
+            raise ValueError("side must be model, yes, no, or momentum")
+        if self.side == "momentum" and self.scalp is None:
+            raise ValueError("Momentum entries require scalping with protected exits")
         if not CENT <= self.min_price <= self.max_price <= Decimal("0.99"):
             raise ValueError("Price range must satisfy 0.01 <= min_price <= max_price <= 0.99")
         if self.min_edge is not None and not Decimal("-1") <= self.min_edge <= ONE:
@@ -188,8 +194,10 @@ class EntryRule:
                 raise ValueError("Scalping requires max_entries=1 (one buy per cycle, no scale-in)")
             if self.policy.take_profit <= 0 or self.policy.stop_loss <= 0:
                 raise ValueError("Scalping requires positive take_profit and stop_loss")
-            if self.min_edge is None or self.min_edge < CENT:
+            if self.side != "momentum" and (self.min_edge is None or self.min_edge < CENT):
                 raise ValueError("Scalping requires min_edge of at least 0.01 after entry fees")
+            if self.side == "momentum" and self.min_edge is not None:
+                raise ValueError("Momentum uses observed movement, not settlement-value edge; min_edge must be null")
             if self.min_seconds_left < 60 or self.max_seconds_left > 900:
                 raise ValueError("Scalping entry window must be between 60 and 900 seconds left")
             if self.policy.budget > self.scalp.market_spend_limit:
@@ -259,6 +267,8 @@ class EntryRule:
     def pick_side(self, model_p_yes: Decimal, yes_ask: Decimal | None = None, no_ask: Decimal | None = None) -> str:
         """For side="model", buy the side whose after-fee edge is larger; without
         quotes fall back to the side the model favours."""
+        if self.side == "momentum":
+            raise ValueError("Momentum side requires fresh quote movement")
         if self.side != "model":
             return self.side
         if yes_ask is not None and no_ask is not None:
@@ -277,6 +287,8 @@ class EntryRule:
             return f"{side.upper()} costs {ask}, outside {self.min_price}-{self.max_price}"
         confidence = model_p_yes if side == "yes" else ONE - model_p_yes
         if confidence < self.min_confidence:
+            if self.side == "momentum":
+                return f"market implies {side.upper()} {confidence:.3f} < {self.min_confidence}"
             return f"model gives {side.upper()} {confidence:.2f} < {self.min_confidence}"
         if self.min_edge is not None:
             edge = confidence - ask - taker_fee(ask)

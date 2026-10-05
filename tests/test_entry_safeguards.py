@@ -63,6 +63,7 @@ def test_execution_model_uses_current_book_without_mutating_live_quotes(tmp_path
     high = app.execution_market("BTC", Decimal(".89"), Decimal(".90"), Decimal("2"), Decimal("3"), NOW)
     assert high["model_p_yes"] > low["model_p_yes"]
     assert low["model"] == high["model"] == "fair-value"
+    assert "momentum_short_per_sec" in low
     assert "stale_quote" not in high["quality_flags"]
     assert (state.yes_bid_dollars, state.yes_ask_dollars) == (.40, .50)
     stale = app.execution_market("BTC", Decimal(".49"), Decimal(".50"), Decimal("2"), Decimal("3"), NOW + 6000)

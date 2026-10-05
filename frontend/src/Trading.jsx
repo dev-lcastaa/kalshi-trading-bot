@@ -1,20 +1,14 @@
 import React from "react";
-import { AlertTriangle, Check, ChevronDown, Plus, Power, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, Power, RefreshCw, Save, X } from "lucide-react";
 import { friendlyCheckName } from "./utils";
 import DirectionBars from "./DirectionBars";
+import ScalpControls, { scalpForm, scalpSettings, validateScalp } from "./ScalpControls";
 
 const MODES = [["paper", "Practice (fake money)"], ["live", "Real money"]];
 export const MAX_BUDGET = 25;
 export const MAX_RULES = 10;
-const COINS = [["ANY", "Any coin"], ["BTC", "Bitcoin (BTC)"], ["SOL", "Solana (SOL)"]];
-const SIDES = [["model", "Follow the bot's guess"], ["yes", "Always bet UP"], ["no", "Always bet DOWN"]];
 const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss", "max_entries", "reentry_gap_sec", "scalping", "max_cycles", "cycle_cooldown_sec", "market_spend_limit", "market_loss_limit"];
-const NEW_RULE = { name: "New rule", enabled: true, coin: "ANY", side: "model", min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", max_seconds_left: "390", budget: "1.00", take_profit: "0.00", stop_loss: "0.00", max_entries: "1", reentry_gap_sec: "60" };
-const SCALP_DEFAULTS = { scalping: false, max_cycles: "3", cycle_cooldown_sec: "30", market_spend_limit: "3.00", market_loss_limit: "0.50" };
-const SCALP_PRESET = { ...NEW_RULE, ...SCALP_DEFAULTS, name: "Early scalp test", scalping: true, min_price: "20", max_price: "85", min_confidence: "60", min_edge: "3", min_seconds_left: "90", max_seconds_left: "840", take_profit: "0.02", stop_loss: "0.20" };
 const RISK_DEFAULTS = { daily_loss_limit: "0.00", max_open_cost: "0.00", max_open_positions: "0", min_edge: "0", uncertainty_buffer: "0", max_spread: "0", max_signal_age_ms: "10000", max_book_age_ms: "2000", require_reference_agreement: false, require_fair_value: false };
-const PRACTICE_PRESET = { ...NEW_RULE, ...SCALP_DEFAULTS, name: "Conservative practice test", min_price: "60", max_price: "95", min_confidence: "0", min_edge: "3", min_seconds_left: "240", max_seconds_left: "660", take_profit: "0.00", stop_loss: "0.00" };
-const PRACTICE_RISK = { ...RISK_DEFAULTS, daily_loss_limit: "5.00", max_open_cost: "2.00", max_open_positions: "2", min_edge: "3", uncertainty_buffer: "2", max_spread: "3", max_signal_age_ms: "5000", require_fair_value: true };
 const WHOLE = /^\d+$/;
 const SIGNED_WHOLE = /^-?\d+$/;
 const MONEY = /^\d+(\.\d{1,2})?$/;
@@ -91,7 +85,7 @@ export function validateRule(rule) {
   if (rule.scalping) {
     if (num(rule.max_entries) !== 1) return "Scalping uses one buy per cycle, not scale-in buys.";
     if (num(rule.take_profit) <= 0 || num(rule.stop_loss) <= 0) return "Scalping needs positive cash-out and cut-loss amounts.";
-    if (text("min_edge") === "" || num(rule.min_edge) < 1) return "Scalping needs at least 1¢ expected profit after entry fees.";
+    if (rule.side !== "momentum" && (text("min_edge") === "" || num(rule.min_edge) < 1)) return "Scalping needs at least 1¢ expected profit after entry fees.";
     if (num(rule.min_seconds_left) < 60 || num(rule.max_seconds_left) > 900) return "Scalping entries must be between 60 and 900 seconds left.";
     if (!WHOLE.test(text("max_cycles")) || num(rule.max_cycles) < 1 || num(rule.max_cycles) > 10) return "Cycles per market must be from 1 to 10.";
     if (!WHOLE.test(text("cycle_cooldown_sec")) || num(rule.cycle_cooldown_sec) < 5 || num(rule.cycle_cooldown_sec) > 900) return "Cycle cooldown must be from 5 to 900 seconds.";
@@ -118,28 +112,6 @@ export function validateSettings(form) {
   return "";
 }
 
-function RiskEditor({ risk, disabled, onChange }) {
-  const value = { ...RISK_DEFAULTS, ...risk };
-  const fields = [
-    ["daily_loss_limit", "Daily loss budget including open bets ($)"],
-    ["max_open_cost", "Maximum money at risk across open bets ($)"],
-    ["max_open_positions", "Maximum simultaneous positions"],
-    ["min_edge", "Minimum edge after buffer and fees (cents)"],
-    ["uncertainty_buffer", "Probability uncertainty buffer (cents)"],
-    ["max_spread", "Maximum bid/ask spread (cents)"],
-    ["max_signal_age_ms", "Maximum prediction age (milliseconds)"],
-    ["max_book_age_ms", "Maximum book-check age (milliseconds)"],
-  ];
-  return <fieldset disabled={disabled} className="trading-rule">
-    <legend>Entry safeguards</legend>
-    <p className="trading-muted">Dollar, position, and spread limits of 0 are off. The loss budget reserves the full cost of open bets; it blocks new entries, not existing exits. The uncertainty buffer is a safety margin, not a statistical confidence interval.</p>
-    <div className="trading-fields">{fields.map(([key, label]) => <label key={key}>{label}<input aria-label={label} inputMode={key.endsWith("cost") || key === "daily_loss_limit" ? "decimal" : "numeric"} value={value[key]} onChange={(event) => onChange({ ...value, [key]: event.target.value })} /></label>)}</div>
-    <label className="trading-ack"><input type="checkbox" checked={value.require_reference_agreement} onChange={(event) => onChange({ ...value, require_reference_agreement: event.target.checked })} />Require fresh Coinbase and Kraken agreement with the settlement index</label>
-    <label className="trading-ack"><input type="checkbox" checked={value.require_fair_value} onChange={(event) => onChange({ ...value, require_fair_value: event.target.checked })} />Require fair-value model; skip fallback predictions</label>
-    <p className="trading-muted">Reference feeds are not the settlement source. This optional guard can reject valid trades because of exchange basis differences. Test it in Practice first.</p>
-  </fieldset>;
-}
-
 function exitPlan(policy) {
   const up = num(policy?.take_profit) > 0, down = num(policy?.stop_loss) > 0;
   if (!up && !down) return "Hold until the market ends";
@@ -154,6 +126,7 @@ function repeats(rule) {
 }
 
 function ruleSummary(rule) {
+  if (rule.side === "momentum") return `Follow rising UP or DOWN quotes with matching short-term coin movement and at least ${rule.min_confidence}% market confidence. Spend up to ${money(rule.budget)}${repeats(rule)}. ${exitPlan(rule)}.`;
   const coin = rule.coin === "ANY" ? "any coin" : rule.coin;
   const side = rule.side === "model" ? "whichever way the bot guesses" : direction(rule.side);
   const edge = String(rule.min_edge ?? "") === "" ? "" : ` and expects at least ${rule.min_edge}¢ profit`;
@@ -167,51 +140,6 @@ function RuleList({ settings }) {
     <strong>{rule.name}</strong> {!rule.enabled && <span className="trading-muted">(turned off)</span>}
     <p className="trading-muted">{ruleSummary(rule)}</p>
   </li>)}</ol>;
-}
-
-function Field({ label, value, disabled, onChange, hint, note, inputMode = "decimal" }) {
-  const input = <label>{label}<input type="text" inputMode={inputMode} value={value ?? ""} disabled={disabled} placeholder={hint} onChange={(event) => onChange(event.target.value)} /></label>;
-  return note ? <div className="trading-field">{input}<small>{note}</small></div> : input;
-}
-
-function Choice({ label, value, options, disabled, onChange }) {
-  return <label>{label}<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)}>{options.map(([key, text]) => <option key={key} value={key}>{text}</option>)}</select></label>;
-}
-
-function RuleEditor({ rule, index, count, disabled, onChange, onRemove }) {
-  const set = (key) => (value) => onChange({ ...rule, [key]: value });
-  const problem = validateRule(rule);
-  return <fieldset className="trading-rule" aria-label={`Rule ${index + 1}`}>
-    <header>
-      <label className="trading-ack"><input type="checkbox" checked={Boolean(rule.enabled)} disabled={disabled} onChange={(event) => set("enabled")(event.target.checked)} />Rule is on</label>
-      <button type="button" className="icon-button" aria-label={`Remove rule ${index + 1}`} title="Remove rule" disabled={disabled || count <= 1} onClick={onRemove}><Trash2 size={16} /></button>
-    </header>
-    <label className="trading-ack"><input type="checkbox" checked={Boolean(rule.scalping)} disabled={disabled} onChange={(event) => onChange({ ...rule, ...(!rule.max_cycles ? SCALP_DEFAULTS : {}), scalping: event.target.checked, ...(event.target.checked ? { max_entries: "1" } : {}) })} />Repeated scalping (sell, then re-enter)</label>
-    <div className="trading-fields">
-      <Field label="Rule name" value={rule.name} disabled={disabled} onChange={set("name")} inputMode="text" />
-      <Choice label="Which coin" value={rule.coin} options={COINS} disabled={disabled} onChange={set("coin")} />
-      <Choice label="Which way to bet" value={rule.side} options={SIDES} disabled={disabled} onChange={set("side")} />
-      <Field label="Lowest price to pay (¢)" value={rule.min_price} disabled={disabled} onChange={set("min_price")} inputMode="numeric" />
-      <Field label="Highest price to pay (¢)" value={rule.max_price} disabled={disabled} onChange={set("max_price")} inputMode="numeric" />
-      <Field label="How sure the bot must be (%)" value={rule.min_confidence} disabled={disabled} onChange={set("min_confidence")} inputMode="numeric" />
-      <Field label="Minimum expected profit (¢)" value={rule.min_edge} disabled={disabled} onChange={set("min_edge")} hint="blank = don't care" note="Blank = don't care" />
-      <Field label="Start betting at (seconds left)" value={rule.max_seconds_left} disabled={disabled} onChange={set("max_seconds_left")} inputMode="numeric" note={`= ${clock(rule.max_seconds_left)} left`} />
-      <Field label="Stop betting at (seconds left)" value={rule.min_seconds_left} disabled={disabled} onChange={set("min_seconds_left")} inputMode="numeric" note={`= ${clock(rule.min_seconds_left)} left`} />
-      <Field label="Most to spend per buy ($)" value={rule.budget} disabled={disabled} onChange={set("budget")} note={`Up to $${MAX_BUDGET}`} />
-      <Field label="Buys per market" value={rule.max_entries} disabled={disabled || rule.scalping} onChange={set("max_entries")} inputMode="numeric" note={rule.scalping ? "One buy per scalp cycle; no adding to an open position" : "1 = buy once. More = add to the same open position"} />
-      <Field label="Wait between buys (seconds)" value={rule.reentry_gap_sec} disabled={disabled || rule.scalping} onChange={set("reentry_gap_sec")} inputMode="numeric" note="Only matters for adding to an open position, not scalp cycles" />
-      <Field label="Cash out when up by ($)" value={rule.take_profit} disabled={disabled} onChange={set("take_profit")} note="0 = never, hold to the end" />
-      <Field label="Cut losses when down by ($)" value={rule.stop_loss} disabled={disabled} onChange={set("stop_loss")} note="0 = never, hold to the end" />
-      {rule.scalping && <>
-        <Field label="Cycles per market" value={rule.max_cycles} disabled={disabled} onChange={set("max_cycles")} inputMode="numeric" note="1-10 separate buy/sell cycles, counting the first buy" />
-        <Field label="Cooldown after exit (seconds)" value={rule.cycle_cooldown_sec} disabled={disabled} onChange={set("cycle_cooldown_sec")} inputMode="numeric" note="5-900 seconds, starts only after fully selling" />
-        <Field label="Total spending per market ($)" value={rule.market_spend_limit} disabled={disabled} onChange={set("market_spend_limit")} note="Includes entry fees; profits do not replenish this cap" />
-        <Field label="Market loss limit ($)" value={rule.market_loss_limit} disabled={disabled} onChange={set("market_loss_limit")} note="Exit trigger, not a guaranteed maximum loss" />
-      </>}
-    </div>
-    {rule.scalping && <p className="trading-muted">Profit targets are net dollars per position after entry costs and reserved exit fees, not per contract. Fees and spreads can erase small gains. Caps persist across restarts and cannot be increased for a market already traded. No profit is guaranteed.</p>}
-    {problem ? <p className="negative">{problem}</p> : <p className="trading-muted">{ruleSummary(rule)}</p>}
-  </fieldset>;
 }
 
 const BLOCKERS = [
@@ -229,6 +157,7 @@ function friendlyReason(reason) {
   if ((match = /^(\d+)s left is outside (\d+)-(\d+)s/.exec(reason))) return `${clock(match[1])} left — waits for ${clock(match[3])} to ${clock(match[2])}`;
   if ((match = /^(YES|NO) costs ([\d.]+), outside ([\d.]+)-([\d.]+)/.exec(reason))) return `${direction(match[1].toLowerCase())} costs ${centsOf(match[2])}¢, your range is ${centsOf(match[3])}¢–${centsOf(match[4])}¢`;
   if ((match = /^model gives (YES|NO) ([\d.]+) < ([\d.]+)/.exec(reason))) return `bot is ${centsOf(match[2])}% sure, you want ${centsOf(match[3])}%`;
+  if ((match = /^market implies (YES|NO) ([\d.]+) < ([\d.]+)/.exec(reason))) return `${direction(match[1].toLowerCase())} market confidence is ${(num(match[2]) * 100).toFixed(1)}%, you want ${centsOf(match[3])}%`;
   if ((match = /^edge (-?[\d.]+) after fees < (-?[\d.]+)/.exec(reason))) return `expected profit ${(num(match[1]) * 100).toFixed(1)}¢, you want ${centsOf(match[2])}¢`;
   return reason;
 }
@@ -260,7 +189,8 @@ function WatchCards({ watch, now, updatedAt, stale, enabled }) {
         <span className={`watch-state${stale ? " stale" : ""}`}>{state}</span>
         <div className={`watch-countdown${left <= 240 ? " closing" : ""}`}><span>Time left</span><strong>{clock(left)}</strong></div></header>
       <DirectionBars modelProbability={row.model_p_yes} marketProbability={row.market_p_yes} />
-      <footer><span className={`trading-bet ${row.side === "no" ? "down" : row.side ? "up" : ""}`}>{row.side ? `${direction(row.side)} at ${centsOf(row.price)}¢` : "No bet yet"}</span>
+      <footer><span className={`trading-bet ${row.side === "no" ? "down" : row.side ? "up" : ""}`}>{row.side ? `${row.strategy === "momentum" && !matched ? "Watching " : ""}${direction(row.side)} at ${centsOf(row.price)}¢` : "No bet yet"}</span>
+        {row.strategy === "momentum" && row.entry_confidence != null && <p>Momentum entry: {direction(row.side)} · Market confidence {(num(row.entry_confidence) * 100).toFixed(1)}%</p>}
         {row.scalping && <p>Scalp cycles started: {row.scalping.cycles} · Spent {money(row.scalping.spent)} · Closed net {signedMoney(row.scalping.realized_pnl)}</p>}
         <p>{note}</p></footer>
     </article>;
@@ -320,7 +250,7 @@ function LiveCard({ position, events, decision, now }) {
     {position.liquidity_warning && <p className="negative">Nobody is buying right now, so the bot can't sell yet.</p>}
     <details className="trading-decision"><summary><span>What the bot did</span><ChevronDown size={16} /></summary>{events.length ? <Diary events={events} /> : <p className="trading-muted">Nothing yet</p>}</details>
     <details className="trading-decision"><summary><span>Why the bot made this bet</span><ChevronDown size={16} /></summary>{position.scalp && position.entry_signal
-      ? <p className="trading-muted">Live rule matched at {timestamp(position.entry_signal.ts_ms)}: {direction(position.side)} at {centsOf(position.entry_signal.price)}¢, estimated win chance {(num(position.entry_signal.confidence) * 100).toFixed(1)}%. This is the cycle's entry prediction, not the saved final pick.</p>
+      ? <p className="trading-muted">Live entry checked at {timestamp(position.entry_signal.ts_ms)}: {direction(position.side)} at {centsOf(position.entry_signal.price)}¢, {position.entry_signal.confidence_source === "market" ? "market-implied settlement chance" : "estimated win chance"} {(num(position.entry_signal.confidence) * 100).toFixed(1)}%. {position.strategy === "momentum" ? "Entry follows quote and coin movement, not the settlement model's pick. This is not a probability of scalp profit." : "This is the cycle's entry prediction, not the saved final pick."}</p>
       : <Why decision={decision} />}</details>
   </article>;
 }
@@ -421,7 +351,7 @@ export default function Trading() {
   const accept = (body, resetMode = null) => {
     dataVersionRef.current += 1;
     setData(body);
-    setForms((current) => Object.fromEntries(MODES.map(([key]) => [key, resetMode === key || current[key] === null ? toUi(body[key].settings) : current[key]])));
+    setForms((current) => Object.fromEntries(MODES.map(([key]) => [key, resetMode === key || current[key] === null ? scalpForm(body[key].settings) : current[key]])));
     setStale(false); setReadError(""); setUpdatedAt(Date.now());
   };
 
@@ -500,8 +430,9 @@ export default function Trading() {
   const snap = data?.[mode];
   const form = forms[mode];
   const blockers = snap?.blockers ?? [];
-  const dirty = Boolean(form) && Boolean(snap) && formKey(form) !== formKey(toUi(snap.settings));
-  const validation = form ? validateSettings(form) : "";
+  const strategySaved = Boolean(snap) && formKey(toUi(snap.settings)) === formKey(toUi(scalpSettings(scalpForm(snap.settings))));
+  const dirty = Boolean(form) && Boolean(snap) && (!strategySaved || JSON.stringify(form) !== JSON.stringify(scalpForm(snap.settings)));
+  const validation = form ? validateScalp(form) : "";
   const enableBlocked = !snap || stale || busy || dirty || blockers.length > 0 || Boolean(snap.error);
   const snapshotChanged = snapshot && (formKey(toUi(snapshot.settings)) !== formKey(toUi(data?.live?.settings)) || snapshot.environment !== data?.live?.environment);
 
@@ -511,14 +442,13 @@ export default function Trading() {
     try {
       const next = await request(`/api/trading/${kind}`, { method: kind === "settings" ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       accept(next, kind === "settings" ? body.mode : null);
-      setSuccess(kind === "settings" ? "Rules saved." : `${modeName(body.mode)} turned ${next[body.mode].enabled ? "on" : "off"}.`);
+      setSuccess(kind === "settings" ? "Scalping settings saved." : `${modeName(body.mode)} turned ${next[body.mode].enabled ? "on" : "off"}.`);
       setSnapshot(null);
     } catch (nextError) {
       if (mountedRef.current && nextError.name !== "AbortError") { setError(nextError.message); setStale(true); setSnapshot(null); }
     } finally { busyRef.current = false; if (mountedRef.current) { setBusy(false); setLoading(false); } }
   };
 
-  const updateRules = (rules) => { setForms({ ...forms, [mode]: { ...form, rules } }); setSuccess(""); setError(""); };
 
   const toggle = () => {
     if (!snap) return;
@@ -552,14 +482,26 @@ export default function Trading() {
           <div>
             <p className="trading-muted">{title}</p>
             <h3>{snap.enabled ? "The bot is ON" : "The bot is OFF"}</h3>
-            <p className="trading-muted">{snap.enabled ? "It places bets by itself whenever a market matches one of your rules." : "It won't place any new bets. Flip the switch to let it trade with your rules."}</p>
+            <p className="trading-muted">{snap.enabled ? "It places trades automatically when the saved strategy qualifies." : "Save your settings, then turn it on to scalp short-term movement."}</p>
           </div>
           <label className="trading-switch"><input type="checkbox" role="switch" aria-label={modeName(mode)} checked={snap.enabled} disabled={snap.enabled ? busy : enableBlocked} onChange={toggle} /><Power size={17} />{snap.enabled ? "ON" : "OFF"}</label>
         </div>
         {blockers.length > 0 && <div className="trading-blockers"><strong>Why the bot can't bet right now:</strong><ul>{blockers.map((blocker, index) => <li key={index}>{friendlyBlocker(blocker)}</li>)}</ul></div>}
-        {!snap.enabled && dirty && <p className="trading-muted">Save your rule changes before turning the bot on.</p>}
+        {!snap.enabled && dirty && <p className="trading-muted">Save your scalping settings before turning the bot on.</p>}
         {snap.error && <p className="negative" role="alert">{snap.error}</p>}
         <p className="trading-muted">Turning the bot off stops new bets only — bets already made keep going until the market ends (or your cash-out / cut-loss amount is hit). Last market check: {timestamp(snap.last_cycle_ms)}</p>
+      </section>
+      <section className="trading-section" aria-label="Scalping controls"><h3>Scalp market movement</h3>
+        {!strategySaved && <p className="trading-muted">Your previous strategy is still saved. Turn the bot off and save here to replace it with momentum scalping. Existing trades keep their original exit plan.</p>}
+        <form onSubmit={(event) => { event.preventDefault(); if (!validation && dirty && !snap.enabled && !busy && !stale) void mutate("settings", { mode, ...scalpSettings(form) }); }}>
+          <ScalpControls form={form} disabled={snap.enabled || busy} onChange={(next) => { setForms({ ...forms, [mode]: next }); setSuccess(""); setError(""); }} />
+          {validation && <p className="negative" role="alert">{validation}</p>}
+          <div className="trading-buttons">
+            <button className="secondary-button" type="submit" disabled={snap.enabled || busy || stale || !dirty || !!validation}><Save size={16} />Save settings</button>
+            <span className="trading-muted">{snap.enabled ? "Turn the bot off to change settings." : dirty ? "You have unsaved changes" : "All changes saved"}</span>
+          </div>
+          <p className="trading-muted">Saving replaces only this mode's strategy and never starts trading. Test in Practice first. Real-money trading still requires your confirmation.</p>
+        </form>
       </section>
       <section className="trading-section" aria-label="Scoreboard"><dl className="trading-score">
         <Stat label="Bets running now" value={running.length} />
@@ -582,27 +524,8 @@ export default function Trading() {
       </section>
       <section className="trading-section" aria-label="Markets the bot is watching">
         <div className="watch-heading"><h3>Markets the bot is watching</h3><span className={`watch-live${streamStatus === "Live" && !stale ? " connected" : ""}`} role="status"><span aria-hidden="true" />{stale ? "Out of date" : streamStatus} · {snap.watch?.length ?? 0} {snap.watch?.length === 1 ? "market" : "markets"}</span></div>
-        <p className="trading-muted">Each 15-minute market, checked against your rules. Bot leans and Market leans show the current favored direction and its estimated chance, not the saved final pick. A lean is not a bet; the entry side below follows your rule and prices.{snap.enabled ? "" : " The bot is OFF, so this is just a preview."}</p>
+        <p className="trading-muted">Bot leans is the settlement model, not a scalp direction. Momentum entries follow recent quote movement with matching short-term coin movement; Market confidence applies to the actual entry side. A high UP price alone is not evidence it is rising.{snap.enabled ? "" : " The bot is OFF, so this is just a preview."}</p>
         <WatchCards watch={snap.watch} now={now} updatedAt={updatedAt} stale={stale} enabled={snap.enabled} />
-      </section>
-      <section className="trading-section" aria-label="Your betting rules"><h3>Your betting rules</h3>
-        <p className="trading-muted">The bot checks your rules from top to bottom; the first one that matches is used. Each contract pays $1 if your bet wins and $0 if it loses, so a 70¢ price means you win 30¢ or lose 70¢ per contract. The bot holds one bet per coin at a time.</p>
-        <form onSubmit={(event) => { event.preventDefault(); if (!validation && dirty && !snap.enabled && !busy && !stale) void mutate("settings", { mode, ...fromUi(form) }); }}>
-          {rulesOf(form).map((rule, index) => <RuleEditor key={index} rule={rule} index={index} count={rulesOf(form).length} disabled={snap.enabled || busy}
-            onChange={(next) => updateRules(rulesOf(form).map((item, position) => position === index ? next : item))}
-            onRemove={() => updateRules(rulesOf(form).filter((_, position) => position !== index))} />)}
-          <RiskEditor risk={form?.risk} disabled={snap.enabled || busy} onChange={(risk) => { setForms({ ...forms, [mode]: { ...form, risk } }); setSuccess(""); setError(""); }} />
-          {validation && <p className="negative" role="alert">{validation}</p>}
-          <div className="trading-buttons">
-            <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...NEW_RULE, ...SCALP_DEFAULTS, name: `Rule ${rulesOf(form).length + 1}` }])}><Plus size={16} />Add a rule</button>
-            <button className="secondary-button" type="button" disabled={snap.enabled || busy || rulesOf(form).length >= MAX_RULES} onClick={() => updateRules([...rulesOf(form), { ...SCALP_PRESET }])}><Plus size={16} />Add scalping test rule</button>
-            {mode === "paper" && <button className="secondary-button" type="button" disabled={snap.enabled || busy} onClick={() => { setForms({ ...forms, paper: { rules: [{ ...PRACTICE_PRESET }], risk: { ...PRACTICE_RISK } } }); setSuccess(""); setError(""); }}>Load conservative practice preset</button>}
-            <button className="secondary-button" type="submit" disabled={snap.enabled || busy || stale || !dirty || !!validation}><Save size={16} />Save rules</button>
-            <span className="trading-muted">{snap.enabled ? "Turn the bot off to change rules." : dirty ? "You have unsaved changes" : "All changes saved"}</span>
-          </div>
-          <p className="trading-muted">The scalping preset only adds an unsaved rule; it does not start trading. Rules run top to bottom, so earlier rules can take priority. Test in Practice first. A profitable exit is required before re-entry; a stop loss ends trading in that market.</p>
-          {mode === "paper" && <p className="trading-muted">The conservative preset replaces only this unsaved Practice form: 60-95 cent entries, 4-11 minutes left, one buy per market, hold to settlement, 3 cent buffered edge, and a 2 cent uncertainty buffer. It is an experiment, not a proven profitable strategy. Save explicitly; it never changes Real money or turns either bot on.</p>}
-        </form>
       </section>
       <section className="trading-section" aria-label="Bot diary">
         <details className="trading-decision"><summary><span>Bot diary ({events.length})</span><ChevronDown size={16} /></summary>

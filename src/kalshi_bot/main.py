@@ -216,6 +216,7 @@ class BotApp:
             "market_p_yes": signal.market_p_yes, "model": model,
             "yes_bid": float(bid), "yes_ask": float(ask), "quality_flags": flags,
             "index_price": features.index_price, "strike": state.strike,
+            "momentum_short_per_sec": features.momentum_short_per_sec,
         }
 
     def priced_signal(
@@ -730,6 +731,7 @@ class BotApp:
                     "model_p_yes": signal.model_p_yes,
                     "model": model,
                     "index_price": features.index_price, "strike": state.strike,
+                    "momentum_short_per_sec": features.momentum_short_per_sec,
                     "market_p_yes": signal.market_p_yes,
                     "yes_bid": state.yes_bid_dollars,
                     "yes_ask": state.yes_ask_dollars,

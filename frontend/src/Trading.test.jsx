@@ -3,14 +3,16 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import Trading, { friendlyStatus, fromUi, toUi, validateSettings } from "./Trading";
+import { scalpSettings, validateScalp } from "./ScalpControls";
 
 const RULE = { name: "Edge", enabled: true, coin: "ANY", side: "model", min_price: "0.50", max_price: "0.95", min_confidence: "0.50", min_edge: "0.00", min_seconds_left: 330, max_seconds_left: 390, budget: "1.00", take_profit: "0.50", stop_loss: "0.10", max_entries: 1, reentry_gap_sec: 60 };
 const SETTINGS = { rules: [RULE] };
 const withRule = (overrides) => ({ rules: [{ ...RULE, ...overrides }] });
 const uiWith = (overrides) => ({ rules: [{ ...toUi(SETTINGS).rules[0], ...overrides }] });
-const rule = (index = 1) => within(screen.getByRole("group", { name: `Rule ${index}` }));
-const SPEND = "Most to spend per buy ($)";
-const makeSnapshot = (mode, overrides = {}) => ({ mode, settings: structuredClone(SETTINGS), watch: [], enabled: false, environment: "demo", blockers: [], last_cycle_ms: null, error: null, positions: [], events: [], decisions: [], ...overrides });
+const CURRENT = scalpSettings({ confidence: "65", budget: "1.00", stop_loss: "0.20" });
+const rule = () => within(screen.getByRole("group", { name: "Scalping settings" }));
+const SPEND = "Amount per trade ($)";
+const makeSnapshot = (mode, overrides = {}) => ({ mode, settings: structuredClone(CURRENT), watch: [], enabled: false, environment: "demo", blockers: [], last_cycle_ms: null, error: null, positions: [], events: [], decisions: [], ...overrides });
 let state;
 let fail;
 let malformed;
@@ -37,71 +39,59 @@ const lastWrite = (method) => fetch.mock.calls.filter(([, options]) => options?.
 const goLive = (user) => user.click(screen.getByRole("radio", { name: "Real money" }));
 
 describe("Trading tab", () => {
-  it("loads a conservative unsaved practice preset without touching real-money settings or enabling trading", async () => {
+  it("replaces legacy complexity only after saving, without enabling or touching the other mode", async () => {
+    state.paper.settings = structuredClone(SETTINGS);
     const user = userEvent.setup(); render(<Trading />);
-    await screen.findByRole("group", { name: "Rule 1" });
-    await user.click(screen.getByRole("button", { name: "Load conservative practice preset" }));
+    await screen.findByRole("group", { name: "Scalping settings" });
     expect(rule().getByLabelText(SPEND).value).toBe("1.00");
-    expect(screen.getByLabelText("Probability uncertainty buffer (cents)").value).toBe("2");
-    expect(screen.getByLabelText("Require fair-value model; skip fallback predictions").checked).toBe(true);
+    expect(rule().getAllByRole("textbox")).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: "Add a rule" })).toBeNull();
+    expect(screen.queryByLabelText("Minimum expected profit (¢)")).toBeNull();
+    expect(screen.getByRole("switch").disabled).toBe(true);
     expect(lastWrite("PUT")).toBeUndefined();
     expect(lastWrite("POST")).toBeUndefined();
-    await user.click(screen.getByRole("button", { name: "Save rules" }));
-    await screen.findByText("Rules saved.");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Scalping settings saved.");
     const saved = JSON.parse(lastWrite("PUT")[1].body);
     expect(saved.mode).toBe("paper");
     expect(saved.rules).toHaveLength(1);
-    expect(saved.rules[0]).toMatchObject({ min_price: "0.60", max_price: "0.95", max_entries: 1,
-      min_seconds_left: 240, max_seconds_left: 660, take_profit: "0.00", stop_loss: "0.00" });
-    expect(saved.risk).toMatchObject({ daily_loss_limit: "5.00", max_open_cost: "2.00",
-      max_open_positions: 2, uncertainty_buffer: "0.02", min_edge: "0.03", require_fair_value: true });
-    expect(fromUi(toUi(state.paper.settings))).toEqual(state.paper.settings);
-    expect(state.live.settings).toEqual(SETTINGS);
+    expect(saved.rules[0]).toMatchObject({ side: "momentum", min_confidence: "0.65", min_edge: null,
+      budget: "1.00", stop_loss: "0.10", take_profit: "0.02", scalping: true });
+    expect(state.live.settings).toEqual(CURRENT);
     expect(state.live.enabled).toBe(false);
     expect(state.paper.enabled).toBe(false);
-    await goLive(user);
-    expect(screen.queryByRole("button", { name: "Load conservative practice preset" })).toBeNull();
+    expect(screen.getByRole("switch").disabled).toBe(false);
   });
-  it("validates risk controls and treats risk-only changes as unsaved", async () => {
+  it("validates the three controls and blocks saving invalid values", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    const field = await screen.findByLabelText("Maximum money at risk across open bets ($)");
-    await user.clear(field); await user.type(field, "2.00");
-    expect(screen.getByRole("button", { name: "Save rules" }).disabled).toBe(false);
-    const form = toUi({ ...SETTINGS, risk: { max_open_cost: "2" } });
-    expect(validateSettings(form)).toBe("");
-    for (const bad of [{ max_open_cost: "-1" }, { max_open_cost: "0.001" }, { max_spread: "101" },
-      { max_signal_age_ms: "0" }, { max_book_age_ms: "10001" }, { max_open_positions: "1.5" }]) {
-      expect(validateSettings({ ...form, risk: { ...form.risk, ...bad } })).not.toBe("");
+    const field = await screen.findByLabelText("Stop loss amount ($)");
+    await user.clear(field); await user.type(field, "1.00");
+    expect(screen.getByRole("button", { name: "Save settings" }).disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toContain("less than");
+    const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
+    expect(validateScalp(form)).toBe("");
+    for (const bad of [{ confidence: "49" }, { confidence: "100" }, { confidence: "65.5" },
+      { budget: "25.01" }, { budget: "NaN" }, { budget: "0" }, { stop_loss: "0" },
+      { stop_loss: "1.00" }, { stop_loss: "0.001" }]) {
+      expect(validateScalp({ ...form, ...bad })).not.toBe("");
     }
   });
-  it("adds an unsaved scalping preset and persists its limits without enabling either mode", async () => {
+  it("automatically derives protected exits and spending caps from the three controls", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    await screen.findByRole("group", { name: "Rule 1" });
-    await user.click(screen.getByRole("button", { name: "Add scalping test rule" }));
-    const scalp = rule(2);
-    expect(scalp.getByLabelText("Repeated scalping (sell, then re-enter)").checked).toBe(true);
-    expect(scalp.getByLabelText("Buys per market").disabled).toBe(true);
-    expect(scalp.getByLabelText("Cash out when up by ($)").value).toBe("0.02");
-    expect(scalp.getByLabelText("Cycles per market").value).toBe("3");
+    const amount = await screen.findByLabelText(SPEND);
+    await user.clear(amount); await user.type(amount, "10");
     expect(lastWrite("PUT")).toBeUndefined();
     expect(lastWrite("POST")).toBeUndefined();
-    await user.click(screen.getByRole("button", { name: "Save rules" }));
-    await screen.findByText("Rules saved.");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Scalping settings saved.");
     const saved = JSON.parse(lastWrite("PUT")[1].body);
-    expect(saved.rules[1]).toMatchObject({ scalping: true, max_cycles: 3, cycle_cooldown_sec: 30,
-      market_spend_limit: "3.00", market_loss_limit: "0.50", max_entries: 1, min_edge: "0.03",
+    expect(saved.rules[0]).toMatchObject({ scalping: true, max_cycles: 3, cycle_cooldown_sec: 30,
+      market_spend_limit: "25.00", market_loss_limit: "0.20", max_entries: 1, min_edge: null,
       take_profit: "0.02", stop_loss: "0.20", min_seconds_left: 90, max_seconds_left: 840 });
+    expect(saved.risk).toMatchObject({ min_edge: "0.00", max_spread: "0.03",
+      max_open_positions: 2, max_open_cost: "20.00", daily_loss_limit: "30.00" });
     expect(state.live.enabled).toBe(false);
     expect(state.paper.enabled).toBe(false);
-    expect(fromUi(toUi({ rules: [saved.rules[1]] }))).toEqual({ rules: [saved.rules[1]] });
-    for (const bad of [{ take_profit: "0" }, { stop_loss: "0" }, { max_entries: "2" }, { min_edge: "" },
-      { min_edge: "0" }, { min_seconds_left: "59" }, { max_seconds_left: "901" }, { max_cycles: "11" },
-      { cycle_cooldown_sec: "0" }, { market_spend_limit: "0.50" }, { market_loss_limit: "0" },
-      { market_loss_limit: "4.00" }]) {
-      const form = toUi({ rules: [saved.rules[1]] });
-      Object.assign(form.rules[0], bad);
-      expect(validateSettings(form)).not.toBe("");
-    }
   });
   it("uses server totals and isolates the activity for each scalp cycle", async () => {
     const now = Date.now();
@@ -124,6 +114,18 @@ describe("Trading tab", () => {
     expect(within(score).getByText("120")).toBeTruthy();
     expect(within(score).getByText("+$2.40")).toBeTruthy();
     expect(within(score).getByText("83% (100 of 120)")).toBeTruthy();
+  });
+  it("shows confidence for the moving entry side instead of the opposite model edge", async () => {
+    state.paper.watch = [{ ticker: "KXBTC15M-MOVE", seconds_left: 600,
+      model_p_yes: 0.61, market_p_yes: 0.635, strategy: "momentum", side: "yes", price: "0.64",
+      entry_confidence: "0.635", rule: null,
+      status: "No match - Momentum scalp: market implies YES 0.635 < 0.65" }];
+    render(<Trading />);
+    const card = await screen.findByRole("article", { name: "Watching KXBTC15M-MOVE" });
+    expect(within(card).getByText("Watching UP at 64¢")).toBeTruthy();
+    expect(within(card).getByText("Momentum entry: UP · Market confidence 63.5%")).toBeTruthy();
+    expect(within(card).getByText(/UP market confidence is 63.5%, you want 65%/)).toBeTruthy();
+    expect(within(card).queryByText(/bot is 39%/)).toBeNull();
   });
   it("converts rules to friendly cents/percent and back, and validates them", () => {
     expect(toUi(SETTINGS).rules[0]).toMatchObject({ min_price: "50", max_price: "95", min_confidence: "50", min_edge: "0", min_seconds_left: "330", budget: "1.00" });
@@ -155,7 +157,7 @@ describe("Trading tab", () => {
     expect(within(card).queryByRole("img", { name: "Bot leans: down at 80.0%" })).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
-  it("starts on practice mode and adds/removes rules, saving in the API format", async () => {
+  it("starts on practice mode and saves a single automatic momentum strategy", async () => {
     state.paper.watch = [{ ticker: "KXBTC15M-A", seconds_left: 360, model_p_yes: 0.84, market_p_yes: 0.8, side: "yes", price: "0.80", rule: "Edge", status: "Matches 'Edge'" }];
     const user = userEvent.setup(); render(<Trading />);
     const watch = await screen.findByRole("region", { name: "Markets the bot is watching" });
@@ -163,26 +165,19 @@ describe("Trading tab", () => {
     expect(within(watch).getByText("BTC")).toBeTruthy();
     expect(within(watch).getByText("UP at 80¢")).toBeTruthy();
     expect(within(watch).getByText('Preview only — matches "Edge"')).toBeTruthy();
-    expect(rule().getByLabelText("Lowest price to pay (¢)").value).toBe("50");
-    await user.click(screen.getByRole("button", { name: "Add a rule" }));
-    const second = rule(2);
-    await user.selectOptions(second.getByLabelText("Which coin"), "SOL");
-    await user.selectOptions(second.getByLabelText("Which way to bet"), "no");
-    await user.clear(second.getByLabelText(SPEND)); await user.type(second.getByLabelText(SPEND), "20");
-    await user.clear(second.getByLabelText("Minimum expected profit (¢)"));
-    await user.click(screen.getByRole("button", { name: "Save rules" }));
-    await screen.findByText("Rules saved.");
+    expect(rule().getByLabelText("Confidence level (%)").value).toBe("65");
+    await user.clear(rule().getByLabelText(SPEND)); await user.type(rule().getByLabelText(SPEND), "20");
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Scalping settings saved.");
     const body = JSON.parse(lastWrite("PUT")[1].body);
     expect(body.mode).toBe("paper");
-    expect(body.rules).toHaveLength(2);
-    expect(body.rules[1]).toMatchObject({ name: "Rule 2", coin: "SOL", side: "no", min_price: "0.50", budget: "20.00", min_edge: null, take_profit: "0.00", stop_loss: "0.00", min_seconds_left: 330 });
-    await user.click(screen.getByRole("button", { name: "Remove rule 1" }));
-    expect(screen.getByRole("button", { name: "Remove rule 1" }).disabled).toBe(true);
-    expect(rule(1).getByLabelText("Rule name").value).toBe("Rule 2");
+    expect(body.rules).toHaveLength(1);
+    expect(body.rules[0]).toMatchObject({ coin: "ANY", side: "momentum", budget: "20.00",
+      min_edge: null, take_profit: "0.02", stop_loss: "0.20" });
   });
   it("keeps rules and unsaved changes separate per mode and resets after save", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    await screen.findByRole("group", { name: "Rule 1" });
+    await screen.findByRole("group", { name: "Scalping settings" });
     await goLive(user);
     expect(screen.getByText("Real-money mode — Kalshi demo account (still not real money)")).toBeTruthy();
     const budget = rule().getByLabelText(SPEND);
@@ -196,11 +191,11 @@ describe("Trading tab", () => {
     await user.clear(paperBudget); await user.type(paperBudget, "1.50");
     await goLive(user);
     expect(rule().getByLabelText(SPEND).value).toBe("1.75");
-    expect(screen.getByText("Save your rule changes before turning the bot on.")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Save rules" }));
-    await screen.findByText("Rules saved.");
+    expect(screen.getByText("Save your scalping settings before turning the bot on.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Scalping settings saved.");
     const [, put] = lastWrite("PUT");
-    expect(JSON.parse(put.body)).toEqual({ mode: "live", ...withRule({ budget: "1.75" }) });
+    expect(JSON.parse(put.body)).toEqual({ mode: "live", ...scalpSettings({ confidence: "65", budget: "1.75", stop_loss: "0.20" }) });
     expect(put.headers.Authorization).toBeUndefined();
     expect(state.live.settings.rules[0].budget).toBe("1.75");
     expect(state.paper.settings.rules[0].budget).toBe("1.00");
@@ -211,17 +206,17 @@ describe("Trading tab", () => {
   });
   it("turns practice on instantly without a dialog", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    await screen.findByRole("group", { name: "Rule 1" });
+    await screen.findByRole("group", { name: "Scalping settings" });
     expect(screen.getByText("The bot is OFF")).toBeTruthy();
     await user.click(screen.getByRole("switch"));
     await screen.findByText("Practice bot turned on.");
     expect(screen.queryByRole("dialog")).toBeNull();
     const [, post] = lastWrite("POST");
-    expect(JSON.parse(post.body)).toEqual({ mode: "paper", enabled: true, confirm: true, settings: SETTINGS });
+    expect(JSON.parse(post.body)).toEqual({ mode: "paper", enabled: true, confirm: true, settings: CURRENT });
     expect(post.headers.Authorization).toBeUndefined();
     expect(screen.getByRole("switch").checked).toBe(true);
     expect(screen.getByText("The bot is ON")).toBeTruthy();
-    expect(screen.getByText("Turn the bot off to change rules.")).toBeTruthy();
+    expect(screen.getByText("Turn the bot off to change settings.")).toBeTruthy();
     await user.click(screen.getByRole("switch"));
     await screen.findByText("Practice bot turned off.");
     expect(JSON.parse(lastWrite("POST")[1].body)).toEqual({ mode: "paper", enabled: false, confirm: false });
@@ -236,12 +231,12 @@ describe("Trading tab", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Turn on the real-money bot?")).toBeTruthy();
     expect(within(dialog).getByText(/Spend up to \$1\.00/)).toBeTruthy();
-    expect(within(dialog).getByText("Edge")).toBeTruthy();
+    expect(within(dialog).getByText("Momentum scalp")).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Yes, turn it on" }).disabled).toBe(true);
     await user.click(within(dialog).getByRole("checkbox"));
     await user.click(within(dialog).getByRole("button", { name: "Yes, turn it on" }));
     await screen.findByText("Real-money bot turned on.");
-    expect(JSON.parse(lastWrite("POST")[1].body)).toEqual({ mode: "live", enabled: true, confirm: true, settings: SETTINGS });
+    expect(JSON.parse(lastWrite("POST")[1].body)).toEqual({ mode: "live", enabled: true, confirm: true, settings: CURRENT });
     state.live.blockers = ["Trading worker is not healthy"];
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     await screen.findByText("The bot's trading engine isn't running properly.");
@@ -309,7 +304,7 @@ describe("Trading tab", () => {
   });
   it("pushes changed probabilities and new markets without overwriting unsaved rules", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    await screen.findByRole("group", { name: "Rule 1" });
+    await screen.findByRole("group", { name: "Scalping settings" });
     await user.clear(rule().getByLabelText(SPEND)); await user.type(rule().getByLabelText(SPEND), "1.75");
     state.paper.watch = [{ ticker: "KXSOL15M-NEXT", seconds_left: 900, close_ts_ms: Date.now() + 900000, model_p_yes: 0.62, market_p_yes: 0.51, status: "watching" }];
     const reads = fetch.mock.calls.length;
@@ -371,7 +366,7 @@ describe("Trading tab", () => {
   });
   it("does not flip the switch before the server answers", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    await screen.findByRole("group", { name: "Rule 1" });
+    await screen.findByRole("group", { name: "Scalping settings" });
     let complete;
     fetch.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
     await user.click(screen.getByRole("switch"));
