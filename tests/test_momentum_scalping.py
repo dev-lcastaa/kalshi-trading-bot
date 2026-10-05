@@ -5,7 +5,7 @@ import pytest
 
 from kalshi_bot.trading import parse_rules
 from tests.test_auto_trader import entry_rest, live_market
-from tests.test_scalping import clock, scalp_rules
+from tests.test_scalping import clock, lock_call, scalp_rules
 from tests.test_trading_rules import book, enabled, paper_trader
 from kalshi_bot.data.store import Store
 
@@ -27,6 +27,7 @@ def test_momentum_requires_protected_exits_and_no_settlement_edge():
 
 async def moving_trader(tmp_path, clock, down=False):
     store = Store(str(tmp_path / "momentum.db"))
+    lock_call(store, "KXBTC15M-MOVE", up=not down)
     rest = entry_rest()
     feed = [live_market("KXBTC15M-MOVE", model_p_yes=0.61, yes_bid=0.60, yes_ask=0.61,
                         seconds_left=800)]

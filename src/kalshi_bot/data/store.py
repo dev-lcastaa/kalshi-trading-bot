@@ -772,6 +772,16 @@ class Store:
         cur = self._query("SELECT 1 FROM decisions WHERE ticker = ?", (ticker,))
         return cur.fetchone() is not None
 
+    def locked_decision(self, ticker: str) -> dict | None:
+        """The one-shot locked call for a market (None until the model locks it in)."""
+        cur = self._query(
+            """SELECT ticker, ts_ms, seconds_to_expiry, model_p_yes, market_p_yes, recommendation,
+                      confirmation_agree, confirmation_total, confirmation_detail
+               FROM decisions WHERE ticker = ?""", (ticker,),
+        )
+        row = cur.fetchone()
+        return dict(zip([column[0] for column in cur.description], row)) if row else None
+
     def trade_readiness(
         self,
         min_settled: int = 300,

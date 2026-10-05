@@ -29,8 +29,19 @@ def clock(monkeypatch):
     return now
 
 
+def lock_call(store, ticker, up=True, agree=4, total=4):
+    """Record the model's one-shot locked decision, as the prediction loop does at T-6:30."""
+    store.record_decision(
+        ticker=ticker, ts_ms=int(time.time() * 1000), seconds_to_expiry=390.0, index_price=100.0,
+        strike=99.0, model_p_yes=0.8 if up else 0.2, market_p_yes=0.5, edge=0.3,
+        recommendation="BUY_YES" if up else "BUY_NO", confidence=0.8,
+        confirmation_agree=agree, confirmation_total=total, confirmation_detail="[]",
+    )
+
+
 async def setup_trader(tmp_path, clock, side="yes", settings=None):
     store = Store(str(tmp_path / "scalping.db"))
+    lock_call(store, "KXBTC15M-SCALP", up=side == "yes")
     rest = entry_rest()
     rest.get_market_orderbook.return_value = book("0.49", "0.50") if side == "yes" else book("0.50", "0.49")
     feed = [live_market("KXBTC15M-SCALP", model_p_yes=0.8 if side == "yes" else 0.2,
@@ -230,6 +241,7 @@ async def test_real_mode_uses_same_cycle_guards_and_price_limited_ioc_orders(tmp
     rest.create_event_order.side_effect = exchange.create_event_order
     rest.get_market_orderbook.return_value = book("0.49", "0.50")
     feed = [live_market("KXBTC15M-LIVE", 0.8, 0.49, 0.50, seconds_left=800)]
+    lock_call(store, "KXBTC15M-LIVE")
     trader = AutoTrader(store, rest, execution_allowed=True, mode="live", account_identity="test-account",
                         market_feed=lambda: [dict(row, ts_ms=int(clock[0] * 1000)) for row in feed])
     await enabled(trader, scalp_rules(max_cycles=2))
@@ -274,6 +286,7 @@ async def test_zero_fill_cycle_is_not_scored_and_cannot_retry_as_a_new_cycle(tmp
     store = Store(str(tmp_path / "zero.db"))
     rest = entry_rest()
     feed = [live_market("KXBTC15M-SCALP", 0.8, 0.49, 0.50, seconds_left=800)]
+    lock_call(store, "KXBTC15M-SCALP")
     trader = await enabled(paper_trader(store, rest, feed), scalp_rules())
     rest.get_market_orderbook.side_effect = [book("0.49", "0.50"), book("0.79", "0.20")]
     await trader.cycle()
@@ -339,6 +352,7 @@ async def test_entry_rechecks_after_async_book_reads(tmp_path, clock, change):
     store = Store(str(tmp_path / "fresh.db"))
     rest = entry_rest()
     feed = [live_market("KXBTC15M-SCALP", model_p_yes=0.8, yes_bid=0.49, yes_ask=0.50, seconds_left=800)]
+    lock_call(store, "KXBTC15M-SCALP")
     trader = AutoTrader(store, rest, execution_allowed=True, account_identity="test-account", market_feed=lambda: feed)
     await enabled(trader, scalp_rules())
 

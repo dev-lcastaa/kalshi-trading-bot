@@ -62,6 +62,16 @@ execution checks.
   the trade amount, and a daily loss budget of three times the trade amount,
   including reserved open-position cost. A stricter server daily limit still
   applies. High confidence settings may leave no qualifying entry prices.
+- **Locked-call gate.** The bot only trades after the model locks its
+  direction for that market (at T-6:30, `KALSHI_DECISION_LEAD_SEC`) and keeps
+  trading, if its other limits allow, until the market ends. An entry must go
+  the same way as the locked UP/DOWN call, and at least 3 of the 4 safety checks
+  (OLS momentum, short-term momentum, order-book imbalance, LLM risk review)
+  must agree, the same checks shown on the model's pick. Before the lock, with
+  fewer than 3 checks, or against the locked call, the market shows as waiting
+  or no match and nothing is bought. Exits are unaffected. Each bet stores its
+  `market_id` (the Kalshi market ticker) and an `entry_gate` snapshot of the
+  locked call and checks; its orders and events carry the same `market_id`.
 - Fresh-data, executable-liquidity, account-reconciliation, and IOC execution
   checks remain mandatory. Momentum entries do not pretend to have positive
   settlement-value edge and are excluded from settlement-model P/L comparisons.

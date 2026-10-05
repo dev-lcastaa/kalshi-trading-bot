@@ -113,6 +113,37 @@ def parse_policy(values: dict) -> TradingPolicy:
     return TradingPolicy(**{name: dollars(values[name]) for name in ("budget", "take_profit", "stop_loss")})
 
 
+# Same safety checks as the model's locked pick (3 momentum/book signals + the LLM review).
+MIN_LOCKED_CHECKS = 3
+
+
+def locked_call_side(decision: dict) -> str:
+    return "yes" if float(decision["model_p_yes"]) >= 0.5 else "no"
+
+
+def locked_gate_reason(decision: dict | None, side: str) -> str | None:
+    """None when `side` may be traded under the model's locked call, else why not."""
+    if decision is None:
+        return "Waiting for the model to lock its direction"
+    agree, total = int(decision.get("confirmation_agree") or 0), int(decision.get("confirmation_total") or 0)
+    if agree < MIN_LOCKED_CHECKS:
+        return f"Model safety checks {agree}/{total} - need at least {MIN_LOCKED_CHECKS}"
+    call = locked_call_side(decision)
+    if side != call:
+        return f"Entry side {side.upper()} conflicts with the model's locked {call.upper()} call"
+    return None
+
+
+def locked_gate_snapshot(decision: dict) -> dict:
+    return {
+        "market_id": decision["ticker"], "locked_ts_ms": decision["ts_ms"],
+        "call": locked_call_side(decision), "model_p_yes": str(decision["model_p_yes"]),
+        "recommendation": decision["recommendation"],
+        "checks_agree": decision.get("confirmation_agree"), "checks_total": decision.get("confirmation_total"),
+        "checks": decision.get("confirmation_detail"),
+    }
+
+
 def order_payload(ticker: str, side: str, action: str, quantity: Decimal, price: Decimal, client_id: str) -> dict:
     if side not in ("yes", "no") or action not in ("buy", "sell"):
         raise ValueError("Invalid order direction")
@@ -345,6 +376,7 @@ class AutoTrader:
     def save_position(self, position: dict) -> None:
         now_ms = int(time.time() * 1000)
         position.setdefault("opened_ms", now_ms)
+        position.setdefault("market_id", position["ticker"])
         if position.get("status") in ("closed", "skipped"):
             position.setdefault("closed_ms", now_ms)
         suffix = f":{position['position_id']}" if position.get("position_id") else ""
@@ -352,6 +384,7 @@ class AutoTrader:
 
     def event(self, action: str, reason: str, position: dict) -> None:
         self.store.record_trading_event(action, reason, ticker=position["ticker"],
+                                        market_id=position["ticker"],
                                         environment=self.environment, mode=self.mode,
                                         position_id=position.get("position_id"), cycle_number=position.get("cycle_number"))
 
@@ -451,10 +484,17 @@ class AutoTrader:
         self, rule: EntryRule, market: dict, yes_bid: Decimal, yes_ask: Decimal,
     ) -> tuple[Decimal, str | None, str | None]:
         model_p = dollars(market["model_p_yes"])
+        ticker = market["ticker"]
+        # Scalping may only trade once the model has locked its call, and only with it.
+        decision = self.store.locked_decision(ticker) if rule.scalp is not None else None
+        if rule.scalp is not None and decision is None:
+            return (yes_bid + yes_ask) / 2 if rule.side == "momentum" else model_p, None, locked_gate_reason(None, "yes")
         if rule.side != "momentum":
-            return model_p, rule.pick_side(model_p, yes_ask, ONE - yes_bid), None
+            side = rule.pick_side(model_p, yes_ask, ONE - yes_bid)
+            gate = locked_gate_reason(decision, side) if decision is not None and side else None
+            return model_p, None if gate else side, gate
         now_ms = int(time.time() * 1000)
-        samples = [sample for sample in self.quote_history.get(market["ticker"], [])
+        samples = [sample for sample in self.quote_history.get(ticker, [])
                    if 10_000 <= now_ms - sample[0] <= 60_000]
         probability = (yes_bid + yes_ask) / 2
         if not samples:
@@ -470,7 +510,10 @@ class AutoTrader:
             side = "no"
         else:
             return probability, None, "Waiting for quote movement and short-term coin direction to agree"
-        _, latest_bid, latest_ask = self.quote_history[market["ticker"]][-1]
+        gate = locked_gate_reason(decision, side)
+        if gate:
+            return probability, None, gate
+        _, latest_bid, latest_ask = self.quote_history[ticker][-1]
         if ((side == "yes" and (yes_bid < latest_bid or yes_ask < latest_ask))
                 or (side == "no" and (yes_bid > latest_bid or yes_ask > latest_ask))):
             return probability, None, "Quote movement reversed during execution checks"
@@ -622,7 +665,7 @@ class AutoTrader:
             self.retry_after_ms[ticker] = int(time.time() * 1000) + _RETRY_AFTER_MS
         if self.last_skip_reason.get(ticker) != reason:
             self.last_skip_reason[ticker] = reason
-            self.store.record_trading_event("skipped", reason, ticker=ticker,
+            self.store.record_trading_event("skipped", reason, ticker=ticker, market_id=ticker,
                                             environment=self.environment, mode=self.mode)
 
     async def market_supported(self, ticker: str) -> bool:
@@ -679,7 +722,7 @@ class AutoTrader:
                     self.skip(ticker, blocked)
                     continue
                 position = {
-                    "ticker": ticker, "side": side, "rule": rule.name,
+                    "ticker": ticker, "market_id": ticker, "side": side, "rule": rule.name,
                     "strategy": rule.side,
                     "close_ts_ms": market.get("close_ts_ms"), "opened_ms": now_ms,
                     "status": "skipped", "quantity": "0", "entry_cost": "0", "exit_credit": "0",
@@ -805,6 +848,13 @@ class AutoTrader:
             if reason:
                 self.skip(ticker, f"Entry changed before submission - {reason}")
                 continue
+            if rule.scalp is not None:
+                locked = self.store.locked_decision(ticker)
+                gate = locked_gate_reason(locked, side)
+                if gate:
+                    self.skip(ticker, f"Entry changed - {gate}")
+                    continue
+                position["entry_gate"] = locked_gate_snapshot(locked)
             position["entry_signal"] = {
                 "ts_ms": fresh["ts_ms"], "model_p_yes": str(fresh_p),
                 "confidence": str(confidence), "price": str(ask),
@@ -833,7 +883,8 @@ class AutoTrader:
     async def submit(self, position: dict, action: str, quantity: Decimal, price: Decimal, reason: str) -> None:
         client_id = str(uuid4())
         payload = order_payload(position["ticker"], position["side"], action, quantity, price, client_id)
-        position["pending"] = {"client_order_id": client_id, "action": action, "quantity": str(quantity), "reason": reason}
+        position["pending"] = {"client_order_id": client_id, "market_id": position["ticker"],
+                               "action": action, "quantity": str(quantity), "reason": reason}
         position["pending"]["submitted_ms"] = int(time.time() * 1000)
         if action == "buy" and position.get("execution_quote"):
             position["pending"]["execution_quote"] = dict(position["execution_quote"])
@@ -931,6 +982,7 @@ class AutoTrader:
             position["exit_credit"] = str(dollars(position["exit_credit"]) + gross - fees)
         quote = pending.get("execution_quote")
         position.setdefault("execution_history", []).append({
+            "market_id": position["ticker"],
             "order_id": order_id, "client_order_id": pending["client_order_id"],
             "action": pending["action"], "requested": pending["quantity"],
             "filled": str(filled), "gross": str(gross), "fees": str(fees),

@@ -258,6 +258,7 @@ function LiveCard({ position, events, decision, now }) {
       {position.scalp && <Stat label="Scalp cycle" value={`${position.cycle_number}/${position.scalp.max_cycles}`} />}
     </dl>
     <p className="trading-muted">Rule used: <strong>{position.rule ?? "--"}</strong> · Plan: {exitPlan(position.policy)}</p>
+    <p className="trading-muted">Market ID: <strong>{position.market_id ?? position.ticker}</strong>{position.entry_gate && ` · Model checks ${position.entry_gate.checks_agree}/${position.entry_gate.checks_total}, locked ${direction(position.entry_gate.call)}`}</p>
     {position.liquidity_warning && <p className="negative">Nobody is buying right now, so the bot can't sell yet.</p>}
     <details className="trading-decision"><summary><span>What the bot did</span><ChevronDown size={16} /></summary>{events.length ? <Diary events={events} /> : <p className="trading-muted">Nothing yet</p>}</details>
     <details className="trading-decision"><summary><span>Why the bot made this bet</span><ChevronDown size={16} /></summary>{position.scalp && position.entry_signal
@@ -284,8 +285,10 @@ function FinishedCard({ position }) {
       <Stat label="Got back" value={money(position.exit_credit)} />
     </dl>
     <details className="finished-extra"><summary>Trade details</summary><dl className="finished-details">
+      <Stat label="Market ID" value={position.market_id ?? position.ticker} />
       <Stat label="Contracts" value={position.bought_quantity ?? position.quantity ?? "--"} />
       <Stat label="Rule used" value={position.rule ?? "--"} />
+      {position.entry_gate && <Stat label="Model checks at entry" value={`${position.entry_gate.checks_agree}/${position.entry_gate.checks_total} · locked ${direction(position.entry_gate.call)}`} />}
       {position.scalp && <Stat label="Scalp cycle" value={`${position.cycle_number}/${position.scalp.max_cycles}`} />}
     </dl></details>
     <footer><span>{ENDINGS[position.closed_by] ?? "Closed"}</span><time dateTime={endedAt == null ? undefined : new Date(endedAt).toISOString()}>{timestamp(endedAt)}</time></footer>
