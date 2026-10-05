@@ -393,3 +393,32 @@ def test_scalping_api_serialization_validation_and_confirmed_settings(tmp_path):
     assert "Saved settings changed" in response.json()["detail"]
     assert not trader.enabled
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_start_waits_until_time_then_enters(tmp_path, clock):
+    store = Store(str(tmp_path / "scheduled.db"))
+    rest = entry_rest()
+    rest.get_market_orderbook.return_value = book("0.49", "0.50")
+    feed = [live_market("KXBTC15M-SCALP", model_p_yes=0.8, yes_bid=0.49, yes_ask=0.50, seconds_left=800)]
+    trader = paper_trader(store, rest, feed)
+    start_ms = int(clock[0] * 1000) + 20_000
+    await trader.cycle()
+    await trader.save_settings({**scalp_rules(), "start_at_ms": start_ms})
+    assert trader.settings()["start_at_ms"] == start_ms
+    await trader.control(True, True, trader.settings())
+    await trader.cycle()
+    assert trader.enabled and trader.snapshot()["starts_at_ms"] == start_ms
+    assert trader.positions() == []
+    clock[0] += 21
+    await trader.cycle()
+    assert trader.snapshot()["starts_at_ms"] is None
+    assert len(trader.positions()) == 1
+    await trader.control(False, False)
+    await trader.save_settings(scalp_rules())
+    assert "start_at_ms" not in trader.settings()
+    for bad in (0, -5, True, "soon"):
+        with pytest.raises(ValueError):
+            await trader.save_settings({**scalp_rules(), "start_at_ms": bad})
+    store.close()
+

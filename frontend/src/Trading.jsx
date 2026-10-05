@@ -316,6 +316,7 @@ function EnableDialog({ snapshot, blocked, busy, onCancel, onConfirm }) {
     <header><h2 id="enable-title">Turn on the real-money bot?</h2><button className="icon-button" aria-label="Cancel" title="Cancel" disabled={busy} onClick={onCancel}><X size={18} /></button></header>
     <p>{snapshot.environment === "demo" ? "This is a Kalshi demo account, so no real money is used." : "The bot will spend your real money."}</p>
     <h3>It will follow these rules</h3><RuleList settings={snapshot.settings} />
+    {snapshot.settings?.start_at_ms > Date.now() && <p>It will start trading at {timestamp(snapshot.settings.start_at_ms)}.</p>}
     <p>Every time a market matches one of your rules, the bot bets on its own (one bet per coin at a time). You can lose the money you bet. Turning the bot off later stops new bets, but bets already made keep going until the market ends.</p>
     <label className="trading-ack"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />I understand the bot bets on its own and I could lose money.</label>
     {blocked && <p role="alert">Something changed. Close this and check again before turning the bot on.</p>}
@@ -493,7 +494,7 @@ export default function Trading() {
           <div>
             <p className="trading-muted">{title}</p>
             <h3>{snap.enabled ? "The bot is ON" : "The bot is OFF"}</h3>
-            <p className="trading-muted">{snap.enabled ? "It places trades automatically when the saved strategy qualifies." : "Save your settings, then turn it on to scalp short-term movement."}</p>
+            <p className="trading-muted">{snap.enabled ? (snap.starts_at_ms ? `Waiting to start trading at ${timestamp(snap.starts_at_ms)}.` : "It places trades automatically when the saved strategy qualifies.") : "Save your settings, then turn it on to scalp short-term movement."}</p>
           </div>
           <label className="trading-switch"><input type="checkbox" role="switch" aria-label={modeName(mode)} checked={snap.enabled} disabled={snap.enabled ? busy : enableBlocked} onChange={toggle} /><Power size={17} />{snap.enabled ? "ON" : "OFF"}</label>
         </div>

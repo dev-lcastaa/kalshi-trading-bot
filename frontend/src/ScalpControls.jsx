@@ -1,5 +1,13 @@
 import React from "react";
 
+const toLocalInput = (ms) => {
+  if (!ms) return "";
+  const date = new Date(Number(ms));
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 export function scalpForm(settings) {
   const rule = settings?.rules?.[0];
   return {
@@ -7,6 +15,7 @@ export function scalpForm(settings) {
     budget: Number(rule?.budget ?? 1).toFixed(2),
     stop_loss: Number(rule?.stop_loss > 0 ? rule.stop_loss : Math.min(0.20, Number(rule?.budget ?? 1) / 5)).toFixed(2),
     max_cycles: String(rule?.max_cycles ?? 3),
+    start_at: toLocalInput(settings?.start_at_ms),
   };
 }
 
@@ -14,6 +23,7 @@ export function scalpSettings(form) {
   const budget = Number(form.budget);
   const cycles = Number(form.max_cycles ?? 3);
   return {
+    start_at_ms: form.start_at ? new Date(form.start_at).getTime() : null,
     rules: [{
       name: "Momentum scalp", enabled: true, coin: "ANY", side: "momentum",
       min_price: "0.05", max_price: "0.95", min_confidence: (Number(form.confidence) / 100).toFixed(2),
@@ -43,6 +53,7 @@ export function validateScalp(form) {
   if (Number(form.stop_loss) <= 0 || Number(form.stop_loss) >= Number(form.budget)) return "Stop loss must be positive and less than the amount per trade.";
   const cycles = String(form.max_cycles ?? 3);
   if (!/^\d+$/.test(cycles) || Number(cycles) < 1 || Number(cycles) > 10) return "Trades per 15-minute market must be a whole number from 1 to 10.";
+  if (form.start_at && Number.isNaN(new Date(form.start_at).getTime())) return "Choose a valid start date and time, or clear it to start right away.";
   return "";
 }
 
@@ -57,7 +68,10 @@ export default function ScalpControls({ form, disabled, onChange }) {
     <legend>Scalping settings</legend>
     <div className="trading-fields">{fields.map(([key, label, inputMode]) => <label key={key}>
       {label}<input type="text" inputMode={inputMode} value={form[key]} onChange={(event) => onChange({ ...form, [key]: event.target.value })} />
-    </label>)}</div>
+    </label>)}
+      <label>Start trading at (optional)<input type="datetime-local" value={form.start_at ?? ""} onChange={(event) => onChange({ ...form, start_at: event.target.value })} /></label>
+    </div>
+    <p className="trading-muted">Leave the start time empty to trade as soon as the bot is turned on. If you set one, turn the bot on beforehand and it waits until then (in your browser's time zone). A time that has already passed starts right away.</p>
     <p className="trading-muted">The bot follows UP or DOWN movement. Confidence is the market's win estimate, not a profit guarantee.</p>
     <p className="trading-muted">Amount includes buy fees. Profit target: $0.02 after fees. Stop loss triggers a sale, but losses can exceed it.</p>
     <details className="trading-decision"><summary>Automatic safety limits</summary>

@@ -109,6 +109,16 @@ def can_start_cycle(history: list[dict], rule: EntryRule, now_ms: int) -> str | 
     return None
 
 
+def parse_start_at(values: dict | None) -> int | None:
+    """Optional scheduled start as epoch milliseconds; null or absent means start immediately."""
+    value = (values or {}).get("start_at_ms")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("Scheduled start time must be a valid time")
+    return value
+
+
 def parse_policy(values: dict) -> TradingPolicy:
     return TradingPolicy(**{name: dollars(values[name]) for name in ("budget", "take_profit", "stop_loss")})
 
@@ -151,6 +161,7 @@ class AutoTrader:
         self.control_revision = 0
         self.enabled = False
         self.enabled_since_ms = 0
+        self.start_at_ms = 0
         self.last_cycle_ms: int | None = None
         self.error: str | None = None
         self.lock = asyncio.Lock()
@@ -181,12 +192,22 @@ class AutoTrader:
     def risk_limits(self) -> RiskLimits:
         return RiskLimits.parse((self.store.trading_record(self.settings_key) or {}).get("risk"))
 
+    def saved_start_at(self) -> int | None:
+        return parse_start_at(self.store.trading_record(self.settings_key))
+
     def settings(self) -> dict:
         settings = rules_json(self.rules())
         risk = self.risk_limits()
         if risk != RiskLimits():
             settings["risk"] = risk.to_json()
+        start_at = self.saved_start_at()
+        if start_at is not None:
+            settings["start_at_ms"] = start_at
         return settings
+
+    def waiting_until_ms(self) -> int | None:
+        """Scheduled start time while the bot is enabled but not yet allowed to enter."""
+        return self.start_at_ms if self.enabled and self.start_at_ms > int(time.time() * 1000) else None
 
     def open_cost(self) -> Decimal:
         return sum((max(dollars(p["entry_cost"]) - dollars(p.get("exit_credit", "0")), Decimal("0"))
@@ -272,6 +293,7 @@ class AutoTrader:
         return {
             "mode": self.mode,
             "settings": self.settings(), "enabled": self.enabled,
+            "starts_at_ms": self.waiting_until_ms(),
             "environment": self.environment,
             "blockers": self.blockers(), "last_cycle_ms": self.last_cycle_ms, "error": self.error,
             "positions": [*closed[-100:], *running], "events": events,
@@ -304,6 +326,9 @@ class AutoTrader:
         settings = rules_json(rules)
         if risk != RiskLimits():
             settings["risk"] = risk.to_json()
+        start_at = parse_start_at(values)
+        if start_at is not None:
+            settings["start_at_ms"] = start_at
         async with self.lock:
             if self.enabled:
                 raise ValueError("Pause trading before changing settings")
@@ -317,6 +342,7 @@ class AutoTrader:
         revision = self.control_revision
         if not enabled:
             self.enabled = False
+            self.start_at_ms = 0
             self.store.record_trading_event("paused", "New entries paused; existing positions remain monitored",
                                             mode=self.mode)
             return self.snapshot()
@@ -329,15 +355,22 @@ class AutoTrader:
                 raise ValueError("Saved settings changed; review and confirm again")
             if expected_settings is not None and RiskLimits.parse(expected_settings.get("risk")) != self.risk_limits():
                 raise ValueError("Saved risk limits changed; review and confirm again")
+            if expected_settings is not None and parse_start_at(expected_settings) != self.saved_start_at():
+                raise ValueError("Saved start time changed; review and confirm again")
             if not any(rule.enabled for rule in self.rules()):
                 raise ValueError("Enable at least one rule before starting auto trading")
             blockers = self.blockers()
             if blockers:
                 raise ValueError("; ".join(blockers))
-            self.enabled_since_ms = int(time.time() * 1000)
+            now_ms = int(time.time() * 1000)
+            self.enabled_since_ms = now_ms
+            self.start_at_ms = self.saved_start_at() or 0
             self.enabled = True
+            scheduled = self.start_at_ms > now_ms
             self.store.record_trading_event(
-                "enabled", "Auto trading enabled; entering every market that matches a rule",
+                "enabled",
+                "Auto trading enabled; waiting for the scheduled start time" if scheduled
+                else "Auto trading enabled; entering every market that matches a rule",
                 environment=self.environment, settings=self.settings(), mode=self.mode,
             )
             return self.snapshot()
@@ -374,7 +407,7 @@ class AutoTrader:
                             await self.monitor(position)
                     if any(rule.scalp for rule in self.rules()):
                         candidates = self.evaluate_rules()
-                    if self.enabled and not self.blockers():
+                    if self.enabled and not self.blockers() and self.waiting_until_ms() is None:
                         await self.enter_by_rules(candidates)
                 self.error = None
             except Exception as exc:

@@ -58,6 +58,16 @@ describe("Trading tab", () => {
     expect(scalpForm(state.paper.settings).max_cycles).toBe("5");
     expect(scalpSettings({ ...scalpForm(state.paper.settings), budget: "10.00" }).rules[0].market_spend_limit).toBe("25.00");
   });
+  it("round-trips an optional scheduled start time", () => {
+    const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
+    expect(scalpSettings(form).start_at_ms).toBeNull();
+    const startAt = "2030-01-02T09:30";
+    const settings = scalpSettings({ ...form, start_at: startAt });
+    expect(settings.start_at_ms).toBe(new Date(startAt).getTime());
+    expect(scalpForm(settings).start_at).toBe(startAt);
+    expect(scalpForm(scalpSettings(form)).start_at).toBe("");
+    expect(validateScalp({ ...form, start_at: "garbage" })).toContain("valid start date");
+  });
   it("validates trade counts from 1 to 10 and retains the default for older forms", () => {
     const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
     expect(scalpSettings(form).rules[0].max_cycles).toBe(3);
