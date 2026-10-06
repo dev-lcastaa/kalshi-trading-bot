@@ -187,3 +187,57 @@ held-out log loss of `p_D` against `p_A` on `val` + `test`.
 
 **Independence.** Reported, not assumed: the fitted coefficients and the change in held-out log loss when each of
 `x1`, `x2`, `x3` is removed (refit on `train`).
+
+---
+
+# Addendum 2, 2026-10-06 late: H7 and H8 (principled new directions)
+
+Written and committed **before** H7 or H8 was implemented or run, after H1 to H3, H5 and H6 all failed. Neither is a
+repair of a failed idea: both come from structure we have measured. The rules above (common rules, stages, registry,
+holdout, stop rule) apply unchanged unless stated here. To limit false positives, **at most two candidates may enter
+the holdout look**, chosen by the stage rules and nothing else.
+
+## H7: favorite-longshot bias at extreme prices
+
+**Idea.** The fee is quadratic, so near 90c it is about 1c per side against about 2c near 50c. Early research
+(v0.8.0) found that favorites win slightly more often than their price implies (Platt slope 1.11). If that bias
+exceeds the small cost at extreme prices, buying the favorite and holding to settlement has a positive expectation.
+This is a calibration effect of the price, not new information, so it does not repeat H1 to H6.
+
+**Spec (frozen).**
+1. Recalibrated probability `P(yes) = sigmoid(a + b * logit(mid))`, a ridge-free logistic fit of the outcome on the
+   market mid at the minute marks (60 to 840 s before close), both coins pooled, **fit on `train` only**.
+2. Candidate side: the side whose executable price (YES: the ask, NO: 1 - bid) is **at least 0.85** and below 1.00.
+3. Enter when `P(side) - price - fee(price) >= 0` (a non-negative after-fee edge, the v0.8.0 rule), at least 1
+   contract at the touch, decision window 60 to 840 s before close, **one entry per market** (the first qualifying
+   second), order arrives 2 s later and fills at the displayed price, real fee, held to settlement.
+4. Placebo: recalibrated probabilities shuffled across markets of the same coin.
+
+**Stage 1 screen:** the common screen (pooled `val` + `test` mean at least +0.5c, at least 300 trades, `val` and
+`test` each above zero, placebo negative). Stage 2 on `fwd` and stage 3 on `holdout` as in the common rules.
+Reported, not gated: a calibration table (price bin against realised win rate) above 0.85, and the same rule without
+the 0.85 restriction (the original v0.8.0 form).
+
+## H8: thinner markets are less efficient
+
+**Idea.** The BTC series trades about 2.2M contracts a day, the others 8k to 100k. If liquidity drives efficiency, the
+slow-quote edge that the fair-value rule looks for should be larger in thin markets. SOL (about 40 times thinner than
+BTC) looked better than BTC in an earlier replay, but that was found after the fact and is not evidence. H8 tests the
+idea on markets that have never been analysed.
+
+**Universe (frozen).** The seven series ETH, XRP, DOGE, BNB, ZEC, NEAR and HYPE (`KXETH15M` and so on; all quadratic
+fee, multiplier 1, settled on CF Benchmarks with an index named `<COIN>USD_RTI`). ADA, BCH and TON are excluded
+(not discoverable by the bot's tag-based discovery, or no index stream). **No development data exists for these
+markets**, so there is no stage 1; the first data seen is the validation window.
+
+**Windows.** `D0` is the first full UTC day after alt markets first appear in the event store (recorded in the
+registry at the first run). **Stage 2** is `D0` to `D0 + 13`; **stage 3** is `D0 + 14` to `D0 + 27`, evaluated once.
+
+**Test (frozen).** Exactly rule A: the frozen fair-value coefficients (no refit, no per-coin change), 3c after-fee
+edge, 4 to 14 minutes left, up to 5 buys 60 s apart on the same side, 2 s delay, held to settlement, real fees. The
+alts pooled. Pass rule: the stage 2 rule of the common rules (mean above 0, day-clustered 90% CI lower bound above 0,
+at least 300 trades, positive in both halves, shuffled-z placebo negative, still positive with a 5 s delay), and the
+same again on stage 3.
+
+**Reported, not gated:** each coin's net mean; the same rule on BTC and SOL over the same days; the rank correlation
+across coins between net mean and traded volume per market.
