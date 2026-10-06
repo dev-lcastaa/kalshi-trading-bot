@@ -96,11 +96,13 @@ def load_all(store: EventStore) -> tuple[dict, list[dict]]:
             if len(d["ts_ms"]):
                 grids[("cb", iid)] = build_coin_grid(d["ts_ms"].astype(np.int64), _filled(d["price"]))
     mk = {r[0]: r for r in con.execute(_MARKETS_SQL.format(**_markets_sources(store))).fetchall()}
-    q = con.execute("select market_ticker, ts_ms, yes_bid_dollars, yes_ask_dollars, yes_bid_size, yes_ask_size "
-                    "from market_ticks order by market_ticker, ts_ms").fetchnumpy()
+    q = con.execute("select market_ticker, ts_ms, yes_bid_dollars, yes_ask_dollars, yes_bid_size, yes_ask_size, "
+                    "price_dollars, volume from market_ticks order by market_ticker, ts_ms").fetchnumpy()
     tickers = q["market_ticker"]
+    # Columns 1-4 feed the 1 Hz grids; columns 5-6 (last trade price, cumulative volume) feed resting-order fills.
     cols = np.column_stack([q["ts_ms"].astype(float)] + [_filled(q[c]) for c in
-                            ("yes_bid_dollars", "yes_ask_dollars", "yes_bid_size", "yes_ask_size")])
+                            ("yes_bid_dollars", "yes_ask_dollars", "yes_bid_size", "yes_ask_size",
+                             "price_dollars", "volume")])
     cut = np.flatnonzero(tickers[1:] != tickers[:-1]) + 1
     starts, ends = np.r_[0, cut], np.r_[cut, len(tickers)]
     markets = []

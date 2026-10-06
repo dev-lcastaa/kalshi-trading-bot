@@ -177,13 +177,52 @@ MANIFEST.json>` from a fresh Postgres export.
 `python -m aqlabs.store.cli report` (uptime per feed) and the `heartbeats` table. Planned restarts are
 excluded from the count but should be rare (see "Operating it"). Until then Phase 2
 (the fill model) can be developed on the 3 weeks of legacy data plus the new trade tape and depth as they accumulate.
+## Phase 2a result: maker execution of the fair-value signal fails the kill check
+
+Run with `python -m aqlabs.research.maker_suite` on the 3 weeks of legacy data (4,078 markets, Sep 14 to Oct 5,
+holdout excluded). The headline spec was fixed before any result was seen: frozen fair-value signal, 3c edge over the
+limit price with no fee, a limit order that joins the touch and rests 60 s, 2 s order delay, held to settlement,
+maker fee 0 (the series metadata for KXBTC15M / KXSOL15M lists `fee_type: quadratic`, `fee_multiplier: 1`, i.e. no
+maker fee; unverified against a real fill). Fills are decided from the recorded trade and quote stream under three
+rules that bound queue position (`aqlabs/costs/fills.py`): optimistic (first in the queue), queue (wait behind the
+displayed size) and pessimistic (only a trade strictly through our price counts).
+
+| Per decision, cents | Optimistic | Queue | Pessimistic |
+|---|---|---|---|
+| Fill rate | 84% | 78% | 73% |
+| Train + validation | -0.24 | | |
+| Test | -1.16 | -1.63 | -2.25 |
+| All days | -0.40 | -1.03 | -1.45 (90% CI -2.5 to -0.4) |
+
+For comparison, crossing the spread on the same decisions is -1.46c, and the best taker spec (A) is +0.95c.
+
+- **Pre-declared kill check failed:** even the optimistic bound is negative on development data
+  (-0.24c). A second pre-declared variant, pulling the order when the edge over the limit falls below 1c, changed
+  nothing (-0.21c).
+- **Adverse selection is the cause.** Decisions that fill would have earned -3.3c to -4.7c had we crossed the
+  spread, and decisions that never fill would have earned +5c to +8c. When the signal is right the quote runs away
+  from a resting order; the fills come from price reversals. Cancelling on the signal does not remove it.
+- Robust to every sensitivity (threshold 1 to 5c, rest 30 to 120 s, 5 s delay, maker fee 25% and 100% of the taker
+  formula). The 5c threshold is the only positive cell, and only under the optimistic rule (+0.26c). The placebos
+  (stale or shuffled signal) are negative.
+- **Scope of the conclusion:** this kills *signal-driven, join-the-touch, hold-to-settlement* maker execution of
+  this signal. It does not test two-sided market making, quoting deeper than the touch, or other signals. The
+  collector's trade tape and depth can test those, but nothing here suggests they would work, and market making
+  adds inventory risk.
+- A $1 resting order on the live market would confirm whether the maker fee is really zero, but with this result
+  that check is no longer urgent.
+
+Implication for the roadmap: the fee is not the removable cost it first looked like, because the orders that
+avoid the fee are the ones that get adversely selected. The remaining plan is Phase 3 (new information) with the
+taker execution already measured.
+
 ## Migration plan
 
 | Phase | Work | Gate to continue |
 |---|---|---|
 | 0 | Turn off scalping, keep live paused, free disk, rotate the SSH key. | Done by the owner. |
 | 1 | Event store, importer, data-quality checks, fee module, replay engine moved to `aqlabs/research`, Kraken BTC fix, collector service. **Built and verified.** | Replay reproduces the existing results exactly (passed). 2+ weeks of gap-free collection (starts when the collector is deployed). |
-| 2 | Maker/taker fill model in `costs/`, then re-run all strategies. | Net positive after realistic costs on development data. **If not, stop.** |
+| 2 | Maker/taker fill model in `costs/`, then re-run all strategies. **2a done on legacy data: maker execution of the fair-value signal fails the kill check (see above).** | Net positive after realistic costs on development data. **If not, stop.** |
 | 3 | New features and models, hypotheses pre-registered in the registry. | Beats the frozen baseline on validation, then the holdout once. |
 | 4 | Strategy and executor on the shared interface. Paper-sim runs the replay code. | Paper P/L matches the replay prediction within its confidence interval for 2 to 3 weeks. |
 | 5 | Live at $1 to $5 per trade with the risk gate and decay monitor. | Real fills match paper. Scale only slowly. |
