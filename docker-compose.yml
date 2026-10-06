@@ -39,7 +39,24 @@ services:
     ports:
       - "8000:80"
 
+  # Records every feed (quotes, trade tape, depth, index, exchanges) into the Parquet event store.
+  # Separate from the bot: it has no trading code and no database dependency.
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      COLLECTOR_ROOT: /data/eventstore
+    volumes:
+      - ./.secrets:/app/.secrets:ro
+      - eventstore:/data/eventstore
+
 volumes:
+  eventstore:
+    name: aqlabs-eventstore
   postgres-data:
     external: true
     name: kalshi-trading-bot_postgres-data

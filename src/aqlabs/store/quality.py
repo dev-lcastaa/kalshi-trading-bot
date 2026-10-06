@@ -31,7 +31,7 @@ def feed_report(store: EventStore, max_gap_ms: int = 30_000) -> list[dict]:
     rows = []
     feeds = [("index_ticks", "index_id", None, f"index/{i}", i) for i in ("BRTI", "SOLUSD_RTI")]
     feeds += [("external_ticks", "index_id", ("source", s), f"{s}/{i}", i)
-              for s in ("coinbase", "kraken") for i in ("BRTI", "SOLUSD_RTI")]
+              for s in ("coinbase", "kraken", "bitstamp") for i in ("BRTI", "SOLUSD_RTI")]
     con = store.connect() if any(store.has_data(t) for t in ("index_ticks", "external_ticks")) else None
     for table, key, extra, label, value in feeds:
         ts = np.array([], dtype=np.int64)

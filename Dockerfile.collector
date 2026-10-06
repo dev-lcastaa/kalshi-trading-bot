@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+# Market-data collector: a separate image and process so trading load can never drop ticks.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY src ./src
+
+RUN pip install --no-cache-dir ".[collector]"
+
+# The event store lives on a mounted volume; credentials are mounted read-only at runtime.
+ENV COLLECTOR_ROOT=/data/eventstore
+VOLUME ["/data/eventstore"]
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+  CMD ["python", "-m", "aqlabs.collector.healthcheck"]
+
+CMD ["python", "-m", "aqlabs.collector.main"]

@@ -1,8 +1,9 @@
-import numpy as np
 import pytest
 
-pytest.importorskip("duckdb")
-pytest.importorskip("scipy")
+for _mod in ("numpy", "scipy", "duckdb", "pyarrow"):
+    pytest.importorskip(_mod)
+
+import numpy as np  # noqa: E402
 
 from aqlabs.research import replay as R  # noqa: E402
 from aqlabs.costs import taker_fee  # noqa: E402

@@ -1,8 +1,12 @@
-import numpy as np
 import pytest
 
-from aqlabs.costs import taker_fee, taker_fee_array
-from kalshi_bot.signals.generator import kalshi_taker_fee_per_contract
+for _mod in ("numpy", "scipy", "duckdb", "pyarrow"):
+    pytest.importorskip(_mod)
+
+import numpy as np  # noqa: E402
+
+from aqlabs.costs import taker_fee, taker_fee_array  # noqa: E402
+from kalshi_bot.signals.generator import kalshi_taker_fee_per_contract  # noqa: E402
 
 
 def test_fee_matches_the_live_bots_fee_function_at_every_cent():

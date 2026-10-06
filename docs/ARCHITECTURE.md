@@ -1,6 +1,6 @@
 # AQLabs architecture: an edge-proving machine with an automated executor
 
-Status: Phase 1 in progress (see [Migration plan](#migration-plan)). This document replaces
+Status: Phase 1 built and verified; collecting for the 2-week gate (see [Migration plan](#migration-plan)). This document replaces
 "predict up or down" as the app's goal.
 
 ## Why this redesign
@@ -98,51 +98,80 @@ Layout: `<root>/<table>/date=YYYY-MM-DD/part-*.parquet`. Dates are UTC and deriv
 
 | Table | Key columns |
 |---|---|
-| `market_ticks` | `market_ticker, ts_ms, price_dollars, yes_bid_dollars, yes_ask_dollars, yes_bid_size, yes_ask_size, volume, open_interest` |
-| `index_ticks` | `index_id, ts_ms, value` |
-| `external_ticks` | `source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h` |
-| `markets` | `ticker, index_id, strike, close_ts_ms, status, result, ...` (dimension table, replaced on each import) |
-| `decisions` | the bot's recorded decisions (for audit only; never a training input) |
+| `market_ticks` | `market_ticker, ts_ms, price_dollars, yes_bid/ask_dollars, yes_bid/ask_size, volume, open_interest, received_at_ms` |
+| `index_ticks` | `index_id, ts_ms, value, exchange_ts_ms, received_at_ms, avg_60s` (`avg_60s` is Kalshi's own running 60 s average, the quantity markets settle on) |
+| `external_ticks` | `source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h` (Coinbase, Kraken, Bitstamp) |
+| `trades` | `trade_id, market_ticker, ts_ms, received_at_ms, yes/no_price_dollars, count, taker_side, is_block_trade` (every public fill) |
+| `orderbook_depth` | `market_ticker, ts_ms, seq, yes_bids, no_bids, yes_total, no_total` (1 Hz, top 10 levels as JSON, rebuilt from the delta stream) |
+| `market_meta` | `ticker, index_id, strike, close_ts_ms, observed_ms, status, result, expiration_value` (append-only; a row on discovery and another when the result is known) |
+| `markets` | legacy dimension table from the Postgres export, replaced on each import |
+| `heartbeats` | `feed, ts_ms, events, silent_ms, note` (about once a minute per feed, plus sequence-gap events) |
 
-Planned additions for Phase 3: `orderbook_levels` (depth) and `trades` (full tape, not only $100+).
+The columns marked with `received_at_ms`, `exchange_ts_ms` and `avg_60s` are new. Legacy data reads back
+as NULL for them. Replay reads labels from `markets` and `market_meta` together.
 
-## Phase 1 status
+## Phase 1 status: built and verified, waiting on deploy and the 2-week collection window
 
 | Item | State |
 |---|---|
-| Event store (Parquet + DuckDB), importer CLI, manifest fingerprints | Done. `python -m aqlabs.store.cli import/report`. 10.7M rows imported, 108 MB on disk. Row counts match the exports exactly. |
+| Event store (Parquet + DuckDB), importer CLI, manifest fingerprints | Done. `python -m aqlabs.store.cli import/report`. 10.7M legacy rows imported, 108 MB. `--since-ms` fills a gap without duplicates. |
 | Data-quality report (gaps, uptime, null/crossed/bound quotes) | Done. Reproduces the audit: about 13.8 hours of index gaps, Kraken BTC 0 ticks. |
 | Shared fee module (`aqlabs.costs`) | Done. Tested against the live bot's fee function at every cent. |
-| Replay engine moved to `aqlabs.research.replay`, standard suite | Done. `python -m aqlabs.research.suite`. **Parity gate passed: all 48 result lines (trades, means, totals, win rates, t-stats, CIs) identical to the original replay.** Runs in about 30 seconds. Holdout (Oct 6+) is excluded. |
-| Kraken BTC feed bug | Fixed in `kalshi_bot/external_prices.py` (`XBT/USD` is rejected by Kraken's v2 API, `BTC/USD` works). **Needs a redeploy to take effect.** |
-| Server storage | About 130 GB of the 233 GB disk is unallocated LVM space. Extending `/` needs `sudo` (owner action, see below). |
-| Collector service (1b) | Not started. Spec below. |
+| Replay engine in `aqlabs.research`, standard suite | Done. `python -m aqlabs.research.suite`. **Parity gate passed twice: all 48 result lines identical to the original replay, also after the schema changes.** About 30 seconds per run. The holdout (Oct 6+) is always excluded. |
+| Kraken BTC feed bug | Fixed (`XBT/USD` is rejected by Kraken's v2 API, `BTC/USD` works). Verified live. Ships with the next deploy. |
+| **Collector service** | **Done and tested live.** `aqlabs.collector`, own image (`Dockerfile.collector`) and compose service `collector` with the named volume `aqlabs-eventstore`. |
+| Server storage | Extended by the owner: 197 GB total, 102 GB free. |
 
-### Server disk (owner action, needs sudo)
+### What the collector records
+
+- Kalshi: quotes, the **full trade tape**, **1 Hz order-book depth** (book rebuilt from snapshot and delta
+  messages; at quote arrival its best bid matches Kalshi's own quote 92% of the time, the misses are
+  sub-cent timing noise), the CF Benchmarks index with its 60 s average, market metadata and settlement results.
+- Coinbase, Kraken (BTC/USD, SOL/USD) and Bitstamp, at most 4 ticks per symbol per second
+  (`COLLECTOR_EXTERNAL_MIN_INTERVAL_MS`, 0 keeps everything).
+- Both the exchange timestamp and our receive timestamp for every tick. The server clock is NTP-synchronized.
+- It opens its own Kalshi WebSocket connection with the bot's read-only data credentials; it never places orders.
+
+### Reliability design
+
+- Rotating the market set opens the new Kalshi connection and confirms it before closing the old one.
+  Duplicates are removed by per-stream dedupe, and each connection owns its own book.
+- Sequence gaps on the order-book channel invalidate the book and trigger a fresh connection.
+- Exchange sockets reconnect with backoff, and an idle socket (no messages for 60 s) is torn down and rebuilt.
+- Writes are buffered and flushed every 30 s in a worker thread. A failed write keeps the rows and retries.
+  If the buffer ever fills, rows are dropped and counted, never blocking a feed. A crash loses at most 30 s.
+- Per-feed silence limits raise one alert per outage and one on recovery (log, plus
+  `COLLECTOR_ALERT_WEBHOOK` if set). `collector_status.json` is refreshed every 10 s and drives the Docker healthcheck.
+- Finished UTC days are compacted into one file per table per day (row counts verified before old files are deleted).
+- Low-disk warning below `COLLECTOR_MIN_FREE_GB` (default 10).
+
+### Operating it
 
 ```bash
-sudo vgs && sudo lvs                                     # confirm free space in ubuntu-vg
-sudo lvextend -r -L +100G /dev/ubuntu-vg/ubuntu-lv        # grows the LV and the ext4 filesystem online
-df -h /
+docker compose up -d --build collector                                  # start or update
+docker exec aqlabs-kalshi-trading-bot-collector-1 python -m aqlabs.store.cli report --root /data/eventstore
+docker logs --tail 50 aqlabs-kalshi-trading-bot-collector-1             # alerts show as ERROR lines
+# copy the data to a research machine
+docker run --rm -v aqlabs-eventstore:/d -v "$PWD":/out alpine tar czf /out/eventstore.tgz -C /d .
 ```
 
-### Collector spec (Phase 1b)
+Expected volume: about 260 MB per day before compaction (the trade tape is the largest table), so about
+95 GB a year; the 102 GB free is enough for the 2-week gate and several months beyond it.
+The legacy Postgres tables stop being the research source once the collector has run; backfill the gap
+between the last legacy export and the collector's first row with `import --since-ms <largest max_ms in
+MANIFEST.json>` from a fresh Postgres export.
 
-- Separate process and container from the bot, so trading load can never drop ticks.
-- Sources: Kalshi quotes (top of book now; depth and the full trade tape added), the Kalshi index feed,
-  Coinbase, Kraken (BTC/USD, SOL/USD), and at least one more exchange.
-- Every tick stores the exchange timestamp and the local receive timestamp.
-- Writes through `EventStore.append` in small batches (every few seconds), plus a heartbeat row per feed.
-- Alerts when any feed is silent for more than 30 seconds. Target at least 99% uptime.
-- Retention: raw Parquet kept indefinitely (about 5 MB per day compressed); nightly copy to a second disk.
-- Gate: 2 weeks of gap-free collection, then the Phase 2 fill-model work uses it.
+### The Phase 1 gate
 
+2 weeks of collection with no feed down for more than its silence limit and no dropped rows, checked with
+`python -m aqlabs.store.cli report` (uptime per feed) and the `heartbeats` table. Until then Phase 2
+(the fill model) can be developed on the 3 weeks of legacy data plus the new trade tape and depth as they accumulate.
 ## Migration plan
 
 | Phase | Work | Gate to continue |
 |---|---|---|
 | 0 | Turn off scalping, keep live paused, free disk, rotate the SSH key. | Done by the owner. |
-| 1 | Event store, importer, data-quality checks, fee module, replay engine moved to `aqlabs/research`, Kraken BTC fix. Collector spec and build (1b). | Replay reproduces the existing results exactly. 2+ weeks of gap-free collection. |
+| 1 | Event store, importer, data-quality checks, fee module, replay engine moved to `aqlabs/research`, Kraken BTC fix, collector service. **Built and verified.** | Replay reproduces the existing results exactly (passed). 2+ weeks of gap-free collection (starts when the collector is deployed). |
 | 2 | Maker/taker fill model in `costs/`, then re-run all strategies. | Net positive after realistic costs on development data. **If not, stop.** |
 | 3 | New features and models, hypotheses pre-registered in the registry. | Beats the frozen baseline on validation, then the holdout once. |
 | 4 | Strategy and executor on the shared interface. Paper-sim runs the replay code. | Paper P/L matches the replay prediction within its confidence interval for 2 to 3 weeks. |

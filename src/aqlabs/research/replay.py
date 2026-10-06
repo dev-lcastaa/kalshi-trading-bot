@@ -41,6 +41,26 @@ def _filled(a) -> np.ndarray:
     return np.ma.filled(a.astype(float), np.nan) if np.ma.isMaskedArray(a) else np.asarray(a, dtype=float)
 
 
+# One row per settled market from the legacy `markets` export plus the collector's append-only `market_meta`.
+_MARKETS_SQL = """
+select ticker, any_value(index_id) as index_id, any_value(strike) as strike, any_value(close_ts_ms) as close_ts_ms,
+       max(result) filter (where result in ('yes', 'no')) as result
+from ({sources}) group by ticker
+having max(result) filter (where result in ('yes', 'no')) is not null and any_value(strike) is not null
+"""
+
+
+def _markets_sources(store: EventStore) -> dict:
+    parts = []
+    if store.has_data("markets"):
+        parts.append("select ticker, index_id, strike, close_ts_ms, result from markets")
+    if store.has_data("market_meta"):
+        parts.append("select ticker, index_id, strike, close_ts_ms, result from market_meta")
+    if not parts:
+        raise RuntimeError("event store has no markets or market_meta data")
+    return {"sources": " union all ".join(parts)}
+
+
 def build_coin_grid(ts_ms: np.ndarray, val: np.ndarray) -> dict:
     """1-second grid of the latest tick, its validity and the 30-minute 1-minute-return volatility."""
     s0 = int(ts_ms[0] // 1000)
@@ -75,9 +95,7 @@ def load_all(store: EventStore) -> tuple[dict, list[dict]]:
                             "order by ts_ms", [iid]).fetchnumpy()
             if len(d["ts_ms"]):
                 grids[("cb", iid)] = build_coin_grid(d["ts_ms"].astype(np.int64), _filled(d["price"]))
-    mk = con.execute("select ticker, index_id, strike, close_ts_ms, result from markets "
-                     "where result in ('yes','no') and strike is not null").fetchall()
-    mk = {r[0]: r for r in mk}
+    mk = {r[0]: r for r in con.execute(_MARKETS_SQL.format(**_markets_sources(store))).fetchall()}
     q = con.execute("select market_ticker, ts_ms, yes_bid_dollars, yes_ask_dollars, yes_bid_size, yes_ask_size "
                     "from market_ticks order by market_ticker, ts_ms").fetchnumpy()
     tickers = q["market_ticker"]

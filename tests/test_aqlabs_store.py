@@ -2,6 +2,7 @@ import gzip
 
 import pytest
 
+pytest.importorskip("numpy")
 pytest.importorskip("duckdb")
 pytest.importorskip("pyarrow")
 

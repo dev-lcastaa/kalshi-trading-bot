@@ -28,7 +28,7 @@ pipeline {
         stage('Backend Tests') {
             steps {
                 sh '''
-                    python3 -m pip install --break-system-packages -e . -e ".[dev]" --quiet
+                    python3 -m pip install --break-system-packages -e . -e ".[dev,research]" --quiet
                     python3 -m pytest tests/ -v --tb=short
                 '''
             }
