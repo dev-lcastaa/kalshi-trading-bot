@@ -26,8 +26,9 @@ research = [
     "duckdb>=1.1",
     "pyarrow>=17.0",
 ]
-# Collector container: only the event store dependencies.
+# Collector container: only the event store dependencies (numpy backs DuckDB's fetchnumpy used by the CLI).
 collector = [
+    "numpy>=2.0",
     "duckdb>=1.1",
     "pyarrow>=17.0",
 ]

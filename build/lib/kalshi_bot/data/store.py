@@ -1,0 +1,1210 @@
+"""Storage for index ticks, market ticks, generated signals, and market lifecycle.
+
+Supports two backends via the same portable SQL: SQLite (a plain file path -
+used by the test suite and simple non-Docker runs) and PostgreSQL (a
+`postgresql://` URL - used for the Docker Compose deployment). Both dialects
+support the same standard `ON CONFLICT ... DO UPDATE/DO NOTHING` upsert syntax
+used throughout, so almost no code branches on which backend is in use.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import sqlite3
+import threading
+import time
+from collections.abc import Callable
+from pathlib import Path
+from uuid import uuid4
+
+try:
+    import psycopg
+except ImportError:  # PostgreSQL is optional for local SQLite runs.
+    psycopg = None
+
+_SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS trading_records (
+        record_key TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        value_json TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS trading_events (
+        event_id TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        event_json TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS index_ticks (
+        index_id TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        value DOUBLE PRECISION NOT NULL,
+        PRIMARY KEY (index_id, ts_ms)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS market_ticks (
+        market_ticker TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        price_dollars DOUBLE PRECISION,
+        yes_bid_dollars DOUBLE PRECISION,
+        yes_ask_dollars DOUBLE PRECISION,
+        yes_bid_size DOUBLE PRECISION,
+        yes_ask_size DOUBLE PRECISION,
+        volume DOUBLE PRECISION,
+        open_interest DOUBLE PRECISION,
+        PRIMARY KEY (market_ticker, ts_ms)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS signals (
+        ticker TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        index_id TEXT,
+        index_price DOUBLE PRECISION,
+        strike DOUBLE PRECISION,
+        seconds_to_expiry DOUBLE PRECISION,
+        model_p_yes DOUBLE PRECISION,
+        market_p_yes DOUBLE PRECISION,
+        edge DOUBLE PRECISION,
+        recommendation TEXT,
+        confidence DOUBLE PRECISION,
+        PRIMARY KEY (ticker, ts_ms)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS markets (
+        ticker TEXT PRIMARY KEY,
+        index_id TEXT,
+        strike DOUBLE PRECISION,
+        close_ts_ms BIGINT,
+        first_seen_ts_ms BIGINT,
+        last_seen_ts_ms BIGINT,
+        status TEXT NOT NULL DEFAULT 'active',
+        closed_at_ms BIGINT,
+        result TEXT,
+        outcome_checked_at_ms BIGINT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decisions (
+        ticker TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        seconds_to_expiry DOUBLE PRECISION,
+        index_price DOUBLE PRECISION,
+        strike DOUBLE PRECISION,
+        model_p_yes DOUBLE PRECISION,
+        market_p_yes DOUBLE PRECISION,
+        edge DOUBLE PRECISION,
+        recommendation TEXT,
+        confidence DOUBLE PRECISION,
+        confirmation_agree INTEGER,
+        confirmation_total INTEGER,
+        confirmation_detail TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS whale_trades (
+        trade_id TEXT PRIMARY KEY,
+        ticker TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        side TEXT NOT NULL,
+        count DOUBLE PRECISION NOT NULL,
+        price_cents DOUBLE PRECISION NOT NULL,
+        notional_usd DOUBLE PRECISION NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shadow_decisions (
+        ticker TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        index_id TEXT NOT NULL,
+        experiment_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS decision_snapshots (
+        ticker TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        index_id TEXT NOT NULL,
+        snapshot_json TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS shadow_signals (
+        ticker TEXT PRIMARY KEY,
+        ts_ms BIGINT NOT NULL,
+        index_id TEXT NOT NULL,
+        index_price DOUBLE PRECISION NOT NULL,
+        strike DOUBLE PRECISION NOT NULL,
+        seconds_to_expiry DOUBLE PRECISION NOT NULL,
+        model_p_yes DOUBLE PRECISION NOT NULL,
+        market_p_yes DOUBLE PRECISION NOT NULL,
+        edge DOUBLE PRECISION NOT NULL,
+        recommendation TEXT NOT NULL,
+        confirmation_agree INTEGER,
+        confirmation_total INTEGER
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS llm_reviews (
+        ticker TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        decision TEXT NOT NULL,
+        confidence_adjustment DOUBLE PRECISION NOT NULL,
+        reason TEXT NOT NULL,
+        latency_ms DOUBLE PRECISION,
+        model TEXT,
+        error TEXT,
+        PRIMARY KEY (ticker, stage)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS external_ticks (
+        source TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        index_id TEXT NOT NULL,
+        ts_ms BIGINT NOT NULL,
+        received_at_ms BIGINT NOT NULL,
+        price DOUBLE PRECISION NOT NULL,
+        bid DOUBLE PRECISION NOT NULL,
+        ask DOUBLE PRECISION NOT NULL,
+        volume_24h DOUBLE PRECISION,
+        PRIMARY KEY (source, symbol, ts_ms)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_index_ticks_id_ts ON index_ticks (index_id, ts_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_market_ticks_ticker_ts ON market_ticks (market_ticker, ts_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_markets_status ON markets (status, closed_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_markets_result_closed ON markets (result, closed_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_whale_trades_ticker_ts ON whale_trades (ticker, ts_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_external_ticks_source_symbol_received ON external_ticks (source, symbol, received_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_markets_index_result_closed ON markets (index_id, result, closed_at_ms)",
+    "CREATE INDEX IF NOT EXISTS idx_shadow_decisions_index_ts ON shadow_decisions (index_id, ts_ms)",
+]
+
+
+class _BufferedResult:
+    def __init__(self, cursor):
+        self.description = cursor.description
+        self._rows = cursor.fetchall()
+        self._position = 0
+
+    def fetchone(self):
+        if self._position >= len(self._rows):
+            return None
+        row = self._rows[self._position]
+        self._position += 1
+        return row
+
+    def fetchall(self):
+        rows = self._rows[self._position:]
+        self._position = len(self._rows)
+        return rows
+
+
+class Store:
+    def __init__(self, database_url: str):
+        self._database_url = database_url
+        self._trading_owner: str | None = None
+        self._trading_fd: int | None = None
+        self._is_postgres = database_url.startswith(("postgresql://", "postgres://"))
+        if self._is_postgres:
+            if psycopg is None:
+                raise RuntimeError("PostgreSQL requires an available psycopg installation")
+            self._conn = psycopg.connect(database_url)
+        else:
+            Path(database_url).parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(database_url, check_same_thread=False)
+
+        for statement in _SCHEMA_STATEMENTS:
+            self._raw_execute(statement)
+        self._migrate()
+        self._conn.commit()
+        # Neither a single sqlite3 connection nor a single psycopg connection is
+        # safe for concurrent use across threads; the asyncio bot loop and
+        # FastAPI's threadpool workers can both hit this connection at once.
+        self._lock = threading.Lock()
+
+    def _raw_execute(self, sql: str, params=()):
+        """Execute SQL written with `?` placeholders against either backend."""
+        if self._is_postgres:
+            sql = sql.replace("?", "%s")
+        return self._conn.execute(sql, params)
+
+    def _execute(self, sql: str, params=()):
+        with self._lock:
+            cur = self._raw_execute(sql, params)
+            self._conn.commit()
+            return cur
+
+    def _query(self, sql: str, params=()):
+        with self._lock:
+            return _BufferedResult(self._raw_execute(sql, params))
+
+    def _migrate(self) -> None:
+        """Add columns introduced after a DB may already exist on disk."""
+        if self._is_postgres:
+            for stmt in (
+                "ALTER TABLE markets ADD COLUMN IF NOT EXISTS result TEXT",
+                "ALTER TABLE markets ADD COLUMN IF NOT EXISTS outcome_checked_at_ms BIGINT",
+                "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS confirmation_agree INTEGER",
+                "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS confirmation_total INTEGER",
+                "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS confirmation_detail TEXT",
+            ):
+                self._raw_execute(stmt)
+            return
+
+        existing = {row[1] for row in self._raw_execute("PRAGMA table_info(markets)").fetchall()}
+        if "result" not in existing:
+            self._raw_execute("ALTER TABLE markets ADD COLUMN result TEXT")
+        if "outcome_checked_at_ms" not in existing:
+            self._raw_execute("ALTER TABLE markets ADD COLUMN outcome_checked_at_ms INTEGER")
+
+        decisions_existing = {row[1] for row in self._raw_execute("PRAGMA table_info(decisions)").fetchall()}
+        if "confirmation_agree" not in decisions_existing:
+            self._raw_execute("ALTER TABLE decisions ADD COLUMN confirmation_agree INTEGER")
+        if "confirmation_total" not in decisions_existing:
+            self._raw_execute("ALTER TABLE decisions ADD COLUMN confirmation_total INTEGER")
+        if "confirmation_detail" not in decisions_existing:
+            self._raw_execute("ALTER TABLE decisions ADD COLUMN confirmation_detail TEXT")
+
+    def close(self) -> None:
+        if self._trading_owner:
+            self.release_trading_worker(self._trading_owner)
+        self._conn.close()
+
+    def claim_trading_worker(self, owner: str) -> bool:
+        with self._lock:
+            if self._trading_owner is not None:
+                return self._trading_owner == owner
+            if self._is_postgres:
+                claimed = self._raw_execute("SELECT pg_try_advisory_lock(1562279111)").fetchone()[0]
+                self._conn.commit()
+                if not claimed:
+                    return False
+            else:
+                descriptor = os.open(self._database_url + ".trading.lock", os.O_RDWR | os.O_CREAT, 0o600)
+                try:
+                    if os.fstat(descriptor).st_size == 0:
+                        os.write(descriptor, b"0")
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    os.close(descriptor)
+                    return False
+                self._trading_fd = descriptor
+            self._trading_owner = owner
+            return True
+
+    def release_trading_worker(self, owner: str) -> None:
+        with self._lock:
+            if self._trading_owner != owner:
+                return
+            if self._is_postgres:
+                self._raw_execute("SELECT pg_advisory_unlock(1562279111)")
+                self._conn.commit()
+            elif self._trading_fd is not None:
+                os.close(self._trading_fd)
+                self._trading_fd = None
+            self._trading_owner = None
+
+    def trading_record(self, record_key: str) -> dict | None:
+        row = self._query(
+            "SELECT value_json FROM trading_records WHERE record_key = ?", (record_key,),
+        ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_trading_record(self, record_key: str, kind: str, value: dict) -> None:
+        self._execute(
+            """INSERT INTO trading_records (record_key, kind, value_json) VALUES (?, ?, ?)
+               ON CONFLICT (record_key) DO UPDATE SET value_json = excluded.value_json""",
+            (record_key, kind, json.dumps(value, allow_nan=False)),
+        )
+
+    def trading_records(self, kind: str) -> list[dict]:
+        rows = self._query(
+            "SELECT value_json FROM trading_records WHERE kind = ? ORDER BY record_key", (kind,),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def record_trading_event(self, action: str, reason: str, **details) -> None:
+        event = {"id": str(uuid4()), "ts_ms": int(time.time() * 1000),
+                 "action": action, "reason": reason, **details}
+        self._execute(
+            "INSERT INTO trading_events (event_id, ts_ms, event_json) VALUES (?, ?, ?)",
+            (event["id"], event["ts_ms"], json.dumps(event, allow_nan=False)),
+        )
+
+    def trading_events(self, limit: int = 100) -> list[dict]:
+        rows = self._query(
+            "SELECT event_json FROM trading_events ORDER BY ts_ms DESC, event_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def clear_trading_history(self, mode: str, backup: Callable[[dict], None] | None = None) -> dict[str, int]:
+        """Delete one mode's bets and diary, keeping saved settings. Paper also resets its simulated account."""
+        kinds = (["position:paper", "paper_order", "paper_account"] if mode == "paper"
+                 else ["position:demo", "position:prod"])
+        where, params = f"kind IN ({', '.join('?' for _ in kinds)})", tuple(kinds)
+        with self._lock:
+            records = self._raw_execute(
+                f"SELECT record_key, kind, value_json FROM trading_records WHERE {where}", params).fetchall()
+            events = [(row[0], row[1]) for row in self._raw_execute(
+                "SELECT event_id, event_json FROM trading_events").fetchall()]
+            event_ids = {event_id for event_id, text in events if json.loads(text).get("mode", "live") == mode}
+            if backup is not None:
+                backup({"records": [{"record_key": key, "kind": kind, "value": json.loads(text)}
+                                    for key, kind, text in records],
+                        "events": [json.loads(text) for event_id, text in events if event_id in event_ids]})
+            self._raw_execute(f"DELETE FROM trading_records WHERE {where}", params)
+            for event_id in event_ids:
+                self._raw_execute("DELETE FROM trading_events WHERE event_id = ?", (event_id,))
+            self._conn.commit()
+        return {"records": len(records), "events": len(event_ids)}
+
+    def trading_decisions(self, limit: int = 100) -> list[dict]:
+        cursor = self._query(
+            """SELECT d.ticker, d.ts_ms, d.recommendation, d.confidence,
+                      d.confirmation_detail, m.close_ts_ms, m.result
+               FROM decisions d LEFT JOIN markets m ON m.ticker = d.ticker
+               ORDER BY d.ts_ms DESC LIMIT ?""", (limit,),
+        )
+        columns = [column[0] for column in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def insert_index_tick(self, index_id: str, ts_ms: int, value: float) -> None:
+        self._execute(
+            """INSERT INTO index_ticks (index_id, ts_ms, value) VALUES (?, ?, ?)
+               ON CONFLICT (index_id, ts_ms) DO UPDATE SET value = excluded.value""",
+            (index_id, ts_ms, value),
+        )
+
+    def insert_external_tick(
+        self, source: str, symbol: str, index_id: str, ts_ms: int,
+        received_at_ms: int, price: float, bid: float, ask: float,
+        volume_24h: float,
+    ) -> None:
+        self._execute(
+            """INSERT INTO external_ticks
+               (source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (source, symbol, ts_ms) DO UPDATE SET
+                 received_at_ms = excluded.received_at_ms,
+                 price = excluded.price, bid = excluded.bid, ask = excluded.ask,
+                 volume_24h = excluded.volume_24h""",
+            (source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h),
+        )
+
+    def insert_external_ticks(self, ticks: list[dict]) -> None:
+        """Persist a feed batch in one transaction; callers may run this on a worker thread."""
+        if not ticks:
+            return
+        rows = [
+            (
+                tick["source"], tick["symbol"], tick["index_id"], tick["ts_ms"],
+                tick["received_at_ms"], tick["price"], tick["bid"], tick["ask"], tick["volume_24h"],
+            )
+            for tick in ticks
+        ]
+        with self._lock:
+            sql = """INSERT INTO external_ticks
+                     (source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT (source, symbol, ts_ms) DO UPDATE SET
+                       received_at_ms = excluded.received_at_ms,
+                       price = excluded.price, bid = excluded.bid, ask = excluded.ask,
+                       volume_24h = excluded.volume_24h"""
+            for row in rows:
+                self._raw_execute(sql, row)
+            self._conn.commit()
+
+    def recent_external_ticks(self, since_ms: int) -> list[dict]:
+        cur = self._query(
+            """SELECT source, symbol, index_id, ts_ms, received_at_ms, price, bid, ask, volume_24h
+               FROM external_ticks WHERE received_at_ms >= ? ORDER BY received_at_ms""",
+            (since_ms,),
+        )
+        columns = [column[0] for column in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    def external_feed_status(self, max_age_ms: int = 5_000) -> dict:
+        """Return browser-safe health data for the external shadow feed."""
+        now_ms = int(time.time() * 1000)
+        cur = self._query("""
+            SELECT latest.source, latest.symbol, latest.index_id, latest.ts_ms,
+                   latest.received_at_ms, latest.price, latest.bid, latest.ask, latest.volume_24h
+            FROM external_ticks latest
+            INNER JOIN (
+                SELECT source, symbol, MAX(received_at_ms) AS max_received_at_ms
+                FROM external_ticks
+                WHERE received_at_ms >= ?
+                GROUP BY source, symbol
+            ) newest ON newest.source = latest.source
+                   AND newest.symbol = latest.symbol
+                   AND newest.max_received_at_ms = latest.received_at_ms
+            ORDER BY latest.source, latest.symbol
+        """, (now_ms - max(max_age_ms * 3, 60_000),))
+        columns = [column[0] for column in cur.description]
+        sources = []
+        for row in cur.fetchall():
+            item = dict(zip(columns, row))
+            item["age_ms"] = max(0, now_ms - item["received_at_ms"])
+            item["healthy"] = item["age_ms"] <= max_age_ms
+            sources.append(item)
+        snapshot = self._query("""
+            SELECT ticker, ts_ms, snapshot_json FROM decision_snapshots
+            ORDER BY ts_ms DESC LIMIT 1
+        """).fetchone()
+        latest_snapshot = None
+        if snapshot:
+            payload = json.loads(snapshot[2])
+            latest_snapshot = {
+                "ticker": snapshot[0],
+                "ts_ms": snapshot[1],
+                "external_prices": payload.get("external_prices"),
+            }
+        return {
+            "now_ms": now_ms,
+            "healthy": bool(sources) and all(item["healthy"] for item in sources),
+            "sources": sources,
+            "latest_decision_snapshot": latest_snapshot,
+        }
+
+    def insert_market_tick(
+        self,
+        market_ticker: str,
+        ts_ms: int,
+        price_dollars: float,
+        yes_bid_dollars: float,
+        yes_ask_dollars: float,
+        yes_bid_size: float,
+        yes_ask_size: float,
+        volume: float,
+        open_interest: float,
+    ) -> None:
+        self._execute(
+            """INSERT INTO market_ticks
+               (market_ticker, ts_ms, price_dollars, yes_bid_dollars, yes_ask_dollars,
+                yes_bid_size, yes_ask_size, volume, open_interest)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (market_ticker, ts_ms) DO UPDATE SET
+                 price_dollars = excluded.price_dollars,
+                 yes_bid_dollars = excluded.yes_bid_dollars,
+                 yes_ask_dollars = excluded.yes_ask_dollars,
+                 yes_bid_size = excluded.yes_bid_size,
+                 yes_ask_size = excluded.yes_ask_size,
+                 volume = excluded.volume,
+                 open_interest = excluded.open_interest""",
+            (
+                market_ticker,
+                ts_ms,
+                price_dollars,
+                yes_bid_dollars,
+                yes_ask_dollars,
+                yes_bid_size,
+                yes_ask_size,
+                volume,
+                open_interest,
+            ),
+        )
+
+    def insert_signal(self, signal) -> None:  # signal: kalshi_client.models.Signal
+        self._execute(
+            """INSERT INTO signals
+               (ticker, ts_ms, index_id, index_price, strike, seconds_to_expiry,
+                model_p_yes, market_p_yes, edge, recommendation, confidence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (ticker, ts_ms) DO UPDATE SET
+                 index_id = excluded.index_id,
+                 index_price = excluded.index_price,
+                 strike = excluded.strike,
+                 seconds_to_expiry = excluded.seconds_to_expiry,
+                 model_p_yes = excluded.model_p_yes,
+                 market_p_yes = excluded.market_p_yes,
+                 edge = excluded.edge,
+                 recommendation = excluded.recommendation,
+                 confidence = excluded.confidence""",
+            (
+                signal.ticker,
+                signal.ts_ms,
+                signal.index_id,
+                signal.index_price,
+                signal.strike,
+                signal.seconds_to_expiry,
+                signal.model_p_yes,
+                signal.market_p_yes,
+                signal.edge,
+                signal.recommendation,
+                signal.confidence,
+            ),
+        )
+
+    def upsert_shadow_signal(self, signal, confirmation_agree: int, confirmation_total: int) -> None:
+        self._execute(
+            """INSERT INTO shadow_signals
+               (ticker, ts_ms, index_id, index_price, strike, seconds_to_expiry,
+                model_p_yes, market_p_yes, edge, recommendation, confirmation_agree, confirmation_total)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (ticker) DO UPDATE SET
+                 ts_ms = excluded.ts_ms, index_price = excluded.index_price,
+                 strike = excluded.strike, seconds_to_expiry = excluded.seconds_to_expiry,
+                 model_p_yes = excluded.model_p_yes, market_p_yes = excluded.market_p_yes,
+                 edge = excluded.edge, recommendation = excluded.recommendation,
+                 confirmation_agree = excluded.confirmation_agree,
+                 confirmation_total = excluded.confirmation_total""",
+            (
+                signal.ticker, signal.ts_ms, signal.index_id, signal.index_price, signal.strike,
+                signal.seconds_to_expiry, signal.model_p_yes, signal.market_p_yes, signal.edge,
+                signal.recommendation, confirmation_agree, confirmation_total,
+            ),
+        )
+
+    def recent_index_ticks(self, index_id: str, since_ms: int) -> list[tuple[int, float]]:
+        cur = self._query(
+            "SELECT ts_ms, value FROM index_ticks WHERE index_id = ? AND ts_ms >= ? ORDER BY ts_ms",
+            (index_id, since_ms),
+        )
+        return cur.fetchall()
+
+    def latest_index_prices(self) -> dict[str, dict]:
+        """Most recent raw tick per index_id, independent of the signal/poll cadence."""
+        cur = self._query(
+            """SELECT t.index_id, t.ts_ms, t.value
+               FROM index_ticks t
+               INNER JOIN (
+                   SELECT index_id, MAX(ts_ms) AS max_ts FROM index_ticks GROUP BY index_id
+               ) latest ON t.index_id = latest.index_id AND t.ts_ms = latest.max_ts"""
+        )
+        return {row[0]: {"ts_ms": row[1], "value": row[2]} for row in cur.fetchall()}
+
+    def latest_signals(self, limit: int = 50) -> list[dict]:
+        cur = self._query(
+            """SELECT ticker, ts_ms, index_id, index_price, strike, seconds_to_expiry,
+                      model_p_yes, market_p_yes, edge, recommendation, confidence
+               FROM signals ORDER BY ts_ms DESC LIMIT ?""",
+            (limit,),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def latest_signal_per_ticker(self) -> list[dict]:
+        """One row per active ticker: its most recent signal."""
+        cur = self._query(
+            """SELECT s.ticker, s.ts_ms, s.index_id, s.index_price, s.strike, s.seconds_to_expiry,
+                      s.model_p_yes, s.market_p_yes, s.edge, s.recommendation, s.confidence
+               FROM signals s
+               INNER JOIN (
+                   SELECT ticker, MAX(ts_ms) AS max_ts FROM signals GROUP BY ticker
+               ) latest ON s.ticker = latest.ticker AND s.ts_ms = latest.max_ts
+               ORDER BY s.ticker"""
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    # --- Market lifecycle (active/closed) -------------------------------------------
+
+    def upsert_active_market(
+        self, ticker: str, index_id: str, strike: float, close_ts_ms: int, now_ms: int | None = None
+    ) -> None:
+        now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        self._execute(
+            """INSERT INTO markets (ticker, index_id, strike, close_ts_ms, first_seen_ts_ms,
+                                     last_seen_ts_ms, status, closed_at_ms)
+               VALUES (?, ?, ?, ?, ?, ?, 'active', NULL)
+               ON CONFLICT (ticker) DO UPDATE SET
+                 index_id = excluded.index_id,
+                 strike = excluded.strike,
+                 close_ts_ms = excluded.close_ts_ms,
+                 last_seen_ts_ms = excluded.last_seen_ts_ms,
+                 status = 'active',
+                 closed_at_ms = NULL""",
+            (ticker, index_id, strike, close_ts_ms, now_ms, now_ms),
+        )
+
+    def get_active_tickers(self) -> list[str]:
+        cur = self._query("SELECT ticker FROM markets WHERE status = 'active'")
+        return [row[0] for row in cur.fetchall()]
+
+    def mark_closed(self, ticker: str, closed_at_ms: int | None = None) -> None:
+        closed_at_ms = closed_at_ms if closed_at_ms is not None else int(time.time() * 1000)
+        self._execute(
+            "UPDATE markets SET status = 'closed', closed_at_ms = ? WHERE ticker = ? AND status = 'active'",
+            (closed_at_ms, ticker),
+        )
+
+    _MARKETS_WITH_LATEST_SIGNAL_SQL = """
+        SELECT m.ticker, m.index_id, m.strike, m.close_ts_ms, m.status, m.closed_at_ms, m.result,
+               s.ts_ms, s.index_price, s.seconds_to_expiry, s.model_p_yes, s.market_p_yes,
+               s.edge, s.recommendation, s.confidence,
+               d.ts_ms AS decision_ts_ms, d.index_price AS decision_index_price,
+               d.seconds_to_expiry AS decision_seconds_to_expiry,
+               d.model_p_yes AS decision_model_p_yes, d.market_p_yes AS decision_market_p_yes,
+               d.edge AS decision_edge, d.recommendation AS decision_recommendation,
+               d.confidence AS decision_confidence,
+               d.confirmation_agree AS decision_confirmation_agree,
+               d.confirmation_total AS decision_confirmation_total,
+               d.confirmation_detail AS decision_confirmation_detail,
+               le.decision AS llm_early_decision,
+               le.confidence_adjustment AS llm_early_adjustment,
+               le.reason AS llm_early_reason,
+               le.ts_ms AS llm_early_ts_ms,
+               ll.decision AS llm_late_decision,
+               ll.confidence_adjustment AS llm_late_adjustment,
+               ll.reason AS llm_late_reason,
+               ll.ts_ms AS llm_late_ts_ms,
+               lr830.decision AS llm_8m30_decision,
+               lr830.reason AS llm_8m30_reason,
+               lr430.decision AS llm_4m30_decision,
+               lr430.reason AS llm_4m30_reason,
+               lr100.decision AS llm_1m_decision,
+               lr100.reason AS llm_1m_reason
+        FROM markets m
+                LEFT JOIN signals s ON s.ticker = m.ticker
+                    AND s.ts_ms = (SELECT MAX(s2.ts_ms) FROM signals s2 WHERE s2.ticker = m.ticker)
+        LEFT JOIN decisions d ON d.ticker = m.ticker
+        LEFT JOIN llm_reviews le ON le.ticker = m.ticker AND le.stage = 'early'
+        LEFT JOIN llm_reviews ll ON ll.ticker = m.ticker AND ll.stage = 'late'
+        LEFT JOIN llm_reviews lr830 ON lr830.ticker = m.ticker AND lr830.stage = 'review_8m30'
+        LEFT JOIN llm_reviews lr430 ON lr430.ticker = m.ticker AND lr430.stage = 'review_4m30'
+        LEFT JOIN llm_reviews lr100 ON lr100.ticker = m.ticker AND lr100.stage = 'review_1m'
+    """
+
+    def dashboard_markets(self, grace_period_sec: int) -> list[dict]:
+        """Active markets, plus markets closed within the last `grace_period_sec`."""
+        now_ms = int(time.time() * 1000)
+        cutoff_ms = now_ms - grace_period_sec * 1000
+        cur = self._query(
+            self._MARKETS_WITH_LATEST_SIGNAL_SQL
+            + " WHERE m.status = 'active' OR (m.status = 'closed' AND m.closed_at_ms >= ?)"
+            + " ORDER BY m.status ASC, m.close_ts_ms ASC",
+            (cutoff_ms,),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def shadow_dashboard_markets(self, grace_period_sec: int) -> list[dict]:
+        now_ms = int(time.time() * 1000)
+        cutoff_ms = now_ms - grace_period_sec * 1000
+        cur = self._query("""
+            SELECT m.ticker, m.index_id, m.strike, m.close_ts_ms, m.status, m.closed_at_ms, m.result,
+                   s.ts_ms, s.index_price, s.seconds_to_expiry, s.model_p_yes, s.market_p_yes,
+                   s.edge, s.recommendation, s.confirmation_agree, s.confirmation_total
+            FROM markets m INNER JOIN shadow_signals s ON s.ticker = m.ticker
+            WHERE m.status = 'active' OR (m.status = 'closed' AND m.closed_at_ms >= ?)
+            ORDER BY m.status ASC, m.close_ts_ms ASC
+        """, (cutoff_ms,))
+        columns = [column[0] for column in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    def closed_markets_history(self, limit: int = 200, offset: int = 0) -> list[dict]:
+        cur = self._query(
+            self._MARKETS_WITH_LATEST_SIGNAL_SQL
+            + " WHERE m.status = 'closed' ORDER BY m.closed_at_ms DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    # --- Settlement outcomes and live calibration -----------------------------------
+
+    def markets_pending_outcome(self, max_age_ms: int, now_ms: int | None = None) -> list[str]:
+        """Closed markets (within `max_age_ms`) whose settlement result isn't recorded yet."""
+        now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        cutoff_ms = now_ms - max_age_ms
+        cur = self._query(
+            "SELECT ticker FROM markets WHERE status = 'closed' AND result IS NULL AND closed_at_ms >= ?",
+            (cutoff_ms,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    def record_outcome(self, ticker: str, result: str, checked_at_ms: int | None = None) -> None:
+        checked_at_ms = checked_at_ms if checked_at_ms is not None else int(time.time() * 1000)
+        self._execute(
+            "UPDATE markets SET result = ?, outcome_checked_at_ms = ? WHERE ticker = ?",
+            (result, checked_at_ms, ticker),
+        )
+
+    def has_llm_review(self, ticker: str, stage: str) -> bool:
+        cur = self._query(
+            "SELECT 1 FROM llm_reviews WHERE ticker = ? AND stage = ?",
+            (ticker, stage),
+        )
+        return cur.fetchone() is not None
+
+    def record_llm_review(
+        self,
+        ticker: str,
+        stage: str,
+        ts_ms: int,
+        decision: str,
+        confidence_adjustment: float,
+        reason: str,
+        latency_ms: float | None = None,
+        model: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        self._execute(
+            """INSERT INTO llm_reviews
+               (ticker, stage, ts_ms, decision, confidence_adjustment, reason, latency_ms, model, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (ticker, stage) DO NOTHING""",
+            (ticker, stage, ts_ms, decision, confidence_adjustment, reason, latency_ms, model, error),
+        )
+
+    # --- Locked-in trade-call decisions ---------------------------------------------
+
+    def has_decision(self, ticker: str) -> bool:
+        cur = self._query("SELECT 1 FROM decisions WHERE ticker = ?", (ticker,))
+        return cur.fetchone() is not None
+
+    def locked_decision(self, ticker: str) -> dict | None:
+        """The one-shot locked call for a market (None until the model locks it in)."""
+        cur = self._query(
+            """SELECT ticker, ts_ms, seconds_to_expiry, model_p_yes, market_p_yes, recommendation,
+                      confirmation_agree, confirmation_total, confirmation_detail
+               FROM decisions WHERE ticker = ?""", (ticker,),
+        )
+        row = cur.fetchone()
+        return dict(zip([column[0] for column in cur.description], row)) if row else None
+
+    def trade_readiness(
+        self,
+        min_settled: int = 300,
+        min_trades: int = 50,
+        limit: int = 5000,
+    ) -> dict:
+        """Objective per-coin go/no-go report for trading real money.
+
+        A coin is "ready" only when, over its settled locked decisions:
+        its model Brier beats the market's, it has at least `min_settled`
+        settled decisions and `min_trades` actionable calls, and those calls
+        are profitable after Kalshi taker fees at the recorded quotes.
+        """
+        sql = """SELECT ds.index_id, ds.snapshot_json, m.result
+                 FROM decision_snapshots ds
+                 INNER JOIN markets m ON m.ticker = ds.ticker
+                 WHERE m.result IN ('yes', 'no')
+                 ORDER BY ds.ts_ms DESC LIMIT ?"""
+        rows = self._query(sql, (limit,)).fetchall()
+        per_coin: dict[str, dict] = {}
+        for index_id, snapshot_json, result in rows:
+            snapshot = json.loads(snapshot_json)
+            live = snapshot.get("live") or {}
+            quotes = snapshot.get("quotes") or {}
+            model_p = live.get("model_p_yes")
+            market_p = live.get("market_p_yes")
+            bid, ask = quotes.get("yes_bid_dollars"), quotes.get("yes_ask_dollars")
+            if model_p is None or market_p is None or bid is None or ask is None:
+                continue
+            stats = per_coin.setdefault(index_id, {
+                "settled": 0, "model_sq": 0.0, "market_sq": 0.0,
+                "trades": 0, "wins": 0, "net_pnl": 0.0,
+            })
+            outcome = 1.0 if result == "yes" else 0.0
+            stats["settled"] += 1
+            stats["model_sq"] += (model_p - outcome) ** 2
+            stats["market_sq"] += (market_p - outcome) ** 2
+            recommendation = live.get("recommendation")
+            if recommendation in ("BUY_YES", "BUY_NO"):
+                yes = recommendation == "BUY_YES"
+                entry = ask if yes else 1 - bid
+                fee = math.ceil(0.07 * entry * (1 - entry) * 100) / 100
+                won = yes == (outcome == 1.0)
+                stats["trades"] += 1
+                stats["wins"] += int(won)
+                stats["net_pnl"] += (1.0 if won else 0.0) - entry - fee
+
+        report: dict = {"criteria": {"min_settled": min_settled, "min_trades": min_trades}, "coins": {}}
+        overall_ready = bool(per_coin)
+        for index_id, stats in sorted(per_coin.items()):
+            n = stats["settled"]
+            model_brier = stats["model_sq"] / n
+            market_brier = stats["market_sq"] / n
+            blockers = []
+            if n < min_settled:
+                blockers.append(f"only {n} settled decisions (need {min_settled})")
+            if model_brier >= market_brier:
+                blockers.append("model is not better calibrated than the market price")
+            if stats["trades"] < min_trades:
+                blockers.append(f"only {stats['trades']} actionable calls (need {min_trades})")
+            if stats["net_pnl"] <= 0:
+                blockers.append("actionable calls lose money after fees")
+            ready = not blockers
+            overall_ready = overall_ready and ready
+            report["coins"][index_id] = {
+                "ready": ready,
+                "blockers": blockers,
+                "settled": n,
+                "model_brier": model_brier,
+                "market_brier": market_brier,
+                "trades": stats["trades"],
+                "wins": stats["wins"],
+                "net_pnl_after_fees": stats["net_pnl"],
+            }
+        report["ready"] = overall_ready
+        return report
+
+    def record_decision(
+        self,
+        ticker: str,
+        ts_ms: int,
+        seconds_to_expiry: float,
+        index_price: float,
+        strike: float,
+        model_p_yes: float,
+        market_p_yes: float,
+        edge: float,
+        recommendation: str,
+        confidence: float,
+        confirmation_agree: int | None = None,
+        confirmation_total: int | None = None,
+        confirmation_detail: str | None = None,
+        shadow_snapshot: dict | None = None,
+        decision_snapshot: dict | None = None,
+    ) -> None:
+        """One-shot: does nothing if a decision was already recorded for this ticker."""
+        snapshot_json = json.dumps(shadow_snapshot, allow_nan=False) if shadow_snapshot is not None else None
+        with self._lock:
+            try:
+                cursor = self._raw_execute(
+                    """INSERT INTO decisions
+               (ticker, ts_ms, seconds_to_expiry, index_price, strike, model_p_yes,
+                market_p_yes, edge, recommendation, confidence, confirmation_agree, confirmation_total,
+                confirmation_detail)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (ticker) DO NOTHING""",
+                    (
+                        ticker, ts_ms, seconds_to_expiry, index_price, strike, model_p_yes,
+                        market_p_yes, edge, recommendation, confidence, confirmation_agree, confirmation_total,
+                        confirmation_detail,
+                    ),
+                )
+                if cursor.rowcount == 1 and shadow_snapshot is not None:
+                    self._raw_execute(
+                        """INSERT INTO shadow_decisions
+                           (ticker, ts_ms, index_id, experiment_id, snapshot_json)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (ticker, ts_ms, shadow_snapshot["index_id"], shadow_snapshot["experiment_id"], snapshot_json),
+                    )
+                if cursor.rowcount == 1 and decision_snapshot is not None:
+                    self._raw_execute(
+                        """INSERT INTO decision_snapshots (ticker, ts_ms, index_id, snapshot_json)
+                           VALUES (?, ?, ?, ?)""",
+                        (ticker, ts_ms, decision_snapshot["index_id"], json.dumps(decision_snapshot, allow_nan=False)),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def decision_snapshots(self, limit: int = 200, index_id: str | None = None) -> list[dict]:
+        """Live-decision snapshots (features/quotes/ticks recorded at decision time)
+        paired with their settlement result, shaped for `backtest.runner.evaluate_snapshots`
+        - retrospective replay of what already happened, e.g. to grid-search a
+        parameter like `market_blend_weight` against real history without waiting
+        on new live data.
+        """
+        sql = """SELECT ds.ticker, ds.ts_ms, ds.index_id, ds.snapshot_json,
+                        m.close_ts_ms, m.result
+                 FROM decision_snapshots ds
+                 LEFT JOIN markets m ON m.ticker = ds.ticker"""
+        params: list = []
+        if index_id is not None:
+            sql += " WHERE ds.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY ds.ts_ms DESC, ds.ticker ASC LIMIT ?"
+        params.append(limit)
+        cursor = self._query(sql, tuple(params))
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        for row in rows:
+            row["snapshot"] = json.loads(row.pop("snapshot_json"))
+            row["experiment_id"] = "live"
+        return rows
+
+    def shadow_decisions(self, limit: int = 200, index_id: str | None = None) -> list[dict]:
+        sql = """SELECT s.ticker, s.ts_ms, s.index_id, s.experiment_id, s.snapshot_json,
+                        m.close_ts_ms, m.result
+                 FROM shadow_decisions s
+                 INNER JOIN decisions d ON d.ticker = s.ticker AND d.ts_ms = s.ts_ms
+                 LEFT JOIN markets m ON m.ticker = s.ticker"""
+        params: list = []
+        if index_id is not None:
+            sql += " WHERE s.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY s.ts_ms DESC, s.ticker ASC LIMIT ?"
+        params.append(limit)
+        cursor = self._query(sql, tuple(params))
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        for row in rows:
+            row["snapshot"] = json.loads(row.pop("snapshot_json"))
+        return rows
+
+    def shadow_comparison(self, limit: int = 10000, index_id: str | None = None) -> dict:
+        rows = self.shadow_decisions(limit=limit, index_id=index_id)
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            groups.setdefault((row["experiment_id"], row["index_id"]), []).append(row)
+        comparisons = []
+        for (experiment_id, coin), group in groups.items():
+            settled = [row for row in group if row["result"] in ("yes", "no")]
+            scores = {}
+            for name in ("live", "shadow", "market"):
+                correct = actionable = actionable_correct = high_confidence = high_confidence_correct = 0
+                squared_error = log_loss = confidence_sum = 0.0
+                for row in settled:
+                    snapshot = row["snapshot"]
+                    probability = snapshot["market_p_yes"] if name == "market" else snapshot[name]["model_p_yes"]
+                    outcome = float(row["result"] == "yes")
+                    is_correct = (probability >= 0.5) == bool(outcome)
+                    correct += int(is_correct)
+                    squared_error += (probability - outcome) ** 2
+                    clipped = min(max(probability, 1e-6), 1 - 1e-6)
+                    log_loss -= outcome * math.log(clipped) + (1 - outcome) * math.log(1 - clipped)
+                    confidence = max(probability, 1 - probability)
+                    confidence_sum += confidence
+                    if confidence >= 0.9:
+                        high_confidence += 1
+                        high_confidence_correct += int(is_correct)
+                    recommendation = snapshot[name]["recommendation"] if name != "market" else "NO_EDGE"
+                    if recommendation in ("BUY_YES", "BUY_NO"):
+                        actionable += 1
+                        actionable_correct += int((recommendation == "BUY_YES") == bool(outcome))
+                count = len(settled)
+                scores[name] = {
+                    "n": count,
+                    "correct": correct,
+                    "accuracy": correct / count if count else None,
+                    "brier": squared_error / count if count else None,
+                    "log_loss": log_loss / count if count else None,
+                    "mean_confidence": confidence_sum / count if count else None,
+                    "high_confidence_n": high_confidence,
+                    "high_confidence_accuracy": high_confidence_correct / high_confidence if high_confidence else None,
+                    "actionable_n": actionable if name != "market" else None,
+                    "actionable_correct": actionable_correct if name != "market" else None,
+                }
+            comparisons.append({
+                "experiment_id": experiment_id,
+                "index_id": coin,
+                "recorded": len(group),
+                "pending": len(group) - len(settled),
+                "first_decision_ts_ms": min(row["ts_ms"] for row in group),
+                "last_decision_ts_ms": max(row["ts_ms"] for row in group),
+                "scores": scores,
+            })
+        return {"limit": limit, "recorded": len(rows), "groups": comparisons}
+
+    def decision_feature_outcome_pairs(
+        self, limit: int = 2000, index_id: str | None = None
+    ) -> list[tuple[dict, float]]:
+        """Recent (features dict, outcome) pairs, for fitting the logistic shadow model.
+
+        `features` is the `asdict(Features)` blob recorded in each decision's
+        snapshot (`decision_snapshots.snapshot_json["features"]`).
+        """
+        sql = """
+            SELECT ds.snapshot_json, m.result
+            FROM decision_snapshots ds
+            INNER JOIN markets m ON m.ticker = ds.ticker
+            WHERE m.result IN ('yes', 'no')
+        """
+        params: list = []
+        if index_id is not None:
+            sql += " AND ds.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY ds.ts_ms DESC LIMIT ?"
+        params.append(limit)
+        rows = self._query(sql, tuple(params)).fetchall()
+        pairs: list[tuple[dict, float]] = []
+        for snapshot_json, result in rows:
+            snapshot = json.loads(snapshot_json)
+            features = snapshot.get("features")
+            if features is not None:
+                pairs.append((features, 1.0 if result == "yes" else 0.0))
+        return pairs
+
+    def market_outcome_pairs(self, limit: int = 5000) -> list[tuple[float, float]]:
+        """Recent (market-implied P(yes) at decision time, outcome) pairs.
+
+        Trains the market recalibrator. Decisions taken on degraded inputs
+        (non-empty quality_flags) are excluded because their quotes are unreliable.
+        """
+        rows = self._query(
+            """
+            SELECT ds.snapshot_json, m.result
+            FROM decision_snapshots ds
+            INNER JOIN markets m ON m.ticker = ds.ticker
+            WHERE m.result IN ('yes', 'no')
+            ORDER BY m.closed_at_ms DESC, ds.ts_ms DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        pairs = []
+        for snapshot_json, result in rows:
+            snapshot = json.loads(snapshot_json)
+            if snapshot.get("quality_flags"):
+                continue
+            probability = snapshot.get("live", {}).get("market_p_yes")
+            if isinstance(probability, (int, float)) and math.isfinite(probability) and 0 < probability < 1:
+                pairs.append((float(probability), 1.0 if result == "yes" else 0.0))
+        return pairs
+
+    def calibration_pairs(self, limit: int = 2000, index_id: str | None = None) -> list[tuple[float, float]]:
+        """Recent pre-calibration probabilities paired with settled outcomes.
+
+        Legacy snapshots without `pre_calibration_model_p_yes` are deliberately
+        skipped: fitting on the final calibrated probability would recursively
+        train the calibrator on its own transformed output.
+        """
+        sql = """
+            SELECT ds.snapshot_json, m.result
+            FROM decision_snapshots ds
+            INNER JOIN markets m ON m.ticker = ds.ticker
+            WHERE m.result IN ('yes', 'no')
+        """
+        params: list = []
+        if index_id is not None:
+            sql += " AND ds.index_id = ?"
+            params.append(index_id)
+        sql += " ORDER BY m.closed_at_ms DESC, ds.ts_ms DESC LIMIT ?"
+        params.append(limit)
+        rows = self._query(sql, tuple(params)).fetchall()
+        pairs = []
+        for snapshot_json, result in rows:
+            snapshot = json.loads(snapshot_json)
+            probability = snapshot.get("live", {}).get("pre_calibration_model_p_yes")
+            if isinstance(probability, (int, float)) and math.isfinite(probability) and 0 <= probability <= 1:
+                pairs.append((float(probability), 1.0 if result == "yes" else 0.0))
+        return pairs
+
+    def calibration_stats(self, limit: int = 200, index_id: str | None = None) -> dict:
+        """Rolling Brier score / log loss over the last `limit` settled decisions.
+
+        Scored against the locked-in decision (made `KALSHI_DECISION_LEAD_SEC`
+        before close) rather than the last live signal, since the decision is
+        what's actually actionable/tradeable - that's the number that matters.
+
+        Pass `index_id` (e.g. "BRTI", "SOLUSD_RTI") to scope the track record
+        to a single coin instead of combining all monitored coins together.
+        """
+        sql = """
+            SELECT m.result, d.model_p_yes, d.market_p_yes
+            FROM markets m
+            INNER JOIN decisions d ON d.ticker = m.ticker
+            WHERE m.result IN ('yes', 'no')
+        """
+        params: list = []
+        if index_id is not None:
+            sql += " AND m.index_id = ?"
+            params.append(index_id)
+        count_sql = "SELECT COUNT(*) FROM (" + sql + ")"
+        settled_count = self._query(count_sql, tuple(params)).fetchone()[0]
+        sql += " ORDER BY m.closed_at_ms DESC LIMIT ?"
+        params.append(limit)
+        cur = self._query(sql, tuple(params))
+        rows = cur.fetchall()
+
+        n = len(rows)
+        if n == 0:
+            return {
+                "n": 0,
+                "settled_count": settled_count,
+                "model_brier": None,
+                "model_log_loss": None,
+                "market_brier": None,
+                "market_log_loss": None,
+                "baseline_brier": None,
+            }
+
+        eps = 1e-6
+        model_sq = market_sq = baseline_sq = 0.0
+        model_ll = market_ll = 0.0
+        for result, model_p, market_p in rows:
+            y = 1.0 if result == "yes" else 0.0
+            model_sq += (model_p - y) ** 2
+            market_sq += (market_p - y) ** 2
+            baseline_sq += (0.5 - y) ** 2
+            mp = min(max(model_p, eps), 1 - eps)
+            ap = min(max(market_p, eps), 1 - eps)
+            model_ll += -(y * math.log(mp) + (1 - y) * math.log(1 - mp))
+            market_ll += -(y * math.log(ap) + (1 - y) * math.log(1 - ap))
+
+        return {
+            "n": n,
+            "settled_count": settled_count,
+            "model_brier": model_sq / n,
+            "model_log_loss": model_ll / n,
+            "market_brier": market_sq / n,
+            "market_log_loss": market_ll / n,
+            "baseline_brier": baseline_sq / n,
+        }
+
+    # --- Big-bet ("whale") tracking ---------------------------------------------------
+
+    def insert_whale_trade(
+        self,
+        trade_id: str,
+        ticker: str,
+        ts_ms: int,
+        side: str,
+        count: float,
+        price_cents: float,
+        notional_usd: float,
+    ) -> None:
+        """One row per large fill. Idempotent - safe to re-insert the same trade_id
+        across polls since a market's trade feed is re-scanned each cycle."""
+        self._execute(
+            """INSERT INTO whale_trades
+               (trade_id, ticker, ts_ms, side, count, price_cents, notional_usd)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (trade_id) DO NOTHING""",
+            (trade_id, ticker, ts_ms, side, count, price_cents, notional_usd),
+        )
+
+    def latest_whale_trade_ts(self, ticker: str) -> int | None:
+        """Most recent trade timestamp already recorded for this ticker, so polling
+        only needs to ask Kalshi for trades newer than this."""
+        cur = self._query(
+            "SELECT MAX(ts_ms) FROM whale_trades WHERE ticker = ?", (ticker,)
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def recent_whale_trades(
+        self, ticker: str, limit: int = 20, min_usd: float = 0.0
+    ) -> list[dict]:
+        cur = self._query(
+            """SELECT trade_id, ticker, ts_ms, side, count, price_cents, notional_usd
+               FROM whale_trades
+               WHERE ticker = ? AND notional_usd >= ?
+               ORDER BY ts_ms DESC LIMIT ?""",
+            (ticker, min_usd, limit),
+        )
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+    def recent_whale_net_flow_usd(self, ticker: str, since_ms: int) -> float:
+        """Net USD flow of large fills since `since_ms` (positive = net YES buying)."""
+        cur = self._query(
+            """SELECT side, notional_usd FROM whale_trades
+               WHERE ticker = ? AND ts_ms >= ?""",
+            (ticker, since_ms),
+        )
+        return sum(notional_usd if side == "yes" else -notional_usd for side, notional_usd in cur.fetchall())
+

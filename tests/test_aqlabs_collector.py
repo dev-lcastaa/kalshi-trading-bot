@@ -200,3 +200,19 @@ def test_legacy_data_without_new_columns_reads_back_with_nulls(tmp_path):
     rows = store.connect().execute("select value, avg_60s from index_ticks order by ts_ms").fetchall()
     assert rows == [(85000.5, None), (85447.77, 85430.5)]
     assert store.import_csv("index_ticks", csv, since_ms=DAY)["csv_rows"] == 0  # --since-ms skips imported rows
+
+
+def test_a_store_holding_only_legacy_files_still_reports_and_fingerprints(tmp_path):
+    """Files written before received_at_ms/avg_60s existed must not break manifest(), reports or reads."""
+    import duckdb
+
+    folder = tmp_path / "index_ticks" / "date=2026-10-06"
+    folder.mkdir(parents=True)
+    duckdb.connect().execute(
+        f"copy (select 'BRTI' as index_id, {DAY}::BIGINT as ts_ms, 85000.5::DOUBLE as value) "
+        f"to '{(folder / 'part-legacy.parquet').as_posix()}' (format parquet)")
+    store = EventStore(tmp_path)
+    assert store.manifest()["index_ticks"]["rows"] == 1
+    assert store.connect().execute("select value, avg_60s, received_at_ms from index_ticks").fetchall() == [(85000.5, None, None)]
+    from aqlabs.store.quality import feed_report
+    assert {r["feed"]: r["ticks"] for r in feed_report(store)}["index/BRTI"] == 1
