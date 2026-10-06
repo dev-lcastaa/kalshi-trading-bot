@@ -1,6 +1,9 @@
 # AQLabs architecture: an edge-proving machine with an automated executor
 
-Status: Phase 1 built and verified; collecting for the 2-week gate (see [Migration plan](#migration-plan)). This document replaces
+Status (2026-10-06): Phase 1 (data and collector) built, deployed and recording. Phase 2a (maker execution) failed its kill
+check. Phase 3 stage 1 (H1 to H3) failed; **H4 is the only live hypothesis and waits for 14 days of collector data**
+(earliest run Oct 20). See [RUNBOOK.md](RUNBOOK.md) for the calendar and commands, and
+[PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) for the rules. This document replaces
 "predict up or down" as the app's goal.
 
 ## Why this redesign
@@ -216,6 +219,31 @@ Implication for the roadmap: the fee is not the removable cost it first looked l
 avoid the fee are the ones that get adversely selected. The remaining plan is Phase 3 (new information) with the
 taker execution already measured.
 
+## Phase 3 stage 1 results: H1, H2 and H3 fail
+
+Run with `python -m aqlabs.research.phase3 --stage screen` on the development splits, exactly as pre-registered
+(commit `3ca0f84` fixed the rules before the code existed). Each run is in the registry. Fit on `train`, screened on
+`val` + `test`; rules are in [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md).
+
+| Hypothesis | Result | Why it failed |
+|---|---|---|
+| **H1** cross-exchange lead-lag (Coinbase) | **Fail** at the measurement gate | The basis does carry information (t = +6.9 BTC, +8.9 SOL in sample) and out-of-sample R^2 is positive in 3 of 4 cells, but SOL `test` is -0.0009. More importantly it is tiny: a 1-sigma basis predicts about 0.08 bp (BTC) and 0.14 bp (SOL) of a 10 s move whose typical size is 2 to 3 bp, so R^2 is 0.2 to 0.3%. Real, and far too small to matter to a contract that costs cents. The trading test was not run, by rule. |
+| **H2** faster volatility (half-life 8 min) | **Fail** | Information gate: better on `test` (log loss +0.49e-2) but not on `val` (-0.06e-2). Trading: -0.26c overall, -5.7c on `test`. |
+| **H3** final-minute settlement average | **Fail** | 544 trades at -1.39c overall (90% CI -4.5 to +1.6c): `train` -2.9c, `val` -2.3c, `test` +4.9c on only 95 trades. Pooled `val` + `test` was 230 trades (rule: 300) and `val` was negative. Median entry price was 0.78, not the extreme prices the idea assumed. The shuffled placebo lost 1.6c, so the model has some real content; it just doesn't clear costs. |
+
+Reading: three more independent ways of finding information the market lacks all came back empty or too small. H1
+was close on the statistics but nowhere near on the economics. H3 is inconclusive on size and inconsistent in sign;
+under the pre-registration both stop here, and H1b (H1 with more exchanges) is blocked by the registry.
+
+## Phase 3 status
+
+| Item | State |
+|---|---|
+| Pre-registration, registry, stage gates | Done. Validation needs a passed screen; confirmation needs a passed validation and `--confirm-holdout`; every holdout look is logged. |
+| H1, H2, H3 stage 1 | Done, all failed. They do not advance. |
+| H4 pipeline (depth imbalance, trade flow, taker round trip) | Built and tested, including a planted-signal check (finds it), a no-signal control (does not pass) and a look-ahead guard (features use only earlier seconds). Needs the 14-day `fwd` window. |
+| Data pull | `python -m aqlabs.store.pull` rebuilds one research store from the legacy data, the collector's files and the Postgres gap. Tested live against the server. |
+
 ## Migration plan
 
 | Phase | Work | Gate to continue |
@@ -223,7 +251,7 @@ taker execution already measured.
 | 0 | Turn off scalping, keep live paused, free disk, rotate the SSH key. | Done by the owner. |
 | 1 | Event store, importer, data-quality checks, fee module, replay engine moved to `aqlabs/research`, Kraken BTC fix, collector service. **Built and verified.** | Replay reproduces the existing results exactly (passed). 2+ weeks of gap-free collection (starts when the collector is deployed). |
 | 2 | Maker/taker fill model in `costs/`, then re-run all strategies. **2a done on legacy data: maker execution of the fair-value signal fails the kill check (see above).** | Net positive after realistic costs on development data. **If not, stop.** |
-| 3 | New features and models, hypotheses pre-registered in the registry. | Beats the frozen baseline on validation, then the holdout once. |
+| 3 | New features and models, hypotheses pre-registered. **Stage 1 done: H1, H2, H3 failed. H4 waits for data (earliest Oct 20).** | Beats the frozen baseline on validation, then the holdout once. |
 | 4 | Strategy and executor on the shared interface. Paper-sim runs the replay code. | Paper P/L matches the replay prediction within its confidence interval for 2 to 3 weeks. |
 | 5 | Live at $1 to $5 per trade with the risk gate and decay monitor. | Real fills match paper. Scale only slowly. |
 | 6 | Remove legacy code (shadow models, isotonic calibrator, v1 to v3, scalper). | Tests green. |

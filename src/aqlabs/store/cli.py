@@ -27,7 +27,7 @@ def cmd_import(args) -> None:
         if not path.exists():
             print(f"skip {name}: no CSV found")
             continue
-        print(store.import_csv(name, path, since_ms=args.since_ms))
+        print(store.import_csv(name, path, since_ms=args.since_ms, until_ms=args.until_ms))
     print("manifest:", store.write_manifest())
 
 
@@ -50,6 +50,7 @@ def main() -> None:
     a.add_argument("--csv-dir", required=True)
     a.add_argument("--root", required=True)
     a.add_argument("--since-ms", type=int, help="only import rows after this time (fills a gap without duplicates)")
+    a.add_argument("--until-ms", type=int, help="only import rows before this time")
     a.set_defaults(fn=cmd_import)
     b = sub.add_parser("report")
     b.add_argument("--root", required=True)

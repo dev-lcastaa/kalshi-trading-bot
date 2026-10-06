@@ -69,8 +69,11 @@ def _markets_sources(store: EventStore) -> dict:
     return {"sources": " union all ".join(parts)}
 
 
-def build_coin_grid(ts_ms: np.ndarray, val: np.ndarray) -> dict:
-    """1-second grid of the latest tick, its validity and the 30-minute 1-minute-return volatility."""
+def build_coin_grid(ts_ms: np.ndarray, val: np.ndarray, half_life_min: float | None = None) -> dict:
+    """1-second grid of the latest tick, its validity and the 30-minute 1-minute-return volatility.
+
+    `half_life_min` weights a return `k` minutes old by 0.5 ** (k / half_life_min) (Phase 3, H2); None keeps the
+    flat weighting used everywhere else."""
     s0 = int(ts_ms[0] // 1000)
     s = np.arange(s0, int(ts_ms[-1] // 1000) + 1, dtype=np.int64)
     idx = np.searchsorted(ts_ms, s * 1000, side="right") - 1
@@ -84,25 +87,39 @@ def build_coin_grid(ts_ms: np.ndarray, val: np.ndarray) -> dict:
     R[60:] = np.where(valid[60:] & valid[:-60], lv[60:] - lv[:-60], np.nan)
     fin = np.isfinite(R)
     r2, c = np.where(fin, R * R, 0.0), fin.astype(float)
-    ss, cn = np.zeros(n), np.zeros(n)
+    ss, cn, cnt = np.zeros(n), np.zeros(n), np.zeros(n)
     for k in range(30):
-        ss[60 * k:] += r2[: n - 60 * k]
-        cn[60 * k:] += c[: n - 60 * k]
-    sigma = np.where(cn >= 10, np.sqrt(ss / np.maximum(cn, 1)), np.nan)
+        wk = 1.0 if half_life_min is None else 0.5 ** (k / half_life_min)
+        ss[60 * k:] += wk * r2[: n - 60 * k]
+        cn[60 * k:] += wk * c[: n - 60 * k]
+        cnt[60 * k:] += c[: n - 60 * k]
+    sigma = np.where(cnt >= 10, np.sqrt(ss / np.maximum(cn, 1e-12)), np.nan)
     return {"s0": s0, "V": V, "valid": valid, "sigma": sigma}
 
 
-def load_all(store: EventStore) -> tuple[dict, list[dict]]:
+def load_all(store: EventStore, sources: tuple[str, ...] = (), with_ewma: bool = False,
+             ewma_half_life_min: float = 8.0) -> tuple[dict, list[dict]]:
+    """Per-coin price grids and per-market quote data.
+
+    Grid keys: ("idx", coin) the index, ("cb", coin) Coinbase, ("ext:<source>", coin) any extra exchange in
+    `sources`, and ("idx_ewma", coin) the index with the faster volatility estimate when `with_ewma`."""
     con = store.connect()
     grids = {}
     for iid in ("BRTI", "SOLUSD_RTI"):
         d = con.execute("select ts_ms, value from index_ticks where index_id = ? order by ts_ms", [iid]).fetchnumpy()
-        grids[("idx", iid)] = build_coin_grid(d["ts_ms"].astype(np.int64), _filled(d["value"]))
+        ts, val = d["ts_ms"].astype(np.int64), _filled(d["value"])
+        grids[("idx", iid)] = build_coin_grid(ts, val)
+        if with_ewma:
+            grids[("idx_ewma", iid)] = build_coin_grid(ts, val, half_life_min=ewma_half_life_min)
         if store.has_data("external_ticks"):
-            d = con.execute("select ts_ms, price from external_ticks where source = 'coinbase' and index_id = ? "
-                            "order by ts_ms", [iid]).fetchnumpy()
-            if len(d["ts_ms"]):
-                grids[("cb", iid)] = build_coin_grid(d["ts_ms"].astype(np.int64), _filled(d["price"]))
+            for source in dict.fromkeys(("coinbase", *sources)):
+                d = con.execute("select ts_ms, price from external_ticks where source = ? and index_id = ? "
+                                "order by ts_ms", [source, iid]).fetchnumpy()
+                if len(d["ts_ms"]):
+                    g = build_coin_grid(d["ts_ms"].astype(np.int64), _filled(d["price"]))
+                    grids[("ext:" + source, iid)] = g
+                    if source == "coinbase":
+                        grids[("cb", iid)] = g
     mk = {r[0]: r for r in con.execute(_MARKETS_SQL.format(**_markets_sources(store))).fetchall()}
     q = con.execute("select market_ticker, ts_ms, yes_bid_dollars, yes_ask_dollars, yes_bid_size, yes_ask_size, "
                     "price_dollars, volume from market_ticks order by market_ticker, ts_ms").fetchnumpy()

@@ -55,12 +55,13 @@ class EventStore:
             written.append(final)
         return written
 
-    def import_csv(self, table: str, csv_path: str | os.PathLike, since_ms: int | None = None) -> dict:
+    def import_csv(self, table: str, csv_path: str | os.PathLike, since_ms: int | None = None,
+                   until_ms: int | None = None) -> dict:
         """Load a CSV or CSV.GZ export (header row, Postgres COPY style) into `table`.
 
         Columns the schema has but the CSV lacks (added after the legacy export) are filled with NULL.
-        `since_ms` keeps only rows strictly after that time, so a later export can fill a gap without
-        duplicating rows that were already imported.
+        `since_ms` / `until_ms` keep only rows strictly after / before those times, so a later export can fill a gap
+        without duplicating rows that already exist on either side of it.
         """
         spec = TABLES[table]
         con = duckdb.connect()
@@ -73,8 +74,10 @@ class EventStore:
             raise ValueError(f"{table}: CSV has columns the schema does not define: {unknown}")
         cols = ", ".join(f"'{c}': '{t}'" for c, t in present.items())
         src = f"read_csv('{path}', header=true, nullstr='', columns={{{cols}}})"
-        if since_ms is not None:
-            src = f"(select * from {src} where {spec.time_column} > {int(since_ms)})"
+        if since_ms is not None or until_ms is not None:
+            bounds = [f"{spec.time_column} > {int(since_ms)}"] if since_ms is not None else []
+            bounds += [f"{spec.time_column} < {int(until_ms)}"] if until_ms is not None else []
+            src = f"(select * from {src} where {' and '.join(bounds)})"
         select = ", ".join(c if c in present else f"NULL::{t} as {c}" for c, t in spec.columns.items())
         n_csv = con.execute(f"select count(*) from {src}").fetchone()[0]
         before = self.count(table)
