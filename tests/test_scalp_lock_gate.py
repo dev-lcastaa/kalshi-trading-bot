@@ -19,11 +19,11 @@ async def gated_trader(tmp_path):
 
 def test_gate_requires_three_checks_and_the_locked_direction():
     decision = {"ticker": TICKER, "ts_ms": 1, "model_p_yes": 0.7, "recommendation": "NO_EDGE",
-                "confirmation_agree": 3, "confirmation_total": 4, "confirmation_detail": "[]"}
+                "confirmation_agree": 2, "confirmation_total": 4, "confirmation_detail": "[]"}
     assert locked_gate_reason(None, "yes") is not None
     assert locked_gate_reason(decision, "yes") is None
     assert "conflicts" in locked_gate_reason(decision, "no")
-    assert "2/4" in locked_gate_reason({**decision, "confirmation_agree": 2}, "yes")
+    assert "1/4" in locked_gate_reason({**decision, "confirmation_agree": 1}, "yes")
     assert "0/0" in locked_gate_reason({**decision, "confirmation_agree": None, "confirmation_total": None}, "yes")
 
 
@@ -35,14 +35,14 @@ async def test_scalper_waits_for_the_lock_then_trades_and_traces_the_market(tmp_
     assert "lock its direction" in trader.watch[0]["status"]
     rest.create_event_order.assert_not_called()
 
-    lock_call(store, TICKER, agree=3, total=4)
+    lock_call(store, TICKER, agree=2, total=4)
     clock[0] += 3
     await trader.cycle()
     [position] = trader.positions()
     assert position["market_id"] == TICKER == position["ticker"]
     assert position["entry_gate"]["market_id"] == TICKER
     assert position["entry_gate"]["call"] == "yes"
-    assert (position["entry_gate"]["checks_agree"], position["entry_gate"]["checks_total"]) == (3, 4)
+    assert (position["entry_gate"]["checks_agree"], position["entry_gate"]["checks_total"]) == (2, 4)
     assert all(entry["market_id"] == TICKER for entry in position["execution_history"])
     events = [e for e in store.trading_events() if e.get("ticker")]
     assert events and all(e["market_id"] == TICKER for e in events)
@@ -50,7 +50,7 @@ async def test_scalper_waits_for_the_lock_then_trades_and_traces_the_market(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("lock", [{"agree": 2, "total": 4}, {"agree": 4, "total": 4, "up": False}])
+@pytest.mark.parametrize("lock", [{"agree": 1, "total": 4}, {"agree": 4, "total": 4, "up": False}])
 async def test_scalper_refuses_weak_or_opposite_locked_calls(tmp_path, clock, lock):  # noqa: F811
     store, rest, trader = await gated_trader(tmp_path)
     lock_call(store, TICKER, **lock)

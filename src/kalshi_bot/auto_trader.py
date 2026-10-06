@@ -114,7 +114,7 @@ def parse_policy(values: dict) -> TradingPolicy:
 
 
 # Same safety checks as the model's locked pick (3 momentum/book signals + the LLM review).
-MIN_LOCKED_CHECKS = 3
+MIN_LOCKED_CHECKS = 2
 
 
 def locked_call_side(decision: dict) -> str:
