@@ -156,7 +156,8 @@ def quote_arrays(m: dict) -> None:
     ok = (idx >= 0) & (s * 1000 - ts[ic] <= MAX_AGE_MS)
     bid, ask, bsz, asz = q[ic, 1], q[ic, 2], np.nan_to_num(q[ic, 3]), np.nan_to_num(q[ic, 4])
     ok &= np.isfinite(bid) & np.isfinite(ask) & (bid <= ask)
-    m.update(s=s, bid=bid, ask=ask, bsz=bsz, asz=asz, qok=ok, mid=(bid + ask) / 2)
+    age = np.where(idx >= 0, s * 1000 - ts[ic], np.nan)  # how old the quote in force was at each second (ms)
+    m.update(s=s, bid=bid, ask=ask, bsz=bsz, asz=asz, qok=ok, mid=(bid + ask) / 2, qage=age)
 
 
 def signal_arrays(grid: dict, m: dict, shift: int = 0):

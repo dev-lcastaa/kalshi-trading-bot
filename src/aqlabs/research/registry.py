@@ -18,6 +18,8 @@ STAGES = ("screen", "validate", "confirm")
 PREREQUISITE = {
     ("H1", "validate"): ("H1", "screen"), ("H2", "validate"): ("H2", "screen"), ("H3", "validate"): ("H3", "screen"),
     ("H1b", "validate"): ("H1", "screen"),
+    ("H5", "validate"): ("H5", "screen"), ("H6", "validate"): ("H6", "screen"),
+    ("H5", "confirm"): ("H5", "validate"), ("H6", "confirm"): ("H6", "validate"),
     ("H1", "confirm"): ("H1", "validate"), ("H2", "confirm"): ("H2", "validate"), ("H3", "confirm"): ("H3", "validate"),
     ("H1b", "confirm"): ("H1b", "validate"), ("H4", "confirm"): ("H4", "validate"),
 }

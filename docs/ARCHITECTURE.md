@@ -235,12 +235,40 @@ Reading: three more independent ways of finding information the market lacks all
 was close on the statistics but nowhere near on the economics. H3 is inconclusive on size and inconsistent in sign;
 under the pre-registration both stop here, and H1b (H1 with more exchanges) is blocked by the registry.
 
+## Phase 3 stage 1 results: H5 and H6 (the external spec) fail
+
+Pre-registered in the addendum to [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) (commit `31edf9e`) before
+the code existed: the other agent's validator, risk rules, exits and nested model, with its cost semantics settled
+first (a *net* stop of 5c at about 5c of round-trip cost would fire at entry, so the gross form it recommended was
+tested: take profit +8c, stop -8c). Run with `python -m aqlabs.research.phase3_shell --stage screen`.
+
+| | H5: the spec's shell around the frozen model | H6: the same shell with momentum, acceleration and book imbalance added |
+|---|---|---|
+| Trades (all dev days) | 98 | 116 |
+| Net per trade | **-3.37c** (90% CI -5.7 to -1.5c); train -0.6c, val -5.2c, test -8.1c | **-3.77c**; train -2.2c, val -4.6c, test -7.5c |
+| BTC only (the spec's scope) | -3.3c on 79 trades | -4.0c on 87 trades |
+| Win rate / average win / average loss | 54% / +4.7c / -12.9c | 53% / +4.8c / -13.3c |
+| Profit factor | 0.43 | 0.40 |
+| Exits | 54 take-profit, 43 stop, 1 invalidation | 62 take-profit, 53 stop, 1 invalidation |
+| Placebo (shuffled probabilities) | -4.6c | -4.9c |
+| Screen | **Fail** (98 trades is under the 100 minimum, and the mean and both splits are negative) | **Fail** (mean and both splits negative) |
+
+- **Why the shell loses:** a stop-out costs about 13c and a take-profit earns about 5c, so it needs a 73% win rate
+  to break even and gets 54%. The results also get worse over time.
+- **H6 answers the spec's open question directly: momentum, acceleration and book imbalance add nothing.** Fit on
+  `train`, their coefficients are +0.007, +0.008 and +0.014 against 1.011 on the market-anchored probability;
+  held-out log loss is no better (difference -0.00009), and removing any one of them changes it by less than
+  0.00007.
+- **Selectivity works as designed:** of 3.18M decision-window seconds, 79.8% were rejected for too little edge, 9.2%
+  for stale or missing quotes (the 1 s freshness rule), 8.9% for chop, and only 0.1% were candidates. It trades
+  about 4 times a day, which is also why 300 trades would take about 10 weeks.
+
 ## Phase 3 status
 
 | Item | State |
 |---|---|
 | Pre-registration, registry, stage gates | Done. Validation needs a passed screen; confirmation needs a passed validation and `--confirm-holdout`; every holdout look is logged. |
-| H1, H2, H3 stage 1 | Done, all failed. They do not advance. |
+| H1, H2, H3, H5, H6 stage 1 | Done, all failed. They do not advance. |
 | H4 pipeline (depth imbalance, trade flow, taker round trip) | Built and tested, including a planted-signal check (finds it), a no-signal control (does not pass) and a look-ahead guard (features use only earlier seconds). Needs the 14-day `fwd` window. |
 | Data pull | `python -m aqlabs.store.pull` rebuilds one research store from the legacy data, the collector's files and the Postgres gap. Tested live against the server. |
 

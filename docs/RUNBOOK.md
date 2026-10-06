@@ -10,7 +10,7 @@ the collector, then running one pre-registered test.
 | Collector | Running on node004 since 2026-10-06 21:02 UTC, writing to the `aqlabs-eventstore` volume. Healthy, no alerts. |
 | Legacy research data | Imported (Sep 12 to Oct 6). The Oct 6 gap between the legacy export and the collector is filled by the pull tool. |
 | Phase 2a (maker execution) | Failed its kill check. Do not revisit without a new hypothesis written in the pre-registration. |
-| Phase 3 stage 1 (H1, H2, H3) | All three failed (see `ARCHITECTURE.md`). They do not advance. H1b is blocked with H1. |
+| Phase 3 stage 1 (H1, H2, H3, H5, H6) | All five failed (see `ARCHITECTURE.md`). They do not advance. H1b is blocked with H1. H5 and H6 are the external spec's shell and its momentum/acceleration/book model. |
 | **H4 (depth and trade flow)** | The only live hypothesis. Pipeline built and tested. Needs 14 days of collector data. |
 | Holdout | Oct 20 onward, untouched. |
 | Live trading | Keep it paused. Nothing has passed any gate. Keep momentum scalping off (it loses 3 to 4c per trade in replay). |
