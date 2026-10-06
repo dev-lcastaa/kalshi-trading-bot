@@ -88,5 +88,8 @@ def test_split_assignment_reserves_the_holdout():
     assert R.split_of("2026-09-20") == "train"
     assert R.split_of("2026-09-28") == "val"
     assert R.split_of("2026-10-03") == "test"
-    assert R.split_of("2026-10-06") == "holdout"
+    assert R.split_of("2026-10-06") == "fwd"  # collector-era development data
+    assert R.split_of("2026-10-19") == "fwd"
+    assert R.split_of("2026-10-20") == "holdout"
+    assert R.split_of("2026-12-01") == "holdout"
     assert R.split_of("2026-09-12") == "x"

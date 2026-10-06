@@ -1,4 +1,5 @@
-"""Standard experiment suite. Always excludes the reserved holdout (days >= HOLDOUT_START).
+"""Standard experiment suite. Uses the train/val/test development splits only; the forward split and the
+reserved holdout (days >= HOLDOUT_START) are never touched here.
 
     python -m aqlabs.research.suite --root C:\\data\\eventstore --out results.txt
 """
@@ -28,8 +29,9 @@ def main() -> None:
     t0 = time.time()
     grids, markets = R.load_all(EventStore(args.root))
     usable = [m for m in markets if m["split"] in ("train", "val", "test")]
-    P(f"markets total={len(markets)} analysed={len(usable)} (holdout excluded: "
-      f"{sum(m['split'] == 'holdout' for m in markets)})  train {sum(m['split'] == 'train' for m in usable)}, "
+    P(f"markets total={len(markets)} analysed={len(usable)} (not used here: "
+      f"{sum(m['split'] == 'fwd' for m in markets)} forward Oct 6-19, "
+      f"{sum(m['split'] == 'holdout' for m in markets)} holdout)  train {sum(m['split'] == 'train' for m in usable)}, "
       f"val {sum(m['split'] == 'val' for m in usable)}, test {sum(m['split'] == 'test' for m in usable)}")
 
     z_idx = [R.signal_arrays(grids[("idx", m["coin"])], m) for m in usable]

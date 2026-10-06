@@ -1,4 +1,4 @@
-"""Phase 2 maker-execution suite (development data only; the holdout is always excluded).
+"""Phase 2 maker-execution suite (development splits only; the forward split and the holdout are never touched).
 
     python -m aqlabs.research.maker_suite --root C:\\data\\eventstore --out maker_results.txt
 
@@ -41,7 +41,8 @@ def main() -> None:
     t0 = time.time()
     grids, markets = R.load_all(EventStore(args.root))
     usable = [m for m in markets if m["split"] in ("train", "val", "test")]
-    P(f"markets analysed={len(usable)} (holdout excluded: {sum(m['split'] == 'holdout' for m in markets)})")
+    P(f"markets analysed={len(usable)} (not used here: {sum(m['split'] == 'fwd' for m in markets)} forward Oct 6-19, "
+      f"{sum(m['split'] == 'holdout' for m in markets)} holdout)")
     z_idx = [R.signal_arrays(grids[("idx", m["coin"])], m) for m in usable]
     z_stale = [R.signal_arrays(grids[("idx", m["coin"])], m, shift=60) for m in usable]
     rng = np.random.default_rng(11)

@@ -234,7 +234,20 @@ taker execution already measured.
 - Positive on validation and test, and the lower end of the day-clustered 90% CI above zero, with at least 300 to 500 trades.
 - Positive in both coins and both halves, not driven by one day.
 - Placebo tests (stale and shuffled signal) must lose.
-- The holdout (data from Oct 6 2026 onward) is evaluated once per frozen candidate, and every look is logged.
+- The holdout (data from Oct 20 2026 onward) is evaluated once per frozen candidate, and every look is logged.
+
+### Data splits
+
+| Split | Dates (UTC) | Status |
+|---|---|---|
+| `train` | Sep 14 to 25 | Development |
+| `val` | Sep 26 to Oct 1 | Development |
+| `test` | Oct 2 to 5 | **Development.** Phases 1 and 2 looked at it repeatedly, so it is not a clean test any more. |
+| `fwd` | Oct 6 to 19 | Development, with the collector's trade tape, depth and published 60 s average. Used by Phase 3; not by the Phase 1/2 suites. |
+| `holdout` | Oct 20 onward | Untouched. One evaluation per frozen candidate, every look logged. |
+
+The holdout started at Oct 6 until the Phase 3 decision, when it was moved to Oct 20. No outcome from Oct 6 or later
+had been scored at that point, so no information leaked across the change.
 
 ### Kill criteria (decided up front)
 

@@ -19,8 +19,16 @@ MAX_AGE_MS = 5000
 WIN = 840  # seconds of per-market history kept (T-14:00 .. T-0:01)
 COEFFICIENTS = (-0.0199, 0.9142, 0.0294, -0.0268, -0.2871, 0.5018)  # frozen kalshi_bot.prediction.fair_value
 
-SPLITS = {"train": ("2026-09-14", "2026-09-25"), "val": ("2026-09-26", "2026-10-01"), "test": ("2026-10-02", "2026-10-05")}
-HOLDOUT_START = "2026-10-06"  # reserved: evaluate once per frozen candidate and log every look
+SPLITS = {
+    "train": ("2026-09-14", "2026-09-25"),
+    "val": ("2026-09-26", "2026-10-01"),
+    # Despite the name, "test" is development data now: Phases 1 and 2 looked at it repeatedly.
+    "test": ("2026-10-02", "2026-10-05"),
+    # Forward development data with the collector's trade tape and depth. Not used by the Phase 1/2 suites.
+    "fwd": ("2026-10-06", "2026-10-19"),
+}
+# The only untouched data: evaluate once per frozen candidate and log every look.
+HOLDOUT_START = "2026-10-20"
 
 ProbFn = Callable[[dict, np.ndarray, np.ndarray], np.ndarray]
 
