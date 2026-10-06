@@ -147,24 +147,35 @@ as NULL for them. Replay reads labels from `markets` and `market_meta` together.
 
 ### Operating it
 
+Deploys: the Jenkins pipeline rebuilds and restarts only `bot` and `frontend`, and leaves the collector (and
+Postgres) running, because restarting the collector leaves an ~80 s gap in every feed and the data gate counts
+gaps. Tick the **DEPLOY_COLLECTOR** build parameter only when the collector's own code changed. The collector
+image bundles `src/`, so the report command run *inside* the container uses the code from its last deploy.
+
 ```bash
-docker compose up -d --build collector                                  # start or update
+docker compose up -d --build collector                                  # start or update by hand
 docker exec aqlabs-kalshi-trading-bot-collector-1 python -m aqlabs.store.cli report --root /data/eventstore
 docker logs --tail 50 aqlabs-kalshi-trading-bot-collector-1             # alerts show as ERROR lines
 # copy the data to a research machine
 docker run --rm -v aqlabs-eventstore:/d -v "$PWD":/out alpine tar czf /out/eventstore.tgz -C /d .
 ```
 
-Expected volume: about 260 MB per day before compaction (the trade tape is the largest table), so about
-95 GB a year; the 102 GB free is enough for the 2-week gate and several months beyond it.
+The report judges each feed against its own gap limit (`FEED_GAP_LIMIT_SEC` in `aqlabs/store/quality.py`, the same
+numbers the collector alerts on): 15 s for the index, 30 s Coinbase, 60 s / 120 s Kraken BTC / SOL, and 120 s / 600 s
+Bitstamp BTC / SOL, which only ticks when someone trades. `--max-gap-sec N` applies one limit to every feed.
+A planned restart shows up as one gap in every feed at the same time; that is not a feed outage.
+
+Expected volume: about 170 MB per day before compaction (measured: 4.4 MB for the first 38 minutes; the trade
+tape is the largest table), so roughly 60 GB a year; the 99 GB free is enough for the 2-week gate and months beyond it.
 The legacy Postgres tables stop being the research source once the collector has run; backfill the gap
 between the last legacy export and the collector's first row with `import --since-ms <largest max_ms in
 MANIFEST.json>` from a fresh Postgres export.
 
 ### The Phase 1 gate
 
-2 weeks of collection with no feed down for more than its silence limit and no dropped rows, checked with
-`python -m aqlabs.store.cli report` (uptime per feed) and the `heartbeats` table. Until then Phase 2
+2 weeks of collection with no feed down for more than its limit and no dropped rows, checked with
+`python -m aqlabs.store.cli report` (uptime per feed) and the `heartbeats` table. Planned restarts are
+excluded from the count but should be rare (see "Operating it"). Until then Phase 2
 (the fill model) can be developed on the 3 weeks of legacy data plus the new trade tape and depth as they accumulate.
 ## Migration plan
 

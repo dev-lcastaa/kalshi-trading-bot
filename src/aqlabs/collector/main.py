@@ -24,6 +24,7 @@ import httpx
 from kalshi_bot.config import Settings
 
 from ..store import EventStore
+from ..store.quality import FEED_GAP_LIMIT_SEC
 from .exchanges import run_bitstamp, run_coinbase, run_kraken
 from .health import FeedHealth
 from .kalshi import KalshiFeed, sleep_or_stop
@@ -35,13 +36,12 @@ HEARTBEAT_EVERY_SEC = 60
 STATUS_EVERY_SEC = 10
 COMPACT_EVERY_SEC = 3600
 
-# Seconds of silence before a feed raises an alert.
+# Seconds of silence before a feed raises an alert. Exchange and index limits come from the store's
+# per-feed gap limits so the alerts and the quality report always agree.
 SILENCE_LIMITS = {
     "kalshi/quotes": 60, "kalshi/trades": 180, "kalshi/orderbook": 60,
-    "kalshi/index/BRTI": 15, "kalshi/index/SOLUSD_RTI": 15,
-    "coinbase/BRTI": 30, "coinbase/SOLUSD_RTI": 30,
-    "kraken/BRTI": 60, "kraken/SOLUSD_RTI": 120,
-    "bitstamp/BRTI": 120, "bitstamp/SOLUSD_RTI": 600,
+    **{(f"kalshi/{name}" if name.startswith("index/") else name): seconds
+       for name, seconds in FEED_GAP_LIMIT_SEC.items()},
 }
 
 

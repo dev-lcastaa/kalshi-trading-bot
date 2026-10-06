@@ -36,10 +36,10 @@ def cmd_report(args) -> None:
     print("== manifest")
     for name, m in store.manifest().items():
         print(f"{name:15} rows={m['rows']:>9,} {_fmt(m['min_ms'])} -> {_fmt(m['max_ms'])} fp={m['fingerprint']}")
-    print("== feeds (gaps > %ds)" % (args.max_gap_sec,))
-    for r in feed_report(store, args.max_gap_sec * 1000):
-        print(f"{r['feed']:22} ticks={r['ticks']:>9,} gaps={r['gaps']:>4} lost_h={r['gap_hours']:>6} "
-              f"longest_min={r['longest_gap_min']:>6} uptime={r['uptime']:.4f}")
+    print("== feeds (per-feed gap limit%s)" % (f", overridden to {args.max_gap_sec}s" if args.max_gap_sec else ""))
+    for r in feed_report(store, args.max_gap_sec * 1000 if args.max_gap_sec else None):
+        print(f"{r['feed']:22} ticks={r['ticks']:>9,} limit={r['limit_sec']:>3}s gaps={r['gaps']:>4} "
+              f"lost_h={r['gap_hours']:>6} longest_min={r['longest_gap_min']:>6} uptime={r['uptime']:.4f}")
     print("== quotes", quote_report(store))
 
 
@@ -53,7 +53,8 @@ def main() -> None:
     a.set_defaults(fn=cmd_import)
     b = sub.add_parser("report")
     b.add_argument("--root", required=True)
-    b.add_argument("--max-gap-sec", type=int, default=30)
+    b.add_argument("--max-gap-sec", type=int, default=None,
+                   help="apply one gap limit to every feed instead of the per-feed limits")
     b.set_defaults(fn=cmd_report)
     args = p.parse_args()
     args.fn(args)

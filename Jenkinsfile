@@ -9,6 +9,14 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
+    parameters {
+        booleanParam(
+            name: 'DEPLOY_COLLECTOR',
+            defaultValue: false,
+            description: 'Rebuild and restart the market-data collector. Leaves a ~80 s gap in every feed; only tick it when the collector code changed.'
+        )
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -67,10 +75,18 @@ pipeline {
 
         stage('Deploy') {
             steps {
+                // The collector is deliberately left running: restarting it opens a ~80 s gap in every feed,
+                // and the Phase 1 data gate counts gaps. Tick DEPLOY_COLLECTOR only when its own code changed.
                 sh '''
-                    docker compose down
-                    docker compose build --no-cache
-                    docker compose up --force-recreate -d
+                    docker compose up -d postgres
+                    docker compose build --no-cache bot frontend
+                    docker compose up -d --force-recreate --no-deps bot frontend
+                    if [ "${DEPLOY_COLLECTOR}" = "true" ]; then
+                        docker compose build collector
+                        docker compose up -d --force-recreate --no-deps collector
+                    else
+                        docker compose up -d --no-deps collector
+                    fi
                 '''
             }
         }

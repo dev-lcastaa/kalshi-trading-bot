@@ -216,3 +216,30 @@ def test_a_store_holding_only_legacy_files_still_reports_and_fingerprints(tmp_pa
     assert store.connect().execute("select value, avg_60s, received_at_ms from index_ticks").fetchall() == [(85000.5, None, None)]
     from aqlabs.store.quality import feed_report
     assert {r["feed"]: r["ticks"] for r in feed_report(store)}["index/BRTI"] == 1
+
+
+def test_feed_report_applies_a_separate_gap_limit_to_each_feed(tmp_path):
+    from aqlabs.store.quality import feed_report
+
+    store = EventStore(tmp_path)
+    rows = []
+    for source in ("coinbase", "bitstamp"):  # both tick every 60 s; coinbase tolerates 30 s, bitstamp 120 s
+        rows += [{"source": source, "symbol": "x", "index_id": "BRTI", "ts_ms": DAY + i * 60_000,
+                  "received_at_ms": DAY + i * 60_000, "price": 100.0, "bid": None, "ask": None, "volume_24h": None}
+                 for i in range(5)]
+    store.append("external_ticks", rows)
+    report = {r["feed"]: r for r in feed_report(store)}
+    assert report["coinbase/BRTI"]["gaps"] == 4 and report["coinbase/BRTI"]["limit_sec"] == 30
+    assert report["bitstamp/BRTI"]["gaps"] == 0 and report["bitstamp/BRTI"]["uptime"] == 1.0
+    overridden = {r["feed"]: r for r in feed_report(store, max_gap_ms=30_000)}
+    assert overridden["bitstamp/BRTI"]["gaps"] == 4  # an explicit limit applies to every feed
+
+
+def test_collector_alert_limits_are_the_same_numbers_the_report_uses():
+    from aqlabs.collector.main import SILENCE_LIMITS, build_health
+    from aqlabs.store.quality import FEED_GAP_LIMIT_SEC
+
+    for feed, seconds in FEED_GAP_LIMIT_SEC.items():
+        name = f"kalshi/{feed}" if feed.startswith("index/") else feed
+        assert SILENCE_LIMITS[name] == seconds
+    assert set(build_health().feeds) == set(SILENCE_LIMITS)
