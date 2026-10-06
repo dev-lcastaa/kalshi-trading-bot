@@ -6,6 +6,11 @@ from kalshi_bot.external_prices import _enqueue_tick, aggregate_external_prices,
 from kalshi_bot import external_prices
 
 
+def test_kraken_subscribes_to_symbols_the_v2_api_supports():
+    assert set(external_prices.KRAKEN_PRODUCTS) == {"BTC/USD", "SOL/USD"}
+    assert external_prices.KRAKEN_PRODUCTS["BTC/USD"] == "BRTI"
+
+
 def test_aggregate_external_prices_filters_stale_rows_and_computes_median():
     rows = [
         {"source": "coinbase", "index_id": "BRTI", "price": 100.0, "received_at_ms": 9_000},

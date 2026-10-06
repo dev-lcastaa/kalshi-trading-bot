@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 COINBASE_WS_URL = "wss://advanced-trade-ws.coinbase.com"
 PRODUCTS = {"BTC-USD": "BRTI", "SOL-USD": "SOLUSD_RTI"}
 KRAKEN_WS_URL = "wss://ws.kraken.com/v2"
-KRAKEN_PRODUCTS = {"XBT/USD": "BRTI", "SOL/USD": "SOLUSD_RTI"}
+# Kraken's v2 WebSocket uses "BTC/USD"; the legacy "XBT/USD" symbol is rejected as unsupported.
+KRAKEN_PRODUCTS = {"BTC/USD": "BRTI", "SOL/USD": "SOLUSD_RTI"}
 _PERSIST_INTERVAL_MS = 1_000
 _TICK_QUEUE_MAXSIZE = 1_000
 _BATCH_SIZE = 100
