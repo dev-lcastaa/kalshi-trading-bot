@@ -106,3 +106,84 @@ There is no stage 1 for H4 because the data does not exist before Oct 6.
 - Changing a parameter after seeing a result in the same stage.
 - Adding a variant to a hypothesis that failed. A new idea is a new hypothesis, written here first.
 - Looking at `holdout` outcomes for any reason other than a confirmation run.
+
+---
+
+# Addendum, 2026-10-06 evening: H5 and H6 (from the external spec)
+
+Written and committed **before** H5 or H6 was implemented or run. The source is `KALSHI_15M_TRADING_BOT_SPEC.md`
+(another agent's handoff spec) and its answers to our questions, which conceded that its 8% edge threshold, its
+momentum and acceleration signals, and the independence of its confirmations are all unvalidated. The rules above
+(common rules, stages, registry, stop rule) apply unchanged unless stated here.
+
+## Settling the cost semantics first
+
+At 20 to 80c prices a round trip costs a median **5c** (1c spread, about 2c fee on each side). Therefore
+`net = gross - 5c`, and a *net* stop of -5c is a gross move of about zero: it would fire at entry. The spec's
+"2 to 5c net target with 3 to 5c net stop" is therefore not a coherent configuration at these prices. The coherent
+form, which the spec's author also recommended, is gross price moves with costs charged in the P/L:
+
+| | Setting (frozen) |
+|---|---|
+| Take profit | the executable exit price is at least **+0.08** above the entry price (about +3c net) |
+| Stop | the executable exit price is at least **0.08** below the entry price |
+
+## H5: the spec's trading shell around the frozen model
+
+**Model.** The frozen fair-value probability (distance to strike, volatility, time left, anchored to the market
+price). It is undefined inside the last 60 seconds, so the decision window is 60 to 840 seconds before close.
+
+**A candidate is rejected unless all of these hold** (the spec's validator, with numbers fixed here):
+
+| Rule | Value |
+|---|---|
+| Edge | model probability of the side minus its executable price (YES: ask, NO: 1 - bid) at least **0.08**, the better of the two sides |
+| Entry price | 0.20 to 0.80 |
+| Spread | at most 0.03 |
+| Liquidity | at least 1 contract at the touch |
+| Data freshness | Kalshi quote no older than **1000 ms**; index within the existing 5 s validity |
+| Chop | fewer than **3** crossings of the strike by the index in the last 60 seconds |
+| Position | none open for this coin |
+| Cooldown | 20 s since the previous exit |
+| Consecutive losses | fewer than 3 in a row (resets at 00:00 UTC) |
+| Daily loss | the coin's net P/L today above -0.25 (resets at 00:00 UTC) |
+
+**Execution.** Decision at second `t`; the order arrives at `t + 2 s` and is **re-validated** with the data of that
+second (edge, price band, spread, liquidity, freshness); if it fails, the entry is cancelled. Fills at the ask (YES) or
+`1 - bid` (NO), real taker fee. One contract.
+
+**Exits**, checked every second after the fill against the price that could be sold at right now, in this order:
+take profit (+0.08), stop (-0.08), **invalidation** (the model probability of our side is below the executable exit
+price; only while the model is defined, i.e. 60 s or more before close). A triggered exit executes 2 s later at the
+bid, with the real fee, and may fill worse than the trigger. A position still open at close settles at its outcome.
+
+**Universe.** Both coins (the shell is coin-agnostic and one coin cannot reach the sample sizes below); each coin
+has its own position, cooldown and loss counters, and BTC alone (the spec's stated scope) is reported next to it.
+
+**Stage 1 screen** (the 300-trade rule cannot apply: a selective strategy trades about 10 times a day, so the rules
+are sized to it). All must hold: at least 100 trades on all development days, at least 40 trades pooled in `val` and
+`test`, pooled `val` + `test` net mean at least **+0.5c**, `val` and `test` each above zero with at least 15 trades,
+and the placebo (model probabilities shuffled across markets of the same coin) negative. Also reported, not gated:
+profit factor, average win and loss, maximum drawdown, exit-reason counts, and the rejection-reason histogram.
+
+**Honest limit, stated in advance.** At this frequency 300 trades take about 5 weeks. Stage 2 on the 14-day
+`fwd` window cannot reach its trade-count rule, so a stage 1 pass would not be confirmable by the Oct 27 stop date; the
+owner would decide then whether to extend it. No extension is pre-committed here.
+
+## H6: do momentum, acceleration and the order book add anything? (the spec's nested test, collapsed)
+
+The spec proposed nested models A (distance + volatility + time), B (+ momentum), C (+ acceleration), D (+ book). To
+limit the number of tests, H6 tests **D against A** in one step; only a pass would justify the B and C ablations,
+which would be registered separately.
+
+**Model D.** A ridge logistic regression (L2 = 1, no tuning) fit on `train` only, at the minute marks inside the
+decision window, of the outcome on:
+`x0 = logit(p_A)`; `x1 = ln(V_t / V_{t-60}) / sigma_1min` (momentum); `x2 = (ln(V_t / V_{t-30}) - ln(V_{t-30} / V_{t-60})) / sigma_1min`
+(acceleration); `x3 = (bid size - ask size) / (bid size + ask size)` at the touch (book imbalance).
+Features need a valid index at `t`, `t - 30`, `t - 60`.
+
+**Test.** The H5 shell with `p_D` in place of `p_A`, the same screen, and the same placebo. Also reported, not gated:
+held-out log loss of `p_D` against `p_A` on `val` + `test`.
+
+**Independence.** Reported, not assumed: the fitted coefficients and the change in held-out log loss when each of
+`x1`, `x2`, `x3` is removed (refit on `train`).
