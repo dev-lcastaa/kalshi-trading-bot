@@ -1,11 +1,9 @@
 """Find currently open Kalshi 15-minute BTC/SOL markets.
 
-Kalshi tags its true 15-minute crypto series explicitly (verified against the
-live API): `frequency == "fifteen_min"` and a `tags` entry matching the coin
-(e.g. `KXBTC15M` has frequency "fifteen_min" and tags ["BTC", "15 min"]).
-Matching on that instead of ticker substrings avoids false positives like
-`KXBTCDOM`, `KXBTCMAXY`, `KXSOLNASDAQ`, etc. (there are 277 series under
-category=Crypto; naive substring matching on "BTC"/"SOL" catches ~83 of them).
+Require `frequency == "fifteen_min"` and either an exact `KX<COIN>15M`
+series ticker or a coin-symbol tag. Kalshi's display tags can change (e.g.
+"BTC"/"SOL" became "Bitcoin"/"Solana"), so tags alone are not reliable.
+Exact ticker matching avoids unrelated crypto series and head-to-head markets.
 """
 from __future__ import annotations
 
@@ -19,16 +17,17 @@ _FIFTEEN_MIN_FREQUENCY = "fifteen_min"
 
 
 async def find_crypto_series(client: KalshiRestClient, coin_ticks: list[str]) -> list[str]:
-    """Return 15-minute crypto series tickers tagged with one of coin_ticks."""
+    """Return 15-minute crypto series matching configured coin symbols."""
     data = await client.get_series_list(category="Crypto")
     series = data.get("series", [])
     coin_set = {c.upper() for c in coin_ticks}
+    exact_tickers = {f"KX{coin}15M" for coin in coin_set}
     matches = []
     for s in series:
         if s.get("frequency") != _FIFTEEN_MIN_FREQUENCY:
             continue
         tags = {t.upper() for t in (s.get("tags") or [])}
-        if tags & coin_set:
+        if s.get("ticker", "").upper() in exact_tickers or tags & coin_set:
             matches.append(s["ticker"])
     return matches
 

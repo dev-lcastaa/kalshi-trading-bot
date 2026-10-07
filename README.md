@@ -4,6 +4,12 @@ A bot that watches Kalshi's 15-minute Bitcoin and Solana "above or below"
 markets and tells you what it thinks will happen — as a percentage — before
 each market closes.
 
+Market discovery requires Kalshi's `fifteen_min` frequency and matches exact
+`KXBTC15M` / `KXSOL15M` series tickers or coin-symbol tags. Renamed display tags
+such as "Bitcoin" and "Solana" do not prevent discovery. The bot and research
+collector share this logic; rebuild/restart both when deploying discovery fixes
+(enable `DEPLOY_COLLECTOR` for a Jenkins deployment).
+
 **Order execution is disabled by default.** The Trading tab provides explicit
 opt-in automatic trading, saved dollar thresholds, and an activity journal.
 
