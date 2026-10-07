@@ -41,12 +41,16 @@ def feed_report(store: EventStore, max_gap_ms: int | None = None) -> list[dict]:
     Each feed uses its own limit from `FEED_GAP_LIMIT_SEC`; pass `max_gap_ms` to apply one limit to all.
     """
     rows = []
-    feeds = [("index_ticks", "index_id", None, f"index/{i}", i) for i in ("BRTI", "SOLUSD_RTI")]
+    con = store.connect() if any(store.has_data(t) for t in ("index_ticks", "external_ticks")) else None
+    index_ids = ["BRTI", "SOLUSD_RTI"]
+    if con is not None and store.has_data("index_ticks"):  # every index the collector has recorded, core coins first
+        seen_ids = [r[0] for r in con.execute("select distinct index_id from index_ticks order by 1").fetchall()]
+        index_ids += [i for i in seen_ids if i not in index_ids]
+    feeds = [("index_ticks", "index_id", None, f"index/{i}", i) for i in index_ids]
     feeds += [("external_ticks", "index_id", ("source", s), f"{s}/{i}", i)
               for s in ("coinbase", "kraken", "bitstamp") for i in ("BRTI", "SOLUSD_RTI")]
-    con = store.connect() if any(store.has_data(t) for t in ("index_ticks", "external_ticks")) else None
     for table, key, extra, label, value in feeds:
-        limit_ms = max_gap_ms if max_gap_ms is not None else FEED_GAP_LIMIT_SEC[label] * 1000
+        limit_ms = max_gap_ms if max_gap_ms is not None else FEED_GAP_LIMIT_SEC.get(label, 15) * 1000
         ts = np.array([], dtype=np.int64)
         if con is not None and store.has_data(table):
             where = f"{key} = ?" + (f" and {extra[0]} = ?" if extra else "")

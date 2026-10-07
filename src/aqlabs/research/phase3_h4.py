@@ -181,6 +181,7 @@ def oos_r2(markets, preds) -> float:
 
 
 def evaluate(markets_all, stage: str, store: EventStore, holdout_end: str | None, allow_partial: bool, P):
+    markets_all = [m for m in markets_all if m["coin"] in R.CORE_COINS]  # the pre-registered universe
     split = "fwd" if stage == "validate" else "holdout"
     fwd = sorted({m["day"] for m in markets_all if m["split"] == "fwd"})
     if len(fwd) <= FIT_DAYS:

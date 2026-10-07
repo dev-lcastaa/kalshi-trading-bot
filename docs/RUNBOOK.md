@@ -1,29 +1,40 @@
 # Runbook: waiting for data
 
-State as of **2026-10-06**. Everything that can be done without new data has been done. What is left is waiting for
-the collector, then running one pre-registered test.
+State as of **2026-10-06**. Everything that can be done without new data has been done. What is left is one deploy
+step (below), then waiting for the collector, then running two pre-registered tests.
+
+## First: deploy the extended collector (owner action)
+
+The collector code now records nine coins' markets. It is **not live until you rebuild it**: in Jenkins, run the job with
+**DEPLOY_COLLECTOR ticked**. This opens one gap of about 80 seconds in the BTC and SOL feeds, which is the cost of any
+collector deploy. Every day it is delayed delays H8 by a day. Afterwards, confirm with
+`docker logs aqlabs-kalshi-trading-bot-collector-1 | grep "Collector started"` (it should list nine coins) and that the
+health check below shows no feed down. The bot is untouched: it keeps its own coin list.
 
 ## Where things stand
 
 | Item | State |
 |---|---|
-| Collector | Running on node004 since 2026-10-06 21:02 UTC, writing to the `aqlabs-eventstore` volume. Healthy, no alerts. |
+| Collector | Running on node004 since 2026-10-06 21:02 UTC, writing to the `aqlabs-eventstore` volume. Healthy, no alerts. Records BTC and SOL until the extended version is deployed. |
 | Legacy research data | Imported (Sep 12 to Oct 6). The Oct 6 gap between the legacy export and the collector is filled by the pull tool. |
 | Phase 2a (maker execution) | Failed its kill check. Do not revisit without a new hypothesis written in the pre-registration. |
-| Phase 3 stage 1 (H1, H2, H3, H5, H6) | All five failed (see `ARCHITECTURE.md`). They do not advance. H1b is blocked with H1. H5 and H6 are the external spec's shell and its momentum/acceleration/book model. |
-| **H4 (depth and trade flow)** | The only live hypothesis. Pipeline built and tested. Needs 14 days of collector data. |
-| Holdout | Oct 20 onward, untouched. |
+| Phase 3 stage 1 (H1, H2, H3, H5, H6, H7) | All six failed (see `ARCHITECTURE.md`). They do not advance. H1b is blocked with H1. H5 and H6 are the external spec's shell and its momentum/acceleration/book model; H7 is the favorite-longshot bias (real but smaller than the fee). |
+| **H4 (depth and trade flow)** | Live. Pipeline built and tested. Needs 14 days of collector data. |
+| **H8 (thin markets are less efficient)** | Live. Pipeline built and tested on seven alt coins that have never been analysed. Needs the extended collector deployed, then two 14-day windows. |
+| Holdout | Oct 20 onward, untouched (core coins). H8 has its own fresh windows. |
 | Live trading | Keep it paused. Nothing has passed any gate. Keep momentum scalping off (it loses 3 to 4c per trade in replay). |
 
 ## Calendar
 
 | Date (UTC) | What to do |
 |---|---|
-| any time | Health check (below). Optional dry run: `phase3_h4 --stage validate --allow-partial` once 8+ days exist. A dry run is never logged. |
-| about Oct 13 | Pull and read the report. Check feed uptime and that H4's depth coverage is high. Nothing else to decide. |
-| **Oct 20** (after Oct 19 has settled) | Pull, then run **H4 stage 2**. This is the one real test. |
-| **Oct 27** | Stop rule: if no hypothesis has passed stage 2, trading development stops. The collector can keep running. |
-| after a stage 2 pass | Stage 3 on the holdout. Pick `--holdout-end` **before** looking (suggest at least 7 days after Oct 20, e.g. Nov 3), then run it once. |
+| any time | Health check (below). Optional dry runs with `--allow-partial` once the data exists. A dry run is never logged. |
+| about Oct 13 | Pull and read the report. Check feed uptime and that H4's depth coverage is high. If the extended collector is live, check that all nine coins have quotes, trades and depth. |
+| **Oct 20** (after Oct 19 has settled) | Pull, then run **H4 stage 2**. |
+| **D0 + 14** | **H8 stage 2.** D0 is the first full UTC day after alt markets first appear. If the extended collector goes live on Oct 7, D0 = Oct 8, the window is Oct 8 to 21, and the run is on Oct 22. The command prints D0 and the window. |
+| **D0 + 28** | **H8 stage 3**, once, on the next 14 days (Oct 22 to Nov 4 in that example), only if stage 2 passed. |
+| **Oct 27** | Stop rule for the core hypotheses: if none has passed stage 2, trading development on them stops. H8's schedule runs past this date by design, and its result is evaluated on its own. |
+| after an H4 stage 2 pass | Stage 3 on the holdout. Pick `--holdout-end` **before** looking (suggest at least 7 days after Oct 20, e.g. Nov 3), then run it once. |
 
 ## Commands
 
@@ -45,6 +56,11 @@ $STORE  = "$WORK\combined"
 
 # 4. Only after a passed stage 2: stage 3, once, on a window chosen in advance
 .\.venv\Scripts\python.exe -m aqlabs.research.phase3_h4 --root $STORE --stage confirm --confirm-holdout --holdout-end 2026-11-03
+
+# 5. H8 (thin alt markets): stage 2 prints D0 and the window and refuses until the window is complete; stage 3 is the
+#    next fresh window, only after a passed stage 2
+.\.venv\Scripts\python.exe -m aqlabs.research.phase3_h8 --root $STORE --stage validate --out "$WORK\h8_validate.txt"
+.\.venv\Scripts\python.exe -m aqlabs.research.phase3_h8 --root $STORE --stage confirm --confirm-holdout
 ```
 
 Everything that has been run is in `$STORE\registry.jsonl` (hypothesis, stage, data fingerprint, code commit,

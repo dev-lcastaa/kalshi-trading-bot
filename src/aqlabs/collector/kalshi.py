@@ -88,8 +88,9 @@ class KalshiFeed:
             await self.rest.aclose()
 
     def _index_for_ticker(self, ticker: str) -> str | None:
+        # series tickers look like KX<COIN>15M-<date>-<strike>; match the prefix, not a substring of the whole ticker
         for coin, index_id in self.coin_to_index.items():
-            if coin.upper() in ticker.upper():
+            if ticker.upper().startswith(f"KX{coin.upper()}15M"):
                 return index_id
         return None
 

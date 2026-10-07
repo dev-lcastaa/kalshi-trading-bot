@@ -30,6 +30,10 @@ SPLITS = {
 # The only untouched data: evaluate once per frozen candidate and log every look.
 HOLDOUT_START = "2026-10-20"
 
+# The two coins every pre-registered hypothesis before H8 was defined on. Their stage 2 and 3 tests are restricted to
+# these even once the collector records more coins, so the frozen universe does not silently change.
+CORE_COINS = ("BRTI", "SOLUSD_RTI")
+
 ProbFn = Callable[[dict, np.ndarray, np.ndarray], np.ndarray]
 
 
@@ -105,7 +109,8 @@ def load_all(store: EventStore, sources: tuple[str, ...] = (), with_ewma: bool =
     `sources`, and ("idx_ewma", coin) the index with the faster volatility estimate when `with_ewma`."""
     con = store.connect()
     grids = {}
-    for iid in ("BRTI", "SOLUSD_RTI"):
+    index_ids = [r[0] for r in con.execute("select distinct index_id from index_ticks order by 1").fetchall()]
+    for iid in index_ids:
         d = con.execute("select ts_ms, value from index_ticks where index_id = ? order by ts_ms", [iid]).fetchnumpy()
         ts, val = d["ts_ms"].astype(np.int64), _filled(d["value"])
         grids[("idx", iid)] = build_coin_grid(ts, val)

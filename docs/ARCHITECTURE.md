@@ -1,8 +1,9 @@
 # AQLabs architecture: an edge-proving machine with an automated executor
 
 Status (2026-10-06): Phase 1 (data and collector) built, deployed and recording. Phase 2a (maker execution) failed its kill
-check. Phase 3 stage 1 (H1 to H3) failed; **H4 is the only live hypothesis and waits for 14 days of collector data**
-(earliest run Oct 20). See [RUNBOOK.md](RUNBOOK.md) for the calendar and commands, and
+check. Phase 3 stage 1 failed for H1, H2, H3, H5, H6 and H7. **Two hypotheses are live and waiting for data: H4 (depth
+and trade flow; earliest run Oct 20) and H8 (thin markets are less efficient; starts when the extended collector, which
+now records nine coins, is deployed).** See [RUNBOOK.md](RUNBOOK.md) for the calendar and commands, and
 [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) for the rules. This document replaces
 "predict up or down" as the app's goal.
 
@@ -134,6 +135,9 @@ as NULL for them. Replay reads labels from `markets` and `market_meta` together.
   (`COLLECTOR_EXTERNAL_MIN_INTERVAL_MS`, 0 keeps everything).
 - Both the exchange timestamp and our receive timestamp for every tick. The server clock is NTP-synchronized.
 - It opens its own Kalshi WebSocket connection with the bot's read-only data credentials; it never places orders.
+- Coins: `COLLECTOR_COINS` (default `BTC,SOL,ETH,XRP,DOGE,BNB,ZEC,NEAR,HYPE`); index ids follow the pattern `BRTI` for BTC
+  and `<COIN>USD_RTI` otherwise (override with `COLLECTOR_INDEX_IDS`). This is independent of the bot's `KALSHI_COIN_TICKS`.
+  Exchange prices (Coinbase, Kraken, Bitstamp) are still recorded for BTC and SOL only.
 
 ### Reliability design
 
@@ -168,8 +172,10 @@ numbers the collector alerts on): 15 s for the index, 30 s Coinbase, 60 s / 120 
 Bitstamp BTC / SOL, which only ticks when someone trades. `--max-gap-sec N` applies one limit to every feed.
 A planned restart shows up as one gap in every feed at the same time; that is not a feed outage.
 
-Expected volume: about 170 MB per day before compaction (measured: 4.4 MB for the first 38 minutes; the trade
-tape is the largest table), so roughly 60 GB a year; the 99 GB free is enough for the 2-week gate and months beyond it.
+Expected volume: about 170 MB per day before compaction for BTC and SOL (measured: 4.4 MB for the first 38 minutes; the
+trade tape is the largest table). Nine coins multiply the quote and depth rows by about 4.5, but BTC dominates the trade
+tape, so expect roughly 2 to 3 times that; **measure it a day after the deploy** and re-check the free disk (about 98 GB
+at the time of writing).
 The legacy Postgres tables stop being the research source once the collector has run; backfill the gap
 between the last legacy export and the collector's first row with `import --since-ms <largest max_ms in
 MANIFEST.json>` from a fresh Postgres export.
@@ -263,12 +269,52 @@ tested: take profit +8c, stop -8c). Run with `python -m aqlabs.research.phase3_s
   for stale or missing quotes (the 1 s freshness rule), 8.9% for chop, and only 0.1% were candidates. It trades
   about 4 times a day, which is also why 300 trades would take about 10 weeks.
 
+## Phase 3 stage 1 result: H7 (favorite-longshot bias) fails, narrowly
+
+Pre-registered in Addendum 2 of [PHASE3_PREREGISTRATION.md](PHASE3_PREREGISTRATION.md) (commit `f4b15ad`) before the
+code existed. Platt recalibration fit on `train` (a = -0.034, b = 1.053; b above 1 means favorites win more than
+priced); buy the favorite side at 0.85 or more when the after-fee edge is non-negative; one entry per market; hold.
+`python -m aqlabs.research.phase3_h7 --stage screen`.
+
+| Favorite price | Samples | Mean price | Win rate | Gross edge | Fee | Net |
+|---|---|---|---|---|---|---|
+| 0.85 to 0.90 | 4,338 | 0.870 | 0.882 | +1.24c | 1.00c | +0.24c |
+| 0.90 to 0.95 | 5,644 | 0.922 | 0.928 | +0.54c | 1.00c | -0.46c |
+| 0.95 to 1.00 | 11,435 | 0.982 | 0.984 | +0.18c | 1.00c | -0.82c |
+
+- **The bias is real and consistent** (favorites do win slightly more than priced, in every bin) **and tiny**. The
+  rule made 2,129 trades at -0.15c (90% CI -1.2 to +0.9c): train -0.5c, val +0.15c, test +0.5c. Pooled val + test is
+  +0.28c, against the +0.5c bar, so it fails the screen. The shuffled placebo was -0.11c.
+- **Why it can't win at this size:** the fee never drops below 1c per contract in our model (it rounds up), which is
+  as large as the whole gross edge above 90c.
+- **An open question, not a result:** the fee formula Kalshi publishes rounds on the whole order
+  (`ceil(0.07 * contracts * P * (1 - P))`), which would cut the per-contract fee at extreme prices for larger
+  orders (about 0.3c at 95c on 100 contracts). Our model, like the bot's, charges for one contract. If that is right,
+  a larger-order version might net a few tenths of a cent per contract, in return for tail risk of about 90c per
+  contract on the roughly 13% of trades that lose. That would be a new hypothesis, and I have not tested it.
+
+## H8 and the extended collector
+
+Kalshi runs **12 single-coin 15-minute series**. The collector now records nine of them (BTC, SOL, ETH, XRP, DOGE,
+BNB, ZEC, NEAR, HYPE); ADA and BCH have no coin tag for discovery and TON's index did not stream. The coin list is the
+collector's own (`COLLECTOR_COINS`), so the bot never starts trading them. A smoke test against the live feeds saw
+quotes, trades, depth, market metadata and index ticks for all nine. Daily volume in the series differs by 4 to 300
+times (BTC about 2.2M contracts, ETH about 97k, XRP about 52k, DOGE about 32k, down to about 8k for HYPE).
+
+H8 tests whether the fair-value rule (frozen, unchanged) earns more in the seven thin alt markets than the efficient
+core. There is no development data for them, so the first data seen is the validation window, and the rules are
+fixed in the pre-registration. `python -m aqlabs.research.phase3_h8 --stage validate` refuses until the 14-day window
+is complete. The other hypotheses keep their registered coins: H4 and the stage 2 and 3 runs of H1 to H3 filter to
+BTC and SOL even once alt data exists.
+
 ## Phase 3 status
 
 | Item | State |
 |---|---|
 | Pre-registration, registry, stage gates | Done. Validation needs a passed screen; confirmation needs a passed validation and `--confirm-holdout`; every holdout look is logged. |
-| H1, H2, H3, H5, H6 stage 1 | Done, all failed. They do not advance. |
+| H1, H2, H3, H5, H6, H7 stage 1 | Done, all failed. They do not advance. |
+| H4 (depth and trade flow) | Pipeline built and tested. Waits for 14 days of collector data (earliest Oct 20). |
+| H8 (thin markets) | Pipeline built and tested. Waits for the extended collector to be **deployed**, then 14 days. |
 | H4 pipeline (depth imbalance, trade flow, taker round trip) | Built and tested, including a planted-signal check (finds it), a no-signal control (does not pass) and a look-ahead guard (features use only earlier seconds). Needs the 14-day `fwd` window. |
 | Data pull | `python -m aqlabs.store.pull` rebuilds one research store from the legacy data, the collector's files and the Postgres gap. Tested live against the server. |
 

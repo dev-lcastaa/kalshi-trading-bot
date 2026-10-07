@@ -60,7 +60,7 @@ def _mean_c(trades) -> float:
 def shuffle_within_coin(markets, items, seed=11):
     out = list(items)
     rng = np.random.default_rng(seed)
-    for coin in ("BRTI", "SOLUSD_RTI"):
+    for coin in sorted({m["coin"] for m in markets}):  # "BRTI" sorts before "SOLUSD_RTI": same order as before
         ids = [i for i, m in enumerate(markets) if m["coin"] == coin]
         for a, b in zip(ids, rng.permutation(ids)):
             out[a] = items[b]
@@ -400,7 +400,7 @@ def run_validation(P, store, hyps, root, stage, allow_partial, holdout_end):
         for m in markets:
             if m["split"] == "holdout" and m["day"] > holdout_end:
                 m["split"] = "after"
-    mk_all = _validation_markets(markets, split)
+    mk_all = [m for m in _validation_markets(markets, split) if m["coin"] in R.CORE_COINS]
     last_day = max((m["day"] for m in mk_all), default=None)
     want_last = R.SPLITS["fwd"][1] if stage == "validate" else holdout_end
     complete = last_day is not None and last_day >= want_last

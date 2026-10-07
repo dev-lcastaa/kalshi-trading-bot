@@ -10,6 +10,7 @@ Environment (all optional except the Kalshi credentials the bot already uses):
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime as dt
 import json
 import logging
@@ -44,11 +45,35 @@ SILENCE_LIMITS = {
        for name, seconds in FEED_GAP_LIMIT_SEC.items()},
 }
 
+# The collector records these coins' 15-minute series. The bot keeps using its own KALSHI_COIN_TICKS, so adding a coin
+# here never makes the bot trade it. ADA, BCH and TON are left out: the first two carry no coin tag for market discovery
+# and TON's index did not stream. Override with COLLECTOR_COINS (and COLLECTOR_INDEX_IDS if a name breaks the pattern).
+DEFAULT_COINS = ("BTC", "SOL", "ETH", "XRP", "DOGE", "BNB", "ZEC", "NEAR", "HYPE")
+NEW_INDEX_SILENCE_SEC = 15
 
-def build_health() -> FeedHealth:
+
+def coin_index_id(coin: str) -> str:
+    """CF Benchmarks index id for a coin: BTC is BRTI, every other coin is <COIN>USD_RTI."""
+    return "BRTI" if coin.upper() == "BTC" else f"{coin.upper()}USD_RTI"
+
+
+def collector_settings(settings: Settings, env: dict | None = None) -> Settings:
+    env = os.environ if env is None else env
+    coins = [c.strip().upper() for c in env.get("COLLECTOR_COINS", ",".join(DEFAULT_COINS)).split(",") if c.strip()]
+    ids = [i.strip() for i in env.get("COLLECTOR_INDEX_IDS", "").split(",") if i.strip()] or [coin_index_id(c) for c in coins]
+    if len(ids) != len(coins):
+        raise ValueError(f"COLLECTOR_INDEX_IDS has {len(ids)} entries for {len(coins)} coins")
+    return dataclasses.replace(settings, coin_ticks=coins, index_ids=ids)
+
+
+def build_health(index_ids=("BRTI", "SOLUSD_RTI")) -> FeedHealth:
     health = FeedHealth()
     for name, seconds in SILENCE_LIMITS.items():
         health.register(name, seconds * 1000, active=not name.startswith(("kalshi/quotes", "kalshi/orderbook")))
+    for index_id in index_ids:
+        name = f"kalshi/index/{index_id}"
+        if name not in health.feeds:
+            health.register(name, NEW_INDEX_SILENCE_SEC * 1000)
     return health
 
 
@@ -113,14 +138,14 @@ async def compaction_loop(stop, store: EventStore) -> None:
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    settings = Settings.load()
+    settings = collector_settings(Settings.load())
     root = Path(os.environ.get("COLLECTOR_ROOT", "/data/eventstore"))
     store = EventStore(root)
     webhook = os.environ.get("COLLECTOR_ALERT_WEBHOOK") or None
     min_free_gb = float(os.environ.get("COLLECTOR_MIN_FREE_GB", "10"))
     min_interval = int(os.environ.get("COLLECTOR_EXTERNAL_MIN_INTERVAL_MS", "250"))
 
-    health = build_health()
+    health = build_health(settings.index_ids)
     sink = BatchSink(store, flush_interval_sec=float(os.environ.get("COLLECTOR_FLUSH_SEC", "30")))
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -136,7 +161,7 @@ async def main() -> None:
         compaction_loop(stop, store),
         run_coinbase(sink.put, health.beat, stop, min_interval), run_kraken(sink.put, health.beat, stop, min_interval),
         run_bitstamp(sink.put, health.beat, stop, min_interval))]
-    logger.info("Collector started; writing to %s", root)
+    logger.info("Collector started; writing to %s; coins %s", root, ",".join(settings.coin_ticks))
     try:
         await stop.wait()
     finally:

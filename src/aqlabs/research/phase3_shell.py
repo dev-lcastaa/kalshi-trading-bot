@@ -154,7 +154,7 @@ def run_shell(markets, probs, chops, delay: int = DELAY_S):
 
 def run_by_coin(markets, probs, chops, delay: int = DELAY_S):
     trades, rejections = [], collections.Counter()
-    for coin in ("BRTI", "SOLUSD_RTI"):
+    for coin in sorted({m["coin"] for m in markets}):
         idx = [i for i, m in enumerate(markets) if m["coin"] == coin]
         t, r = run_shell([markets[i] for i in idx], [probs[i] for i in idx], [chops[i] for i in idx], delay)
         trades += t

@@ -243,3 +243,53 @@ def test_collector_alert_limits_are_the_same_numbers_the_report_uses():
         name = f"kalshi/{feed}" if feed.startswith("index/") else feed
         assert SILENCE_LIMITS[name] == seconds
     assert set(build_health().feeds) == set(SILENCE_LIMITS)
+
+
+def test_collector_coins_default_to_nine_series_with_cf_index_ids_and_can_be_overridden(monkeypatch):
+    from aqlabs.collector.main import DEFAULT_COINS, coin_index_id, collector_settings
+    from kalshi_bot.config import Settings
+
+    monkeypatch.setenv("KALSHI_ENV", "demo")
+    bot = Settings.load()
+    cfg = collector_settings(bot, env={})
+    assert list(cfg.coin_ticks) == list(DEFAULT_COINS) and len(DEFAULT_COINS) == 9
+    assert cfg.index_ids[0] == "BRTI" and "ETHUSD_RTI" in cfg.index_ids and "HYPEUSD_RTI" in cfg.index_ids
+    assert coin_index_id("btc") == "BRTI" and coin_index_id("SOL") == "SOLUSD_RTI"
+    assert bot.coin_ticks == Settings.load().coin_ticks  # the bot's own coin list is left alone
+    only = collector_settings(bot, env={"COLLECTOR_COINS": "BTC, eth"})
+    assert list(only.coin_ticks) == ["BTC", "ETH"] and list(only.index_ids) == ["BRTI", "ETHUSD_RTI"]
+    renamed = collector_settings(bot, env={"COLLECTOR_COINS": "BTC,ETH", "COLLECTOR_INDEX_IDS": "BRTI,ETH_X"})
+    assert list(renamed.index_ids) == ["BRTI", "ETH_X"]
+    with pytest.raises(ValueError):
+        collector_settings(bot, env={"COLLECTOR_COINS": "BTC,ETH", "COLLECTOR_INDEX_IDS": "BRTI"})
+
+
+def test_health_registers_every_new_index_feed_with_a_short_silence_limit():
+    from aqlabs.collector.main import NEW_INDEX_SILENCE_SEC, build_health
+
+    health = build_health(["BRTI", "SOLUSD_RTI", "ETHUSD_RTI", "XRPUSD_RTI"])
+    assert "kalshi/index/ETHUSD_RTI" in health.feeds and "kalshi/index/XRPUSD_RTI" in health.feeds
+    assert health.feeds["kalshi/index/ETHUSD_RTI"].max_silent_ms == NEW_INDEX_SILENCE_SEC * 1000
+    assert health.feeds["kalshi/index/BRTI"].max_silent_ms == 15_000  # the existing limits are unchanged
+
+
+def test_markets_are_matched_to_their_coin_by_series_prefix_not_by_substring():
+    from aqlabs.collector.kalshi import KalshiFeed
+
+    feed = object.__new__(KalshiFeed)
+    feed.coin_to_index = {"BTC": "BRTI", "XRP": "XRPUSD_RTI", "ETH": "ETHUSD_RTI"}
+    assert feed._index_for_ticker("KXETH15M-26OCT061945-45") == "ETHUSD_RTI"
+    assert feed._index_for_ticker("KXBTC15M-26OCT061945-45") == "BRTI"
+    assert feed._index_for_ticker("KXCRYPTOLEAD15M-26OCT061945-XRP") is None  # contains "XRP" but is not an XRP market
+    assert feed._index_for_ticker("KXSOL15M-26OCT061945-45") is None  # a coin that is not configured
+
+
+def test_feed_report_lists_every_index_the_collector_has_recorded(tmp_path):
+    from aqlabs.store.quality import feed_report
+
+    store = EventStore(tmp_path)
+    store.append("index_ticks", [{"index_id": i, "ts_ms": DAY + k * 1000, "value": 1.0, "exchange_ts_ms": None,
+                                  "received_at_ms": None, "avg_60s": None} for i in ("BRTI", "ETHUSD_RTI") for k in range(3)])
+    labels = {r["feed"]: r for r in feed_report(store)}
+    assert labels["index/ETHUSD_RTI"]["ticks"] == 3 and labels["index/ETHUSD_RTI"]["limit_sec"] == 15
+    assert labels["index/SOLUSD_RTI"]["ticks"] == 0  # the core feeds are always listed, even with no data
