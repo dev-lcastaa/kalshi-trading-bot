@@ -108,6 +108,25 @@ def test_dashboard_default_traders_cannot_enable(tmp_path):
     assert client.post("/api/trading/control", json={"mode": "live", "enabled": True, "confirm": True}).status_code == 422
     store.close()
 
+
+@pytest.mark.parametrize("mode", ["paper", "live"])
+def test_api_exposes_persisted_pnl_range_and_leaves_legacy_history_unknown(tmp_path, mode):
+    store = Store(str(tmp_path / "range-api.db"))
+    trader = AutoTrader(store, None, mode=mode)
+    tracking = {"started_ms": 1000, "from_entry": True, "samples": 3, "unavailable_samples": 0,
+                "low": {"net_pnl": "-0.25", "ts_ms": 1100, "source": "liquidation_quote"},
+                "high": {"net_pnl": "0.40", "ts_ms": 1200, "source": "liquidation_quote"}}
+    closed = {"ticker": "KXBTC15M-RANGE", "side": "no", "status": "closed", "quantity": "0",
+              "entry_cost": "1.00", "exit_credit": "1.30", "net_pnl": "0.30", "closed_by": "take_profit"}
+    trader.save_position({**closed, "pnl_tracking": tracking})
+    trader.save_position({**closed, "ticker": "KXBTC15M-LEGACY"})
+    client = TestClient(create_app(store, traders={mode: trader}))
+    positions = {p["ticker"]: p for p in client.get("/api/trading").json()[mode]["positions"]}
+    assert positions["KXBTC15M-RANGE"]["pnl_tracking"] == tracking
+    assert "pnl_tracking" not in positions["KXBTC15M-LEGACY"]
+    store.close()
+
+
 def test_trading_websocket_sends_initial_state_and_settings_changes(tmp_path):
     store = Store(str(tmp_path / "stream.db"))
     with TestClient(create_app(store)) as client:

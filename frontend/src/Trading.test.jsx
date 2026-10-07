@@ -518,6 +518,30 @@ describe("Trading tab", () => {
     expect(unknown.querySelector(".finished-result strong").textContent).toBe("--");
     expect(unknown.querySelector("time").hasAttribute("datetime")).toBe(false);
     expect(within(unknown).queryByText("$0.00")).toBeNull();
+    expect(within(unknown).getByText("P/L range not recorded for this bet.")).toBeTruthy();
+  });
+  it("shows observed ranges and timestamps for running and finished bets without changing final P/L", async () => {
+    const tracking = { from_entry: true, samples: 8, unavailable_samples: 1,
+      low: { net_pnl: "-0.25", ts_ms: 1000, source: "liquidation_quote" },
+      high: { net_pnl: "0.40", ts_ms: 2000, source: "liquidation_quote" } };
+    state.paper.positions = [
+      { ticker: "KXBTC15M-RANGE", side: "no", status: "closed", net_pnl: "0.30",
+        entry_cost: "1.00", exit_credit: "1.30", closed_by: "take_profit", closed_ms: 3000,
+        pnl_tracking: tracking },
+      { ticker: "KXSOL15M-RANGE", side: "yes", status: "open", net_pnl: "0.10",
+        quantity: "1", entry_cost: "1.00", policy: {}, pnl_tracking: { ...tracking, from_entry: false } },
+    ];
+    render(<Trading />);
+    const finished = await screen.findByRole("listitem", { name: "Finished trade KXBTC15M-RANGE" });
+    expect(finished.querySelector(".finished-result strong").textContent).toBe("+$0.30");
+    for (const value of ["Lowest observed net P/L", "Highest observed net P/L", "-$0.25", "+$0.40",
+      new Date(1000).toLocaleString(), new Date(2000).toLocaleString()]) {
+      expect(within(finished).getByText(value)).toBeTruthy();
+    }
+    expect(within(finished).getByText(/Tracking since entry.*8 observations.*1 unavailable/)).toBeTruthy();
+    const running = screen.getByRole("article", { name: "Trade KXSOL15M-RANGE" });
+    expect(within(running).getByText("-$0.25")).toBeTruthy();
+    expect(within(running).getByText(/Partial history: tracking began after entry/)).toBeTruthy();
   });
   it("shows the newest two, loads two at a time, collapses, and resets when switching modes", async () => {
     const user = userEvent.setup();

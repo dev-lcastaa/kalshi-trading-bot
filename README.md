@@ -119,6 +119,22 @@ The trading page also shows:
   reveals two more at a time and **Show fewer** returns to the latest two.
   Expand **Trade details** for contracts and the rule used. Switching money
   modes resets the list to the latest two; scoreboard totals include all bets.
+- **Observed P/L range** — running bets and finished trade details show the
+  lowest and highest observed net dollar P/L and their timestamps. Both money
+  modes persist `pnl_tracking` in each position and expose it through
+  `/api/trading`; final Discord notifications include the range. Each successful
+  open-position check (target cadence about one second, slower during API
+  delays) measures selling the entire remaining position across available
+  bids, plus prior exit proceeds, minus entry cost and the same exit-fee reserve
+  used by the exit logic. Final fills/settlement also update the range.
+  Insufficient sell depth does not invent a full-position value; those checks
+  are counted as unavailable. Sampling starts after the first filled buy;
+  no pre-fill or post-exit price path is captured. Old finished bets have no
+  range, and positions already open when tracking is deployed are marked as
+  partial history. Ranges survive restarts, but downtime and moves between
+  checks are not captured. These are observed extremes, not a tick-by-tick
+  replay or proof of what a different stop would have earned. Scale-in buys
+  and partial exits retain the whole-position dollar P/L range.
 - **Markets the bot is watching** — every live market with the bot's and the
   market's current UP/DOWN lean, centered direction bars, and a plain reason it
   is or isn't betting, using the same indicators as Live Picks. The percentage

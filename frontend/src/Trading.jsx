@@ -239,6 +239,21 @@ function Stat({ label, value, tone }) {
   return <div><dt>{label}</dt><dd className={tone}>{value}</dd></div>;
 }
 
+function PnlRange({ position }) {
+  const tracking = position.pnl_tracking;
+  if (!tracking) return <p className="trading-muted">P/L range not recorded for this bet.</p>;
+  return <>
+    <dl className="finished-details">
+      {[["low", "Lowest observed net P/L"], ["high", "Highest observed net P/L"]].map(([key, label]) =>
+        <React.Fragment key={key}>
+          <Stat label={label} value={signedMoney(tracking[key]?.net_pnl)} />
+          <Stat label={`${key === "low" ? "Lowest" : "Highest"} observed at`} value={timestamp(tracking[key]?.ts_ms)} />
+        </React.Fragment>)}
+    </dl>
+    <p className="trading-muted">{tracking.from_entry ? "Tracking since entry" : "Partial history: tracking began after entry"} · {tracking.samples} observations · {tracking.unavailable_samples} unavailable liquidity checks. Sampled sell-value P/L after fees, including final P/L; moves between checks can be missed.</p>
+  </>;
+}
+
 function LiveCard({ position, events, decision, now }) {
   const quantity = num(position.quantity);
   const each = quantity > 0 ? `${Math.round((num(position.entry_cost) / quantity) * 100)}¢` : "--";
@@ -257,6 +272,7 @@ function LiveCard({ position, events, decision, now }) {
       <Stat label="Market ends in" value={left} />
       {position.scalp && <Stat label="Scalp cycle" value={`${position.cycle_number}/${position.scalp.max_cycles}`} />}
     </dl>
+    <details className="trading-decision"><summary>Observed P/L range</summary><PnlRange position={position} /></details>
     <p className="trading-muted">Rule used: <strong>{position.rule ?? "--"}</strong> · Plan: {exitPlan(position.policy)}</p>
     <p className="trading-muted">Market ID: <strong>{position.market_id ?? position.ticker}</strong>{position.entry_gate && ` · Model checks ${position.entry_gate.checks_agree}/${position.entry_gate.checks_total}, locked ${direction(position.entry_gate.call)}`}</p>
     {position.liquidity_warning && <p className="negative">Nobody is buying right now, so the bot can't sell yet.</p>}
@@ -290,7 +306,7 @@ function FinishedCard({ position }) {
       <Stat label="Rule used" value={position.rule ?? "--"} />
       {position.entry_gate && <Stat label="Model checks at entry" value={`${position.entry_gate.checks_agree}/${position.entry_gate.checks_total} · locked ${direction(position.entry_gate.call)}`} />}
       {position.scalp && <Stat label="Scalp cycle" value={`${position.cycle_number}/${position.scalp.max_cycles}`} />}
-    </dl></details>
+    </dl><PnlRange position={position} /></details>
     <footer><span>{ENDINGS[position.closed_by] ?? "Closed"}</span><time dateTime={endedAt == null ? undefined : new Date(endedAt).toISOString()}>{timestamp(endedAt)}</time></footer>
   </li>;
 }

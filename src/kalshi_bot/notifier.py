@@ -66,6 +66,15 @@ def result_embed(position: dict, environment: str, today_pnl: Decimal | None = N
     ]
     if today_pnl is not None:
         fields.append(("Today's P&L (UTC)", _money(today_pnl), True))
+    tracking = position.get("pnl_tracking")
+    if tracking:
+        for key, label in (("low", "Lowest observed net P&L"), ("high", "Highest observed net P&L")):
+            if tracking.get(key) is not None:
+                fields.append((label, _money(dollars(tracking[key]["net_pnl"])), True))
+        coverage = "Since entry" if tracking["from_entry"] else "Partial history"
+        fields.append(("P&L sampling", f"{coverage}; {tracking['samples']} observations; "
+                       f"{tracking['unavailable_samples']} unavailable liquidity checks. "
+                       "Sampled quotes after fees, including final P&L; not guaranteed extremes.", False))
     color = _GREEN if won else _RED if pnl < 0 else _GREY
     return _embed(f"{outcome} ({environment})", color, fields, str(position.get("rule") or ""))
 

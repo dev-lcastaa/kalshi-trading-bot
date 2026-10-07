@@ -39,6 +39,23 @@ def policy_json(policy: TradingPolicy) -> dict[str, str]:
     return {name: str(value) for name, value in asdict(policy).items()}
 
 
+def pnl_tracking(position: dict, ts_ms: int, *, from_entry: bool = False) -> dict:
+    return position.setdefault("pnl_tracking", {
+        "started_ms": ts_ms, "from_entry": from_entry,
+        "samples": 0, "unavailable_samples": 0, "low": None, "high": None,
+    })
+
+
+def observe_pnl(position: dict, net: Decimal, ts_ms: int, source: str) -> None:
+    tracking = pnl_tracking(position, ts_ms)
+    tracking["samples"] += 1
+    point = {"net_pnl": str(net), "ts_ms": ts_ms, "source": source}
+    for key, better in (("low", lambda previous: net < previous),
+                        ("high", lambda previous: net > previous)):
+        if tracking[key] is None or better(dollars(tracking[key]["net_pnl"])):
+            tracking[key] = dict(point)
+
+
 def entries_of(position: dict) -> int:
     """Filled buys in a position; records from before scale-in support count as one."""
     if "entries" in position:
@@ -1027,6 +1044,8 @@ class AutoTrader:
             position["quantity"] = str(dollars(pending.get("base_quantity", "0")) + filled)
             position["entry_cost"] = str(dollars(pending.get("base_cost", "0")) + gross + fees)
             if filled:
+                pnl_tracking(position, int(time.time() * 1000),
+                             from_entry=dollars(pending.get("base_cost", "0")) == 0)
                 position["entries"] = entries_of(position) + 1 if "entries" in position else 1
                 if position.get("scalp"):
                     position["bought_quantity"] = str(dollars(position.get("bought_quantity", "0")) + filled)
@@ -1055,6 +1074,7 @@ class AutoTrader:
                                if position["status"] == "closed" else None)
         if position["status"] == "closed" and pending["action"] == "sell":
             position["closed_by"] = pending["reason"]
+            observe_pnl(position, dollars(position["net_pnl"]), int(time.time() * 1000), "exit_fill")
         self.save_position(position)
         self.event("filled" if filled else "unfilled", f"{pending['action']} filled {filled} contracts: {pending['reason']}", position)
         if pending["action"] == "buy" and filled:
@@ -1077,6 +1097,7 @@ class AutoTrader:
             self.levels(position["ticker"], position["side"]), return_exceptions=True)
         if isinstance(market_result, BaseException):
             raise market_result
+        observed_ms = int(time.time() * 1000)
         market = market_result["market"]
         quantity = dollars(position["quantity"])
         if market.get("result") in ("yes", "no") and market["status"] == "finalized":
@@ -1087,6 +1108,7 @@ class AutoTrader:
             position["closed_by"] = "settled"
             position["result"] = market["result"]
             position["net_pnl"] = str(dollars(position["exit_credit"]) - dollars(position["entry_cost"]))
+            observe_pnl(position, dollars(position["net_pnl"]), observed_ms, "settlement")
             self.save_position(position)
             self.event("settled", f"Market settled {market['result']}", position)
             self.notify_closed(position)
@@ -1099,6 +1121,7 @@ class AutoTrader:
         actual, levels = actual_result, levels_result
         if actual != (quantity if position["side"] == "yes" else -quantity):
             raise ValueError("Account holdings differ from bot journal; manual intervention required")
+        tracking = pnl_tracking(position, observed_ms)
         remaining = quantity
         proceeds = Decimal("0")
         exit_fees = Decimal("0")
@@ -1112,6 +1135,8 @@ class AutoTrader:
             if remaining == 0:
                 break
         if worst_price is None:
+            tracking["unavailable_samples"] += 1
+            self.save_position(position)
             if not position.get("liquidity_warning") and parse_policy(position["policy"]).has_exits:
                 position["liquidity_warning"] = True
                 self.save_position(position)
@@ -1123,6 +1148,10 @@ class AutoTrader:
             reserve = exit_fees
         net = dollars(position["exit_credit"]) + proceeds - reserve - dollars(position["entry_cost"])
         position["net_pnl"] = str(net) if remaining == 0 else None
+        if remaining == 0:
+            observe_pnl(position, net, observed_ms, "liquidation_quote")
+        else:
+            tracking["unavailable_samples"] += 1
         position["liquidity_warning"] = remaining > 0
         self.save_position(position)
         policy = parse_policy(position["policy"])

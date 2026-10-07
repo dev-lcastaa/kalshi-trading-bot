@@ -41,6 +41,22 @@ def test_embeds_describe_the_trade_and_the_result():
     assert win["title"].startswith("WIN") and win["color"] != loss["color"]
 
 
+def test_result_reports_observed_range_without_inventing_legacy_history():
+    position = held(net_pnl="0.30", exit_credit="1.24", closed_by="take_profit",
+                    pnl_tracking={"from_entry": True, "samples": 8, "unavailable_samples": 1,
+                                  "low": {"net_pnl": "-0.25"}, "high": {"net_pnl": "0.40"}})
+    values = {f["name"]: f["value"] for f in result_embed(position, "PAPER")["fields"]}
+    assert values["Net P&L"] == "$0.30"
+    assert values["Lowest observed net P&L"] == "-$0.25"
+    assert values["Highest observed net P&L"] == "$0.40"
+    assert "Since entry; 8 observations; 1 unavailable" in values["P&L sampling"]
+    position["pnl_tracking"]["from_entry"] = False
+    values = {f["name"]: f["value"] for f in result_embed(position, "PAPER")["fields"]}
+    assert values["P&L sampling"].startswith("Partial history")
+    del position["pnl_tracking"]
+    assert not any("observed" in f["name"] for f in result_embed(position, "PAPER")["fields"])
+
+
 @pytest.mark.asyncio
 async def test_settlement_goes_to_the_results_channel_only(tmp_path):
     rest = AsyncMock()

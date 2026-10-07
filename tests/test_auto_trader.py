@@ -92,6 +92,10 @@ async def test_paused_trader_monitors_and_exits_stop_loss(tmp_path):
     assert rest.create_event_order.call_args.args[0]["reduce_only"]
     assert trader.positions()[0]["status"] == "closed"
     assert Decimal(trader.positions()[0]["net_pnl"]) == Decimal("-0.18")
+    tracking = trader.positions()[0]["pnl_tracking"]
+    assert Decimal(tracking["low"]["net_pnl"]) == Decimal("-0.18")
+    assert tracking["low"]["source"] == "liquidation_quote"
+    assert tracking["samples"] == 2
     assert not trader.enabled
     store.close()
 
@@ -131,6 +135,9 @@ async def test_stop_loss_attempts_available_partial_liquidity(tmp_path):
     assert trader.submit.call_args.args[2] == Decimal("0.50")
     assert trader.submit.call_args.args[-1] == "stop_loss"
     assert held["net_pnl"] is None
+    assert held["pnl_tracking"]["samples"] == 0
+    assert held["pnl_tracking"]["unavailable_samples"] == 1
+    assert held["pnl_tracking"]["low"] is None
     store.close()
 
 
@@ -460,6 +467,9 @@ async def test_partial_exit_continues_after_restart_without_double_cost(tmp_path
     assert Decimal(held["net_pnl"]) == Decimal("-0.18")
     assert not restarted.enabled
     assert rest.create_event_order.await_count == 2
+    assert held["pnl_tracking"]["samples"] == 3
+    assert Decimal(held["pnl_tracking"]["low"]["net_pnl"]) == Decimal("-0.19")
+    assert Decimal(held["pnl_tracking"]["high"]["net_pnl"]) == Decimal("-0.18")
     store.close()
 
 
@@ -483,6 +493,9 @@ async def test_paper_mode_simulates_fees_and_take_profit_without_real_orders(tmp
     assert held["status"] == "closed"
     assert Decimal(held["net_pnl"]) == Decimal("0.53")
     assert held["closed_by"] == "take_profit" and "result" not in held
+    assert held["pnl_tracking"]["from_entry"]
+    assert Decimal(held["pnl_tracking"]["high"]["net_pnl"]) == Decimal("0.53")
+    assert held["pnl_tracking"]["high"]["source"] == "exit_fill"
     assert store.trading_record("paper_account")["BTC"] == "0"
     rest.create_event_order.assert_not_called()
     snapshot = trader.snapshot()
@@ -523,6 +536,7 @@ async def test_paper_scale_in_adds_buys_up_to_the_rule_limit(tmp_path):
     assert Decimal(held["entry_cost"]) == Decimal("2.82")
     assert store.trading_record("paper_account")["BTC"] == "6"
     assert "3/3 buys" in trader.watch[0]["status"]
+    assert held["pnl_tracking"]["from_entry"]
     store.close()
 
 
@@ -554,4 +568,92 @@ async def test_daily_loss_limit_blocks_new_bets(tmp_path):
     assert any("Daily loss limit" in b for b in trader.blockers())
     with pytest.raises(ValueError, match="Daily loss"):
         await trader.control(True, True)
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,side", [("paper", "no"), ("live", "yes")])
+async def test_observed_pnl_dip_recovery_and_settlement_persist_across_restart(tmp_path, mode, side):
+    path = str(tmp_path / "range.db")
+    store = Store(path)
+    rest = AsyncMock()
+    rest.get_market.return_value = {"market": {"status": "active"}}
+    rest.get_positions.return_value = {"market_positions": [
+        {"ticker": "BTC", "position_fp": "-2" if side == "no" else "2"},
+    ]}
+    trader = AutoTrader(store, rest, mode=mode, execution_allowed=True, account_identity="test-account")
+    held = position(side)
+    held["entry_cost"] = "1.00"
+    held["policy"] = {"budget": "2", "take_profit": "0", "stop_loss": "0"}
+    held["pnl_tracking"] = {"started_ms": 1000, "from_entry": True,
+                            "samples": 0, "unavailable_samples": 0, "low": None, "high": None}
+    # Value both bid levels, not the whole position at the best bid.
+    rest.get_market_orderbook.return_value = {"orderbook_fp": {
+        f"{side}_dollars": [["0.45", "1"], ["0.34", "1"]],
+    }}
+    await trader.monitor(held)
+    assert Decimal(held["pnl_tracking"]["low"]["net_pnl"]) == Decimal("-0.25")
+    low = dict(held["pnl_tracking"]["low"])
+    rest.get_market_orderbook.return_value = {"orderbook_fp": {f"{side}_dollars": [["0.65", "2"]]}}
+    await trader.monitor(held)
+    assert Decimal(held["pnl_tracking"]["high"]["net_pnl"]) == Decimal("0.26")
+    assert held["pnl_tracking"]["low"] == low
+    high = dict(held["pnl_tracking"]["high"])
+    await trader.monitor(held)
+    assert held["pnl_tracking"]["high"] == high
+    store.close()
+    store = Store(path)
+    restarted = AutoTrader(store, rest, mode=mode, execution_allowed=True, account_identity="test-account")
+    held = restarted.positions()[0]
+    assert held["pnl_tracking"]["started_ms"] == 1000
+    rest.get_market.return_value = {"market": {"status": "finalized", "result": side}}
+    await restarted.monitor(held)
+    tracking = restarted.snapshot()["positions"][0]["pnl_tracking"]
+    assert tracking["low"] == low
+    assert Decimal(tracking["high"]["net_pnl"]) == Decimal("1.00")
+    assert tracking["high"]["source"] == "settlement"
+    assert tracking["samples"] == 4
+    assert held["status"] == "closed"
+    rest.create_event_order.assert_not_called()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_position_range_is_partial_and_no_liquidity_is_not_zero_pnl(tmp_path):
+    store = Store(str(tmp_path / "unavailable.db"))
+    rest = AsyncMock()
+    rest.get_market.return_value = {"market": {"status": "active"}}
+    rest.get_positions.return_value = {"market_positions": [{"ticker": "BTC", "position_fp": "2"}]}
+    rest.get_market_orderbook.return_value = {"orderbook_fp": {"yes_dollars": []}}
+    trader = AutoTrader(store, rest, execution_allowed=True, account_identity="test-account")
+    held = position()
+    await trader.monitor(held)
+    await trader.monitor(held)
+    tracking = trader.positions()[0]["pnl_tracking"]
+    assert not tracking["from_entry"]
+    assert tracking["samples"] == 0
+    assert tracking["unavailable_samples"] == 2
+    assert tracking["low"] is None and tracking["high"] is None
+    assert held["net_pnl"] is None
+    rest.create_event_order.assert_not_called()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_scalp_range_includes_prior_exit_credit_and_price_dependent_fees(tmp_path):
+    store = Store(str(tmp_path / "scalp-range.db"))
+    rest = AsyncMock()
+    rest.get_market.return_value = {"market": {"status": "active"}}
+    rest.get_positions.return_value = {"market_positions": [{"ticker": "BTC", "position_fp": "2"}]}
+    rest.get_market_orderbook.return_value = {"orderbook_fp": {"yes_dollars": [["0.90", "2"]]}}
+    trader = AutoTrader(store, rest, execution_allowed=True, account_identity="test-account")
+    held = position()
+    held.update(entry_cost="2.00", exit_credit="0.30",
+                policy={"budget": "3", "take_profit": "0.50", "stop_loss": "0.50"},
+                scalp={"market_loss_limit": "0.50"})
+    await trader.monitor(held)
+    assert Decimal(held["net_pnl"]) == Decimal("0.08")
+    assert Decimal(held["pnl_tracking"]["low"]["net_pnl"]) == Decimal("0.08")
+    assert held["pnl_tracking"]["low"] == held["pnl_tracking"]["high"]
+    rest.create_event_order.assert_not_called()
     store.close()
