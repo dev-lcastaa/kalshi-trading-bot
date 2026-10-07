@@ -69,8 +69,9 @@ class Settings:
     market_recal_window: int = 5000
     market_recal_edge_threshold: float = 0.0
     confirmation_gate: bool = False
+    discord_trade_webhook_url: str = ""
+    discord_settlement_webhook_url: str = ""
 
-    @staticmethod
     def load() -> "Settings":
         env = os.environ.get("KALSHI_ENV", "demo").strip().lower()
         if env not in _REST_BASES:
@@ -151,4 +152,7 @@ class Settings:
             market_recal_edge_threshold=float(os.environ.get("KALSHI_MARKET_RECAL_EDGE_THRESHOLD", "0")),
             # Momentum/book confirmation lowered after-fee PnL in walk-forward tests.
             confirmation_gate=os.environ.get("KALSHI_CONFIRMATION_GATE", "false").strip().lower() == "true",
+            # Webhook URLs are secrets; in production Jenkins injects them from its credential store.
+            discord_trade_webhook_url=os.environ.get("DISCORD_TRADE_WEBHOOK_URL", "").strip(),
+            discord_settlement_webhook_url=os.environ.get("DISCORD_SETTLEMENT_WEBHOOK_URL", "").strip(),
         )

@@ -992,6 +992,16 @@ modify or deploy anything to that server.
 | `KALSHI_WHALE_POLL_INTERVAL_SEC` | How often to check for new big bets |
 | `DATABASE_URL` | A file path = SQLite; a `postgresql://` link = Postgres (Docker sets this automatically) |
 | `KALSHI_DASHBOARD_HOST` / `KALSHI_DASHBOARD_PORT` | Where the dashboard is served |
+| `DISCORD_TRADE_WEBHOOK_URL` | Discord webhook for the **trades** channel: a message each time a real-money buy fills (unset = off) |
+| `DISCORD_SETTLEMENT_WEBHOOK_URL` | Discord webhook for the **results** channel: win/loss and P&L when a position settles or exits (unset = off) |
+
+### Discord notifications
+
+Only live (real-money) activity is announced, never paper trades. In production the two webhook
+URLs are Jenkins **Secret text** credentials with the IDs `discord-trade-webhook-url` and
+`discord-settlement-webhook-url`; the Deploy stage passes them to the bot container, so they never
+touch the repo or the image. For local runs, put them in `.env`. Sending is fire-and-forget with a
+short timeout, so a Discord outage can never block or pause trading.
 
 ## Project layout (for developers)
 

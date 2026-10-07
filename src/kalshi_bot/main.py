@@ -20,6 +20,7 @@ import uvicorn
 
 from .auth import KalshiAuth
 from .auto_trader import AutoTrader
+from .notifier import DiscordNotifier
 from .config import Settings
 from .dashboard.broadcaster import Broadcaster
 from .dashboard.server import create_app
@@ -91,6 +92,10 @@ class BotApp:
             worker_id=worker_id, market_feed=self.market_feed,
             daily_loss_limit=getattr(settings, "daily_loss_limit", Decimal("0")),
             execution_feed=self.execution_market,
+            notifier=DiscordNotifier(
+                getattr(settings, "discord_trade_webhook_url", ""),
+                getattr(settings, "discord_settlement_webhook_url", ""),
+            ),
         )
         self.paper_trader = AutoTrader(
             self.store, PaperExchange(self.store, self.rest), defaults=settings.trading_policy,

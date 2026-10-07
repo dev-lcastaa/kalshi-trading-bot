@@ -13,6 +13,7 @@ from uuid import uuid4
 import httpx
 
 from .data.store import Store
+from .notifier import DiscordNotifier, result_embed, trade_embed
 from .risk import RiskLimits
 from .trading import (
     CENT, ONE, STOP_HEADROOM, EntryRule, ScalpPolicy, TradingPolicy, default_rules, dollars, fee_reserve, parse_rules,
@@ -169,6 +170,7 @@ class AutoTrader:
         account_identity: str = "", worker_id: str | None = None, market_feed: MarketFeed | None = None,
         daily_loss_limit: Decimal = Decimal("0"),
         execution_feed: ExecutionFeed | None = None,
+        notifier: DiscordNotifier | None = None,
     ):
         if mode not in ("live", "paper"):
             raise ValueError("mode must be 'live' or 'paper'")
@@ -182,6 +184,7 @@ class AutoTrader:
         self.market_feed = market_feed
         self.daily_loss_limit = daily_loss_limit
         self.execution_feed = execution_feed
+        self.notifier = notifier
         self.worker_claimed = False
         self.control_revision = 0
         self.enabled = False
@@ -393,6 +396,18 @@ class AutoTrader:
                                         market_id=position["ticker"],
                                         environment=self.environment, mode=self.mode,
                                         position_id=position.get("position_id"), cycle_number=position.get("cycle_number"))
+
+    def notify(self, send: Callable[[DiscordNotifier], None]) -> None:
+        """Real-money activity only; a notification problem must never pause trading."""
+        if self.notifier is None or self.mode != "live":
+            return
+        try:
+            send(self.notifier)
+        except Exception:
+            logger.exception("Could not send Discord notification")
+
+    def notify_closed(self, position: dict) -> None:
+        self.notify(lambda n: n.settlement(result_embed(position, self.environment, self.today_pnl())))
 
     async def service_positions(self) -> None:
         """Reconcile and monitor every held position, different markets in parallel.
@@ -1038,6 +1053,10 @@ class AutoTrader:
             position["closed_by"] = pending["reason"]
         self.save_position(position)
         self.event("filled" if filled else "unfilled", f"{pending['action']} filled {filled} contracts: {pending['reason']}", position)
+        if pending["action"] == "buy" and filled:
+            self.notify(lambda n: n.trade(trade_embed(position, self.environment)))
+        elif position["status"] == "closed":
+            self.notify_closed(position)
         if dollars(position["entry_cost"]) > parse_policy(position["policy"]).budget * max(1, entries_of(position)):
             raise ValueError("Actual entry fees exceeded budget")
         if position.get("scalp") and pending["action"] == "buy":
@@ -1066,6 +1085,7 @@ class AutoTrader:
             position["net_pnl"] = str(dollars(position["exit_credit"]) - dollars(position["entry_cost"]))
             self.save_position(position)
             self.event("settled", f"Market settled {market['result']}", position)
+            self.notify_closed(position)
             return
         if market["status"] != "active":
             return

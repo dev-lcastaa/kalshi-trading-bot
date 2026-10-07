@@ -77,17 +77,24 @@ pipeline {
             steps {
                 // The collector is deliberately left running: restarting it opens a ~80 s gap in every feed,
                 // and the Phase 1 data gate counts gaps. Tick DEPLOY_COLLECTOR only when its own code changed.
-                sh '''
-                    docker compose up -d postgres
-                    docker compose build --no-cache bot frontend
-                    docker compose up -d --force-recreate --no-deps bot frontend
-                    if [ "${DEPLOY_COLLECTOR}" = "true" ]; then
-                        docker compose build collector
-                        docker compose up -d --force-recreate --no-deps collector
-                    else
-                        docker compose up -d --no-deps collector
-                    fi
-                '''
+                // Discord webhook URLs come from the Jenkins credential store (Secret text) and reach the
+                // bot through docker-compose.yml interpolation; they are never written to disk or the image.
+                withCredentials([
+                    string(credentialsId: 'discord-trade-webhook-url', variable: 'DISCORD_TRADE_WEBHOOK_URL'),
+                    string(credentialsId: 'discord-settlement-webhook-url', variable: 'DISCORD_SETTLEMENT_WEBHOOK_URL'),
+                ]) {
+                    sh '''
+                        docker compose up -d postgres
+                        docker compose build --no-cache bot frontend
+                        docker compose up -d --force-recreate --no-deps bot frontend
+                        if [ "${DEPLOY_COLLECTOR}" = "true" ]; then
+                            docker compose build collector
+                            docker compose up -d --force-recreate --no-deps collector
+                        else
+                            docker compose up -d --no-deps collector
+                        fi
+                    '''
+                }
             }
         }
     }

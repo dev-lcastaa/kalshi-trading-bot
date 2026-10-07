@@ -26,6 +26,10 @@ services:
       # The bot is private to the Compose network; the frontend is the public edge.
       DATABASE_URL: postgresql://kalshi:kalshi@postgres:5432/kalshi
       KALSHI_DASHBOARD_HOST: 0.0.0.0
+      # Discord webhooks (two channels). Jenkins injects these from its credential store;
+      # locally they come from .env. Leave unset to disable notifications.
+      DISCORD_TRADE_WEBHOOK_URL: ${DISCORD_TRADE_WEBHOOK_URL:-}
+      DISCORD_SETTLEMENT_WEBHOOK_URL: ${DISCORD_SETTLEMENT_WEBHOOK_URL:-}
     expose:
       - "8000"
     volumes:
