@@ -115,3 +115,14 @@ def test_the_locked_call_gate_restricts_scalp_entries_to_the_called_side_and_ski
     assert R.run_scalp([m], grids, allowed_side={"T": "yes"}, **kw)
     assert R.run_scalp([m], grids, allowed_side={"T": "no"}, **kw) == []  # the model called NO: UP entries are blocked
     assert R.run_scalp([m], grids, allowed_side={}, **kw) == []  # the gate did not pass for this market
+
+def test_whole_order_fees_make_larger_scalp_orders_cheaper_per_contract_and_one_contract_is_unchanged():
+    m, grids = _rising_market()
+    kw = dict(conf=0.80, tp=0.95, stop=0.95, max_cycles=1, lo=60, hi=840)  # hold to settlement
+    one = R.run_scalp([m], grids, **kw)
+    assert one == R.run_scalp([m], grids, contracts=1, **kw)
+    ten = R.run_scalp([m], grids, contracts=10, **kw)
+    assert ten[0]["price"] == one[0]["price"]
+    saving = taker_fee(one[0]["price"]) - taker_fee(one[0]["price"], 10) / 10
+    assert saving > 0
+    assert ten[0]["pnl"] - one[0]["pnl"] == pytest.approx(saving)

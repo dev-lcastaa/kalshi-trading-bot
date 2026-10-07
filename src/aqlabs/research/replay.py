@@ -304,9 +304,14 @@ def run_blind(markets, side: str, delay=2, at_left=390):
 
 # ------------------------------------------------------------------ strategy: momentum scalping (legacy, kept to prove it loses)
 def run_scalp(markets, grids, conf=0.65, tp=0.03, stop=0.05, delay=2, ref=15, max_cycles=3, cooldown=30,
-              lo=90, hi=810, max_spread=0.03, room=0.02, pmin=0.05, pmax=0.95, allowed_side=None):
+              lo=90, hi=810, max_spread=0.03, room=0.02, pmin=0.05, pmax=0.95, allowed_side=None, contracts=1):
     """`allowed_side` (ticker -> "yes" | "no") restricts entries to the locked call of each market and skips markets with
-    no entry in the map: the bot's locked-call gate. None leaves every market and both directions open."""
+    no entry in the map: the bot's locked-call gate. None leaves every market and both directions open.
+    Prices, `tp`, `stop` and `room` are per contract. `contracts` > 1 charges Kalshi's whole-order fee, rounded up once per
+    order and shared across the contracts (callers divide a per-position target or stop by `contracts`)."""
+    def pfee(p):
+        return fee(p, contracts) / contracts
+
     trades = []
     for m in markets:
         if allowed_side is not None and allowed_side.get(m["ticker"]) is None:
@@ -331,7 +336,7 @@ def run_scalp(markets, grids, conf=0.65, tp=0.03, stop=0.05, delay=2, ref=15, ma
         if allowed_side is not None:
             side_ok = allowed_side[m["ticker"]]
             cy, cn_ = cy & (side_ok == "yes"), cn_ & (side_ok == "no")
-        vy, vn = bid - fee(bid), (1 - ask) - fee(1 - ask)
+        vy, vn = bid - pfee(bid), (1 - ask) - pfee(1 - ask)
         free_from, cycles = 0, 0
         for i in np.flatnonzero(cy | cn_):
             if cycles >= max_cycles:
@@ -350,7 +355,7 @@ def run_scalp(markets, grids, conf=0.65, tp=0.03, stop=0.05, delay=2, ref=15, ma
                 if not (bsz[e] >= 1 and bid[e] > 0):
                     continue
                 price, won, val_now = float(1 - bid[e]), 1 - m["y"], (float(vn[e]) if asz[e] >= 1 else None)
-            cost = price + float(fee(price))
+            cost = price + float(pfee(price))
             if val_now is not None and (cost - val_now) > stop - room + 1e-9:
                 continue
             cycles += 1

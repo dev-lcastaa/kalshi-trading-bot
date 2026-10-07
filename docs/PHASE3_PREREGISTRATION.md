@@ -1,4 +1,4 @@
-# Phase 3 pre-registration: new information, tested in advance
+﻿# Phase 3 pre-registration: new information, tested in advance
 
 Written and committed **before** any Phase 3 hypothesis was run. The commit history is the timestamp: if a
 result in this repository contradicts a rule below, the rule wins and the result is reported as it came out.
@@ -267,7 +267,7 @@ break-even, slightly negative", not "profitable".
 | Confidence level | **85%** |
 | Amount per trade | **$10** (about 10 to 11 contracts at 85 to 95c) |
 | Profit target | **$0.30** per position (about 3c per contract; the field is dollars per position, not per contract) |
-| Stop loss | **$9.00** (positive and below the trade amount, so effectively none) |
+| Stop loss | ~~$9.00~~ **$5.00** (changed by addendum 3b before any P1 trade; $9 meant effectively none) |
 | Trades per 15-minute market | **3** |
 | Everything else | default |
 
@@ -317,3 +317,37 @@ take-profit exit is checked on the same loop, so it also reacts sooner. Position
 stop first fired), and the snapshot reports `last_cycle_duration_ms`, so the stop-to-fill delay can be measured.
 The P1 settings above are unchanged and the stop stays effectively off (a stop cannot create an edge in a market this
 close to a martingale; it only reshapes the loss).
+
+## Addendum 3b, written before any P1 trade exists: the stop is changed from $9 to $5
+
+Question: does a middle stop (2 to 5 dollars on a $10 position) beat no stop? Replayed with
+`python -m aqlabs.research.stop_grid` (output kept in the research workspace as `results/stop_grid.txt`): the bot's
+locked-call gate, confidence 85%, 10 contracts with the whole-order fee, $0.30 target, 3 trades per market, 2 s exit
+delay, development days only (train 12 days, val 6, test 4). Rule fixed before looking: pick by the training days,
+then read validation and test.
+
+| Stop (per position) | Train mean per contract | Val+test mean | Average loss | Worst losing trade | Worst day (val+test, $) |
+|---|---|---|---|---|---|
+| none ($9) | -1.12c | -0.18c | -61c | -94c | -49 |
+| $5 | **-0.71c** | -0.25c | -44c | -75c | -35 |
+| $4 | -0.82c | -0.18c | -38c | -72c | -22 |
+| $3 | -0.80c | -0.38c | -31c | -68c | -20 |
+| $2.50 | -0.95c | -0.12c | -26c | -63c | -16 |
+| $2 | -1.02c | -0.39c | -22c | -54c | -20 |
+
+Findings:
+
+- **No stop improves the average.** Every mean is within about half a cent of the others and well inside the noise
+  (90% interval on val+test for no stop: -1.15c to +0.82c). Train and val+test rank the stops differently. Pooled over all
+  three splits (about 2,600 trades each) the means are about -0.7c (none), -0.5c ($5), -0.5c ($4), -0.6c ($3),
+  -0.6c ($2.50), -0.7c ($2). **Every setting is slightly negative in the replay.**
+- **A middle stop does cut the damage.** The average loss falls from about 61c to 44c at $5 and 31c at $3, and the worst
+  day shrinks. With no stop the worst days (-49 val+test, -64 train) would exhaust the $30 daily loss budget; a $4 or $5
+  stop stays inside it far more often, so the experiment is less likely to be cut short.
+- **The cost of a tighter stop is more false exits.** Stops fire on 9% of trades at $5 and 13% at $3 (against 4% with none) and
+  the win rate falls from 94% to 91% and 88%. Below $3 the mean gets no better and trades are stopped out on ordinary swings.
+- **Exit speed hardly moves the average** (1, 2, 5 and 10 s delays gave means between -0.8c and 0.0c with no consistent order). The faster
+  loop is there for reliability and tail control, not because it was shown to raise the mean.
+
+Decision: **stop loss $5.00** replaces $9.00 for P1, chosen by the training rule. Every other setting and the decision rule
+are unchanged. The expectation stays "about break-even or slightly negative", and a stop is risk control, not an edge.
