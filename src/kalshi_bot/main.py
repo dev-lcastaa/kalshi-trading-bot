@@ -84,6 +84,10 @@ class BotApp:
         self.rest = KalshiRestClient(settings.rest_base, self.auth)
         self.store = Store(settings.database_url)
         worker_id = str(uuid4())
+        notifier = DiscordNotifier(
+            getattr(settings, "discord_trade_webhook_url", ""),
+            getattr(settings, "discord_settlement_webhook_url", ""),
+        )
         self.trader = AutoTrader(
             self.store, self.rest, defaults=settings.trading_policy,
             environment=settings.env,
@@ -92,10 +96,7 @@ class BotApp:
             worker_id=worker_id, market_feed=self.market_feed,
             daily_loss_limit=getattr(settings, "daily_loss_limit", Decimal("0")),
             execution_feed=self.execution_market,
-            notifier=DiscordNotifier(
-                getattr(settings, "discord_trade_webhook_url", ""),
-                getattr(settings, "discord_settlement_webhook_url", ""),
-            ),
+            notifier=notifier,
         )
         self.paper_trader = AutoTrader(
             self.store, PaperExchange(self.store, self.rest), defaults=settings.trading_policy,
@@ -103,6 +104,7 @@ class BotApp:
             account_identity="paper", worker_id=worker_id, market_feed=self.market_feed,
             daily_loss_limit=getattr(settings, "daily_loss_limit", Decimal("0")),
             execution_feed=self.execution_market,
+            notifier=notifier if getattr(settings, "discord_notify_paper", True) else None,
         )
         self.live_market: dict[str, dict] = {}
         self.market_recalibrator = MarketRecalibrator(

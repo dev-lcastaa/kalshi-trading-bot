@@ -30,6 +30,7 @@ services:
       # locally they come from .env. Leave unset to disable notifications.
       DISCORD_TRADE_WEBHOOK_URL: ${DISCORD_TRADE_WEBHOOK_URL:-}
       DISCORD_SETTLEMENT_WEBHOOK_URL: ${DISCORD_SETTLEMENT_WEBHOOK_URL:-}
+      DISCORD_NOTIFY_PAPER: ${DISCORD_NOTIFY_PAPER:-true}
     expose:
       - "8000"
     volumes:

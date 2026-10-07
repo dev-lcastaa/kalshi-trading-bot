@@ -78,13 +78,22 @@ async def test_buy_fill_goes_to_the_trade_channel_only(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_paper_trades_are_never_announced(tmp_path):
+async def test_paper_trades_are_announced_with_a_paper_label(tmp_path):
     store = Store(str(tmp_path / "paper.db"))
     notifier = DiscordNotifier(TRADE_URL, RESULT_URL)
     notifier._send = MagicMock()
     trader = AutoTrader(store, AsyncMock(), mode="paper", account_identity="paper", notifier=notifier)
     trader.notify_closed(held(net_pnl="1", result="yes", closed_by="settled"))
-    notifier._send.assert_not_called()
+    url, embed = notifier._send.call_args.args
+    assert url == RESULT_URL and "(PAPER)" in embed["title"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_paper_notifications_can_be_turned_off(tmp_path):
+    store = Store(str(tmp_path / "quiet.db"))
+    trader = AutoTrader(store, AsyncMock(), mode="paper", account_identity="paper", notifier=None)
+    trader.notify_closed(held(net_pnl="1", result="yes", closed_by="settled"))
     store.close()
 
 

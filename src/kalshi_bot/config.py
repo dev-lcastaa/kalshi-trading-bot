@@ -71,6 +71,7 @@ class Settings:
     confirmation_gate: bool = False
     discord_trade_webhook_url: str = ""
     discord_settlement_webhook_url: str = ""
+    discord_notify_paper: bool = True
 
     def load() -> "Settings":
         env = os.environ.get("KALSHI_ENV", "demo").strip().lower()
@@ -155,4 +156,6 @@ class Settings:
             # Webhook URLs are secrets; in production Jenkins injects them from its credential store.
             discord_trade_webhook_url=os.environ.get("DISCORD_TRADE_WEBHOOK_URL", "").strip(),
             discord_settlement_webhook_url=os.environ.get("DISCORD_SETTLEMENT_WEBHOOK_URL", "").strip(),
+            # Paper trades post to the same channels, labelled PAPER; set false once live trading is on.
+            discord_notify_paper=os.environ.get("DISCORD_NOTIFY_PAPER", "true").strip().lower() != "false",
         )

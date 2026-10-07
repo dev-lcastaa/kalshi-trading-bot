@@ -398,16 +398,20 @@ class AutoTrader:
                                         position_id=position.get("position_id"), cycle_number=position.get("cycle_number"))
 
     def notify(self, send: Callable[[DiscordNotifier], None]) -> None:
-        """Real-money activity only; a notification problem must never pause trading."""
-        if self.notifier is None or self.mode != "live":
+        """A notification problem must never pause trading."""
+        if self.notifier is None:
             return
         try:
             send(self.notifier)
         except Exception:
             logger.exception("Could not send Discord notification")
 
+    @property
+    def notify_label(self) -> str:
+        return "PAPER" if self.mode == "paper" else self.environment
+
     def notify_closed(self, position: dict) -> None:
-        self.notify(lambda n: n.settlement(result_embed(position, self.environment, self.today_pnl())))
+        self.notify(lambda n: n.settlement(result_embed(position, self.notify_label, self.today_pnl())))
 
     async def service_positions(self) -> None:
         """Reconcile and monitor every held position, different markets in parallel.
@@ -1054,7 +1058,7 @@ class AutoTrader:
         self.save_position(position)
         self.event("filled" if filled else "unfilled", f"{pending['action']} filled {filled} contracts: {pending['reason']}", position)
         if pending["action"] == "buy" and filled:
-            self.notify(lambda n: n.trade(trade_embed(position, self.environment)))
+            self.notify(lambda n: n.trade(trade_embed(position, self.notify_label)))
         elif position["status"] == "closed":
             self.notify_closed(position)
         if dollars(position["entry_cost"]) > parse_policy(position["policy"]).budget * max(1, entries_of(position)):
