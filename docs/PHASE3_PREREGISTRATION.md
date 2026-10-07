@@ -241,3 +241,51 @@ same again on stage 3.
 
 **Reported, not gated:** each coin's net mean; the same rule on BTC and SOL over the same days; the rank correlation
 across coins between net mean and traded volume per market.
+
+---
+
+# Addendum 3, 2026-10-06 evening: P1, a frozen paper experiment of the bot's own strategy
+
+Written and committed **before** any P1 trade exists. This is not a hypothesis from the replay engine: it is a forward
+test of the strategy the owner already runs in paper mode, at a size where the fee is lower, with the settings
+frozen so the result can be read.
+
+## Why this setting
+
+Paper P/L on Oct 6 (80 trades, net -$1.34) mixed four different settings, and 73 of the 80 ran with no effective stop,
+so it cannot be evaluated. The replay of the bot's exact rule including its locked-call gate (see `ARCHITECTURE.md`)
+is negative at every setting at one contract. Kalshi charges the fee on the whole order, so at about 10 contracts the
+per-contract fee at 90c falls from 1.0c to 0.7c. Exploring on the training period only, at 10 contracts the least
+negative setting was **confidence 85%, 3c target, no stop**; checked afterwards on validation and test it was **-0.13c
+per contract** (94.2% wins against a 94.4% break-even, 1,201 trades). The honest prior is therefore "about
+break-even, slightly negative", not "profitable".
+
+## The frozen setting (Trading tab, Practice mode)
+
+| Control | Value |
+|---|---|
+| Confidence level | **85%** |
+| Amount per trade | **$10** (about 10 to 11 contracts at 85 to 95c) |
+| Profit target | **$0.30** per position (about 3c per contract; the field is dollars per position, not per contract) |
+| Stop loss | **$9.00** (positive and below the trade amount, so effectively none) |
+| Trades per 15-minute market | **3** |
+| Everything else | default |
+
+Any change to any of these starts a new, separate experiment. Positions are identified by their recorded policy
+(budget 10.00, take profit 0.30, stop loss 9.00), so a change cannot be hidden.
+
+## Measurement and decision rule (fixed now)
+
+- **Metric:** net P/L per contract of each closed position (net P/L divided by contracts bought), with a 90% interval
+  from a bootstrap over markets (trades in one market are correlated).
+- **Checkpoints:** at 500 trades (a sanity look: fidelity to the replay, fee check, no decision), at **1,000 trades**
+  (first decision) and at 2,000 trades (final).
+- **At 1,000 trades:** if the 90% interval's upper bound is below +0.3c per contract, stop: the strategy is not worth
+  more time. If the lower bound is above 0, the next step is a **tiny live test (a few contracts), not scaling**. Anything
+  else continues to 2,000.
+- **At 2,000 trades:** the same two rules; if neither is met, stop.
+- **Noise to expect:** a typical trade is +3c with about a 94% chance and about -65c otherwise, so the standard
+  deviation is about 16c per contract. The interval half-width is therefore about 0.8c at 500 trades, 0.6c at 1,000
+  and 0.4c at 2,000: this experiment can only detect an edge of roughly half a cent or more.
+- **Reported, not gated:** win rate against the break-even win rate, average win and loss, trades per day, and the
+  difference between the paper result and a replay of the same markets from the collector data.
