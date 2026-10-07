@@ -1,4 +1,4 @@
-# AQLabs architecture: an edge-proving machine with an automated executor
+﻿# AQLabs architecture: an edge-proving machine with an automated executor
 
 Status (2026-10-06): Phase 1 (data and collector) built, deployed and recording. Phase 2a (maker execution) failed its kill
 check. Phase 3 stage 1 failed for H1, H2, H3, H5, H6 and H7. **Two hypotheses are live and waiting for data: H4 (depth
@@ -328,6 +328,14 @@ and overstates the cost of larger orders: the per-contract fee at 90c is 1.00c f
 0.63c for 100 (at 95c: 1.00c, 0.40c, 0.34c). Measured effect on the bot's current style (momentum scalping with
 the locked-call gate, all development days): net per contract improves from about -2.5c to about -1.7c at 10 to
 100 contracts per order. It stays negative in every variant.
+## Exit loop latency (paper and live trader)
+
+`AutoTrader.cycle` used to service positions one at a time (market, holding and order book read in sequence) and then
+sleep a fixed 2 s, so a stop or target could wait several seconds. It now gathers the three reads, services different
+markets concurrently (`service_positions`), and runs on a 1 s period while a position is open. A failure in one market
+is raised after the other markets have been serviced, so one bad read cannot hold up another market's exit. Tests:
+`tests/test_exit_latency.py`. The stop itself is unchanged: it still triggers on the executable net P/L of walking the
+whole book, is sticky once triggered (`exit_trigger`), and retries with a fresh book each cycle if the sale only partly fills.
 ## Migration plan
 
 | Phase | Work | Gate to continue |

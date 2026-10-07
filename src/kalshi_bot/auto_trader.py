@@ -24,6 +24,10 @@ ExecutionFeed = Callable[[str, Decimal, Decimal, Decimal, Decimal, int], dict | 
 logger = logging.getLogger(__name__)
 # After a transient entry failure (price moved, thin book) wait before re-checking the market.
 _RETRY_AFTER_MS = 6_000
+# Target period of the trading loop. Open positions are checked faster so a stop or target is not left waiting.
+_IDLE_CYCLE_SEC = 2.0
+_POSITION_CYCLE_SEC = 1.0
+_MIN_SLEEP_SEC = 0.1
 
 
 def series_of(ticker: str) -> str:
@@ -183,6 +187,7 @@ class AutoTrader:
         self.enabled = False
         self.enabled_since_ms = 0
         self.last_cycle_ms: int | None = None
+        self.last_cycle_duration_ms: int | None = None
         self.error: str | None = None
         self.lock = asyncio.Lock()
         self.watch: list[dict] = []
@@ -304,7 +309,8 @@ class AutoTrader:
             "mode": self.mode,
             "settings": self.settings(), "enabled": self.enabled,
             "environment": self.environment,
-            "blockers": self.blockers(), "last_cycle_ms": self.last_cycle_ms, "error": self.error,
+            "blockers": self.blockers(), "last_cycle_ms": self.last_cycle_ms,
+            "last_cycle_duration_ms": self.last_cycle_duration_ms, "error": self.error,
             "positions": [*closed[-100:], *running], "events": events,
             "summary": {
                 "running": len(running), "finished": len(scored),
@@ -388,7 +394,35 @@ class AutoTrader:
                                         environment=self.environment, mode=self.mode,
                                         position_id=position.get("position_id"), cycle_number=position.get("cycle_number"))
 
+    async def service_positions(self) -> None:
+        """Reconcile and monitor every held position, different markets in parallel.
+
+        Positions in one market stay sequential (they share one account holding); a failure in one
+        market never delays another market's exit, and the first failure is raised afterwards.
+        """
+        by_ticker: dict[str, list[dict]] = {}
+        for position in self.positions():
+            if position["status"] in ("pending", "open") and position.get("account_identity") != self.account_identity:
+                raise ValueError("Trading credentials changed; position ownership cannot be verified")
+            by_ticker.setdefault(position["ticker"], []).append(position)
+
+        async def service(group: list[dict]) -> None:
+            for position in group:
+                if position.get("pending"):
+                    await self.reconcile(position)
+                if position["status"] == "open" and not position.get("pending"):
+                    await self.monitor(position)
+
+        results = await asyncio.gather(*(service(group) for group in by_ticker.values()), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
+    def has_running_position(self) -> bool:
+        return any(p["status"] in ("pending", "open") for p in self.positions())
+
     async def cycle(self) -> None:
+        started = time.monotonic()
         async with self.lock:
             try:
                 candidates = self.evaluate_rules()
@@ -398,13 +432,7 @@ class AutoTrader:
                     self.worker_claimed = self.store.claim_trading_worker(self.worker_id)
                     if not self.worker_claimed:
                         raise ValueError("Another trading worker owns this database")
-                    for position in self.positions():
-                        if position["status"] in ("pending", "open") and position.get("account_identity") != self.account_identity:
-                            raise ValueError("Trading credentials changed; position ownership cannot be verified")
-                        if position.get("pending"):
-                            await self.reconcile(position)
-                        if position["status"] == "open" and not position.get("pending"):
-                            await self.monitor(position)
+                    await self.service_positions()
                     if any(rule.scalp for rule in self.rules()):
                         candidates = self.evaluate_rules()
                     if self.enabled and not self.blockers():
@@ -420,17 +448,20 @@ class AutoTrader:
                 self.error = message
             finally:
                 self.last_cycle_ms = int(time.time() * 1000)
+                self.last_cycle_duration_ms = int((time.monotonic() - started) * 1000)
 
     async def run(self, on_update: Callable[[], Awaitable[None]] | None = None) -> None:
         try:
             while True:
+                started = time.monotonic()
                 await self.cycle()
                 if on_update is not None:
                     try:
                         await on_update()
                     except Exception:
                         logger.exception("Could not publish trading dashboard update")
-                await asyncio.sleep(2)
+                period = _POSITION_CYCLE_SEC if self.has_running_position() else _IDLE_CYCLE_SEC
+                await asyncio.sleep(max(_MIN_SLEEP_SEC, period - (time.monotonic() - started)))
         finally:
             self.enabled = False
             self.store.release_trading_worker(self.worker_id)
@@ -1017,7 +1048,13 @@ class AutoTrader:
     async def monitor(self, position: dict) -> None:
         position["net_pnl"] = None
         self.save_position(position)
-        market = (await self.rest.get_market(position["ticker"]))["market"]
+        # The three reads are independent, so one round trip of latency instead of three.
+        market_result, actual_result, levels_result = await asyncio.gather(
+            self.rest.get_market(position["ticker"]), self.account_quantity(position["ticker"]),
+            self.levels(position["ticker"], position["side"]), return_exceptions=True)
+        if isinstance(market_result, BaseException):
+            raise market_result
+        market = market_result["market"]
         quantity = dollars(position["quantity"])
         if market.get("result") in ("yes", "no") and market["status"] == "finalized":
             payout = quantity if market["result"] == position["side"] else Decimal("0")
@@ -1032,10 +1069,12 @@ class AutoTrader:
             return
         if market["status"] != "active":
             return
-        actual = await self.account_quantity(position["ticker"])
+        for result in (actual_result, levels_result):
+            if isinstance(result, BaseException):
+                raise result
+        actual, levels = actual_result, levels_result
         if actual != (quantity if position["side"] == "yes" else -quantity):
             raise ValueError("Account holdings differ from bot journal; manual intervention required")
-        levels = await self.levels(position["ticker"], position["side"])
         remaining = quantity
         proceeds = Decimal("0")
         exit_fees = Decimal("0")
@@ -1079,6 +1118,8 @@ class AutoTrader:
                 reason = "stop_loss"
         if reason:
             if reason == "stop_loss":
+                if not position.get("exit_trigger"):
+                    position["exit_trigger_ms"] = int(time.time() * 1000)
                 position["exit_trigger"] = reason
             self.save_position(position)
             if reason == "take_profit":

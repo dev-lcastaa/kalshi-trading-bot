@@ -291,3 +291,29 @@ Any change to any of these starts a new, separate experiment. Positions are iden
   standard errors (0.7c, 0.5c, 0.4c) as if they were interval half-widths.*
 - **Reported, not gated:** win rate against the break-even win rate, average win and loss, trades per day, and the
   difference between the paper result and a replay of the same markets from the collector data.
+
+## Addendum 3a, written before any P1 trade exists: what the Trading tab really sets, and a faster exit loop
+
+Reading `frontend/src/ScalpControls.jsx` showed that "everything else default" in the table above was imprecise. The
+Trading tab derives these from the settings, and they are part of the frozen experiment:
+
+| Derived setting | Value at $10 per trade |
+|---|---|
+| Entry price range | 5c to 95c |
+| Start trading after | 60 s into the market (in practice the bot only trades after its decision locks at T-390 s, so entries fall between about 510 s and 810 s) |
+| Minimum time left | 90 s |
+| Spread limit | 3c |
+| Cooldown | 30 s after a fully closed profitable exit; **no re-entry in a market after a loss or a settlement**, so "3 trades per market" means at most 3 winning cycles |
+| Open positions | at most 2 |
+| Open cost | at most $20 |
+| Daily loss budget | $30, counting open trades. If a bad run exhausts it the bot stops entering until it resets. Such days are reported, and they do not change the per-trade metric |
+| Market spending cap | $25 (the smaller of $25 and amount x trades per market) |
+
+**Infrastructure change, made before the first P1 trade.** The exit loop was slow: one position at a time, three
+sequential reads per position, then a fixed 2 s sleep. It now reads the market, the holding and the order book at the
+same time, services different markets in parallel (a failing market no longer delays another market's exit) and cycles
+every 1 s while a position is open (2 s when idle). Entry rules, prices, fees and fill logic are untouched. The
+take-profit exit is checked on the same loop, so it also reacts sooner. Positions now carry `exit_trigger_ms` (when a
+stop first fired), and the snapshot reports `last_cycle_duration_ms`, so the stop-to-fill delay can be measured.
+The P1 settings above are unchanged and the stop stays effectively off (a stop cannot create an edge in a market this
+close to a martingale; it only reshapes the loss).
