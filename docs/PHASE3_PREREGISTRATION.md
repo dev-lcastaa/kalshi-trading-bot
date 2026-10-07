@@ -285,7 +285,9 @@ Any change to any of these starts a new, separate experiment. Positions are iden
   else continues to 2,000.
 - **At 2,000 trades:** the same two rules; if neither is met, stop.
 - **Noise to expect:** a typical trade is +3c with about a 94% chance and about -65c otherwise, so the standard
-  deviation is about 16c per contract. The interval half-width is therefore about 0.8c at 500 trades, 0.6c at 1,000
-  and 0.4c at 2,000: this experiment can only detect an edge of roughly half a cent or more.
+  deviation is about 16c per contract. The 90% interval half-width is therefore about 1.2c at 500 trades, 0.8c at 1,000
+  and 0.6c at 2,000 (wider still because trades in one market are correlated): this experiment can only detect an edge of
+  roughly +0.6c per contract or more. *Correction made before any P1 data existed: the first version of this paragraph quoted
+  standard errors (0.7c, 0.5c, 0.4c) as if they were interval half-widths.*
 - **Reported, not gated:** win rate against the break-even win rate, average win and loss, trades per day, and the
   difference between the paper result and a replay of the same markets from the collector data.
