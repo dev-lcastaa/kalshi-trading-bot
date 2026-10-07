@@ -304,9 +304,13 @@ def run_blind(markets, side: str, delay=2, at_left=390):
 
 # ------------------------------------------------------------------ strategy: momentum scalping (legacy, kept to prove it loses)
 def run_scalp(markets, grids, conf=0.65, tp=0.03, stop=0.05, delay=2, ref=15, max_cycles=3, cooldown=30,
-              lo=90, hi=810, max_spread=0.03, room=0.02, pmin=0.05, pmax=0.95):
+              lo=90, hi=810, max_spread=0.03, room=0.02, pmin=0.05, pmax=0.95, allowed_side=None):
+    """`allowed_side` (ticker -> "yes" | "no") restricts entries to the locked call of each market and skips markets with
+    no entry in the map: the bot's locked-call gate. None leaves every market and both directions open."""
     trades = []
     for m in markets:
+        if allowed_side is not None and allowed_side.get(m["ticker"]) is None:
+            continue
         g = grids[("idx", m["coin"])]
         j = m["s"] - g["s0"]
         n = len(g["V"])
@@ -324,6 +328,9 @@ def run_scalp(markets, grids, conf=0.65, tp=0.03, stop=0.05, delay=2, ref=15, ma
         win = (sl >= lo) & (sl <= hi) & ((ask - bid) <= max_spread + 1e-9)
         cy = up & win & (mid >= conf) & (ask >= pmin) & (ask <= pmax) & (asz >= 1)
         cn_ = dn & win & ((1 - mid) >= conf) & ((1 - bid) >= pmin) & ((1 - bid) <= pmax) & (bsz >= 1)
+        if allowed_side is not None:
+            side_ok = allowed_side[m["ticker"]]
+            cy, cn_ = cy & (side_ok == "yes"), cn_ & (side_ok == "no")
         vy, vn = bid - fee(bid), (1 - ask) - fee(1 - ask)
         free_from, cycles = 0, 0
         for i in np.flatnonzero(cy | cn_):

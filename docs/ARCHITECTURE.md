@@ -318,6 +318,16 @@ BTC and SOL even once alt data exists.
 | H4 pipeline (depth imbalance, trade flow, taker round trip) | Built and tested, including a planted-signal check (finds it), a no-signal control (does not pass) and a look-ahead guard (features use only earlier seconds). Needs the 14-day `fwd` window. |
 | Data pull | `python -m aqlabs.store.pull` rebuilds one research store from the legacy data, the collector's files and the Postgres gap. Tested live against the server. |
 
+## Fee model note (verified against Kalshi's published rounding rules)
+
+Kalshi's fee-rounding documentation (docs.kalshi.com, "Fee Rounding") states that the model fee is exact to
+$0.000001 per fill and that a per-order accumulator makes the total converge to what a single equivalent fill would
+cost, with the balance kept to whole cents. In effect the fee is `ceil_to_cent(0.07 * contracts * P * (1 - P))` for
+the whole order. The replay (and the bot) charge for **one contract**, which is exact at the $1 sizes used so far
+and overstates the cost of larger orders: the per-contract fee at 90c is 1.00c for 1 contract, 0.70c for 10 and
+0.63c for 100 (at 95c: 1.00c, 0.40c, 0.34c). Measured effect on the bot's current style (momentum scalping with
+the locked-call gate, all development days): net per contract improves from about -2.5c to about -1.7c at 10 to
+100 contracts per order. It stays negative in every variant.
 ## Migration plan
 
 | Phase | Work | Gate to continue |

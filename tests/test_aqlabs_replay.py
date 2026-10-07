@@ -93,3 +93,25 @@ def test_split_assignment_reserves_the_holdout():
     assert R.split_of("2026-10-20") == "holdout"
     assert R.split_of("2026-12-01") == "holdout"
     assert R.split_of("2026-09-12") == "x"
+
+
+def _rising_market(close=1_790_003_000):
+    n = 840
+    s = np.arange(close - n, close)
+    bid = np.clip(0.80 + np.maximum(np.arange(n) - 400, 0) / 10 * 0.01, 0, 0.90)  # climbs 1c every 10 s from second 400
+    ask = bid + 0.01
+    V = 100.0 + np.arange(close + 10 - (close - 2000)) * 1e-3  # an index that keeps rising
+    grid = {"s0": close - 2000, "V": V, "valid": np.ones(len(V), dtype=bool), "sigma": np.full(len(V), 1e-4)}
+    m = dict(ticker="T", coin="BRTI", strike=100.0, close_s=close, y=1.0, day="2026-09-20", split="val", s=s, bid=bid, ask=ask,
+             bsz=np.full(n, 20.0), asz=np.full(n, 20.0), qok=np.ones(n, dtype=bool), mid=(bid + ask) / 2)
+    return m, {("idx", "BRTI"): grid}
+
+
+def test_the_locked_call_gate_restricts_scalp_entries_to_the_called_side_and_skips_unlisted_markets():
+    m, grids = _rising_market()
+    kw = dict(conf=0.80, tp=0.02, stop=0.95, max_cycles=3, lo=60, hi=840)
+    open_trades = R.run_scalp([m], grids, **kw)
+    assert open_trades and all(t["side"] == "yes" for t in open_trades)  # rising quotes and index: UP entries
+    assert R.run_scalp([m], grids, allowed_side={"T": "yes"}, **kw)
+    assert R.run_scalp([m], grids, allowed_side={"T": "no"}, **kw) == []  # the model called NO: UP entries are blocked
+    assert R.run_scalp([m], grids, allowed_side={}, **kw) == []  # the gate did not pass for this market
