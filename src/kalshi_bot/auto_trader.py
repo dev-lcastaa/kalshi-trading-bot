@@ -31,6 +31,7 @@ _POSITION_CYCLE_SEC = 1.0
 _MIN_SLEEP_SEC = 0.1
 # How much of the profit target a take-profit sell may give up to get filled when the book moves.
 TAKE_PROFIT_SLIPPAGE = Decimal("0.10")
+ENTRY_SLIPPAGE = Decimal("0.02")
 
 
 def series_of(ticker: str) -> str:
@@ -832,24 +833,28 @@ class AutoTrader:
             if reason:
                 self.skip(ticker, f"Rule '{rule.name}' no longer matches at the live price: {reason}")
                 continue
-            count = min(policy.entry_count(ask), int(asks[0][1]))
-            count = risk.affordable_count(count, ask, self.open_cost(), self.today_pnl(), self.daily_loss_limit)
+            # The ask often moves before an IOC buy lands, so allow paying a little more to get filled. IOC still
+            # takes the cheapest asks first; budget and sizing use this worst price, spread checks use the seen ask.
+            limit = min(ask + ENTRY_SLIPPAGE, rule.max_price)
+            offered = sum((size for price, size in asks if ONE - price <= limit), Decimal("0"))
+            count = min(policy.entry_count(limit), int(offered))
+            count = risk.affordable_count(count, limit, self.open_cost(), self.today_pnl(), self.daily_loss_limit)
             if rule.scalp:
                 spent, _, _ = market_totals(self.market_history(ticker))
                 available_budget = scalp_limits(rule, self.market_history(ticker)).market_spend_limit - spent
-                while count and ask * count + fee_reserve(count) > available_budget:
+                while count and limit * count + fee_reserve(count) > available_budget:
                     count -= 1
             if count == 0:
-                reason = "Not enough contracts offered at the best price"
-                if risk.affordable_count(1, ask, self.open_cost(), self.today_pnl(), self.daily_loss_limit) == 0:
+                reason = f"Not enough contracts offered at or below {limit}"
+                if risk.affordable_count(1, limit, self.open_cost(), self.today_pnl(), self.daily_loss_limit) == 0:
                     reason = "Risk limit: remaining exposure or daily loss budget buys no whole contract"
-                elif policy.entry_count(ask) == 0:
+                elif policy.entry_count(limit) == 0:
                     reason = f"Bet ${policy.budget} buys no whole {side.upper()} contract at {ask}"
                 elif rule.scalp:
                     reason = "Scalping spending limit leaves no budget for a whole contract and fees"
                 self.skip(ticker, reason)
                 continue
-            if rule.side == "momentum" and not policy.profit_target_reachable(ask, count):
+            if rule.side == "momentum" and not policy.profit_target_reachable(limit, count):
                 self.skip(ticker, "Not enough price room for the net profit target after reserved fees")
                 continue
             if policy.has_exits:
@@ -946,8 +951,8 @@ class AutoTrader:
             label = f" (buy {entries_of(position) + 1}/{rule.max_entries})" if rule.max_entries > 1 else ""
             if rule.scalp:
                 label = f" (scalp cycle {position['cycle_number']}/{position['scalp']['max_cycles']})"
-            await self.submit(position, "buy", Decimal(count), ask,
-                              f"Rule '{rule.name}'{label}: {side.upper()} at {ask}, "
+            await self.submit(position, "buy", Decimal(count), limit,
+                              f"Rule '{rule.name}'{label}: {side.upper()} at {ask} (up to {limit}), "
                               f"{'market confidence' if rule.side == 'momentum' else 'model'} {confidence:.2f}, "
                               f"fee {taker_fee(ask, count)}")
             busy_series.add(series_of(ticker))

@@ -266,10 +266,31 @@ async def test_fresh_entry_uses_saved_settings_partial_fills_and_no_duplicates(t
     assert Decimal(held["entry_cost"]) == Decimal("0.69")
     assert held["policy"]["take_profit"] == "0.25"
     assert rest.create_event_order.call_args.args[0]["count"] == "2"
-    assert rest.create_event_order.call_args.args[0]["price"] == "0.45"
+    # Seen ask 0.45; the buy may pay up to 2 cents more so a moving ask still fills.
+    assert rest.create_event_order.call_args.args[0]["price"] == "0.47"
     rest.get_market.return_value = {"market": {"status": "closed"}}
     await trader.cycle()
     rest.create_event_order.assert_awaited_once()
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("max_price", "budget", "price", "count"),
+                         [("0.46", "1.25", "0.46", "2"), ("0.99", "1.00", "0.47", "2"), ("0.99", "0.95", "0.47", "1")])
+async def test_entry_limit_allows_small_slippage_within_cap_and_budget(tmp_path, max_price, budget, price, count):
+    store = Store(str(tmp_path / "slip.db"))
+    rest = entry_rest()
+    trader = feed_trader(store, rest)
+    await trader.cycle()
+    await trader.save_settings(rules(budget=budget, max_price=max_price))
+    await trader.control(True, True)
+    rest.create_event_order.return_value = {"order_id": "buy", "fill_count": "0"}
+    rest.get_order.return_value = {"order": {"ticker": "BTC", "order_id": "buy", "status": "canceled",
+                                             "fill_count_fp": "0"}}
+    rest.get_fills.return_value = {"fills": [], "cursor": ""}
+    await trader.cycle()
+    payload = rest.create_event_order.call_args.args[0]
+    assert (payload["price"], payload["count"]) == (price, count)
     store.close()
 
 

@@ -73,8 +73,8 @@ async def test_favorite_is_bought_and_held_to_settlement(tmp_path):
     await trader.cycle()
     [held] = trader.positions()
     assert held["status"] == "open" and held["side"] == "yes" and held["rule"] == "Test"
-    # $5 at 0.80 with 2c/contract fee reserve = 6 contracts.
-    assert held["quantity"] == "6"
+    # $5 at up to 0.82 (0.80 ask + 2c entry slippage) with 2c/contract fee reserve = 5 contracts.
+    assert held["quantity"] == "5"
     # A crash in price never triggers an exit when take-profit/stop-loss are 0.
     rest.get_market_orderbook.return_value = book(yes_bid="0.05", no_bid="0.94")
     await trader.cycle()
@@ -85,7 +85,7 @@ async def test_favorite_is_bought_and_held_to_settlement(tmp_path):
     assert held["status"] == "closed"
     assert held["closed_by"] == "settled" and held["result"] == "yes"
     assert held["opened_ms"] <= held["closed_ms"] and held["close_ts_ms"] > held["opened_ms"]
-    assert Decimal(held["net_pnl"]) == Decimal("6") - Decimal(held["entry_cost"])
+    assert Decimal(held["net_pnl"]) == Decimal("5") - Decimal(held["entry_cost"])
     store.close()
 
 

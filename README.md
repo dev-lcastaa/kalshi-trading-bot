@@ -305,8 +305,11 @@ implemented: their fills and probability calibration need separate evidence.
 No accuracy or profitability is guaranteed.
 
 On a match the bot re-checks the rule against the **real order book** (not the
-quote), sizes the order to the budget and top-of-book size, and submits a
-price-limited immediate-or-cancel buy. It holds **at most one open position per
+quote), sizes the order to the budget and the size offered within its price
+limit, and submits a price-limited immediate-or-cancel buy. The limit is the
+seen ask plus $0.02 (never above the rule's max price) so a fast-moving ask
+still fills; IOC takes the cheapest asks first, and the budget is checked at
+the limit price. It holds **at most one open position per
 coin** (a BTC and a SOL position can run concurrently). The "Markets the bot is watching" table
 shows every live market, the side/price a rule would buy, and why other markets
 don't match; it also previews matches while trading is paused.
