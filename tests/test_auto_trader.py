@@ -294,9 +294,40 @@ async def test_no_side_profit_exit_uses_net_fills_and_price_protection(tmp_path)
     await trader.cycle()
     payload = rest.create_event_order.call_args.args[0]
     assert payload["side"] == "bid"
-    assert payload["price"] == "0.25"
+    # Target needs NO 0.74; up to 10 cents of profit may be given up, so the floor is NO 0.69 (YES 0.31).
+    assert payload["price"] == "0.31"
     assert payload["reduce_only"]
     assert Decimal(trader.positions()[0]["net_pnl"]) == Decimal("0.52")
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fill_book,status,net", [
+    ([["0.74", "10"]], "closed", Decimal("0.51")),
+    ([["0.68", "10"]], "open", None),
+])
+async def test_paper_take_profit_fills_when_book_slips_within_tolerance(tmp_path, fill_book, status, net):
+    store = Store(str(tmp_path / "slip.db"))
+    rest = AsyncMock()
+    rest.get_market.return_value = {"market": {"status": "active"}}
+    rest.get_market_orderbook.side_effect = [
+        {"orderbook_fp": {"yes_dollars": [["0.75", "10"]]}},
+        {"orderbook_fp": {"yes_dollars": fill_book}},
+    ]
+    store.save_trading_record("paper_account", "paper_account", {"BTC": "2"})
+    trader = AutoTrader(store, PaperExchange(store, rest), execution_allowed=True, mode="paper",
+                        account_identity="paper")
+    held = position()
+    held["account_identity"] = "paper"
+    trader.save_position(held)
+    await trader.cycle()
+    held = trader.positions()[0]
+    assert held["status"] == status
+    if net is not None:
+        assert held["closed_by"] == "take_profit"
+        assert Decimal(held["net_pnl"]) == net
+    else:
+        assert held["quantity"] == "2"
     store.close()
 
 

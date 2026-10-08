@@ -29,6 +29,8 @@ _RETRY_AFTER_MS = 6_000
 _IDLE_CYCLE_SEC = 2.0
 _POSITION_CYCLE_SEC = 1.0
 _MIN_SLEEP_SEC = 0.1
+# How much of the profit target a take-profit sell may give up to get filled when the book moves.
+TAKE_PROFIT_SLIPPAGE = Decimal("0.10")
 
 
 def series_of(ticker: str) -> str:
@@ -1176,9 +1178,12 @@ class AutoTrader:
                 position["exit_trigger"] = reason
             self.save_position(position)
             if reason == "take_profit":
-                minimum = ((policy.take_profit + dollars(position["entry_cost"]) - dollars(position["exit_credit"]) + reserve)
-                           / quantity).quantize(CENT, rounding=ROUND_CEILING)
-                worst_price = max(worst_price, minimum)
+                # The book often moves a cent before the order lands, so accept a little less profit to get filled.
+                # IOC sells still take the best bids first; this floor only bounds how far down they may go.
+                floor_profit = policy.take_profit - min(TAKE_PROFIT_SLIPPAGE, policy.take_profit)
+                worst_price = ((floor_profit + dollars(position["entry_cost"]) - dollars(position["exit_credit"]) + reserve)
+                               / quantity).quantize(CENT, rounding=ROUND_CEILING)
                 if worst_price >= ONE:
                     return
+                worst_price = max(worst_price, CENT)
             await self.submit(position, "sell", quantity - remaining, worst_price, reason)

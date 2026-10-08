@@ -375,7 +375,10 @@ market. Avoid manual trading in bot-managed markets; a holdings mismatch pauses
 automation rather than risking unrelated holdings. Only ordinary $1 binary
 contracts with supported general fee schedules are eligible.
 
-Orders are price-limited and immediate-or-cancel; exits are reduce-only. Partial
+Orders are price-limited and immediate-or-cancel; exits are reduce-only. A
+take-profit sell may accept up to $0.10 less than the profit target (never below
+break-even), so it still fills when buyers lower their price by a cent or two
+between the check and the order. It still sells to the best buyers first. Partial
 fills are tracked. Orders are journaled before submission, and uncertain outcomes
 block new entries instead of being blindly retried. A lost response with no
 confirmed fills may need manual reconciliation in Kalshi; do not delete the
