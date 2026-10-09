@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -146,7 +147,17 @@ def locked_call_side(decision: dict) -> str:
     return "yes" if float(decision["model_p_yes"]) >= 0.5 else "no"
 
 
-def locked_gate_reason(decision: dict | None, side: str) -> str | None:
+def llm_review_verdict(decision: dict) -> str:
+    """The locked call's LLM risk review result (ALLOW, BLOCK, ...), or UNAVAILABLE."""
+    detail = decision.get("confirmation_detail") or "[]"
+    try:
+        checks = json.loads(detail) if isinstance(detail, str) else detail
+        return next((str(c.get("value")) for c in checks if "LLM" in str(c.get("name"))), "UNAVAILABLE")
+    except (TypeError, ValueError, AttributeError):
+        return "UNAVAILABLE"
+
+
+def locked_gate_reason(decision: dict | None, side: str, require_llm_allow: bool = False) -> str | None:
     """None when `side` may be traded under the model's locked call, else why not."""
     if decision is None:
         return "Waiting for the model to lock its direction"
@@ -156,6 +167,8 @@ def locked_gate_reason(decision: dict | None, side: str) -> str | None:
     call = locked_call_side(decision)
     if side != call:
         return f"Entry side {side.upper()} conflicts with the model's locked {call.upper()} call"
+    if require_llm_allow and (verdict := llm_review_verdict(decision)) != "ALLOW":
+        return f"LLM risk review said {verdict} - this rule needs ALLOW"
     return None
 
 
@@ -577,7 +590,7 @@ class AutoTrader:
             return (yes_bid + yes_ask) / 2 if rule.side == "momentum" else model_p, None, locked_gate_reason(None, "yes")
         if rule.side != "momentum":
             side = rule.pick_side(model_p, yes_ask, ONE - yes_bid)
-            gate = locked_gate_reason(decision, side) if decision is not None and side else None
+            gate = locked_gate_reason(decision, side, rule.require_llm_allow) if decision is not None and side else None
             return model_p, None if gate else side, gate
         now_ms = int(time.time() * 1000)
         samples = [sample for sample in self.quote_history.get(ticker, [])
@@ -596,7 +609,7 @@ class AutoTrader:
             side = "no"
         else:
             return probability, None, "Waiting for quote movement and short-term coin direction to agree"
-        gate = locked_gate_reason(decision, side)
+        gate = locked_gate_reason(decision, side, rule.require_llm_allow)
         if gate:
             return probability, None, gate
         _, latest_bid, latest_ask = self.quote_history[ticker][-1]
@@ -968,7 +981,7 @@ class AutoTrader:
                 continue
             if rule.scalp is not None:
                 locked = self.store.locked_decision(ticker)
-                gate = locked_gate_reason(locked, side)
+                gate = locked_gate_reason(locked, side, rule.require_llm_allow)
                 if gate:
                     self.skip(ticker, f"Entry changed - {gate}")
                     continue

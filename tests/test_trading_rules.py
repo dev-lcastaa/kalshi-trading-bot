@@ -43,6 +43,18 @@ def test_rule_checks_coin_time_price_confidence_and_edge():
     assert rule.pick_side(Decimal("0.3")) == "no"
 
 
+def test_llm_approval_requirement_round_trips_and_must_be_a_boolean():
+    from kalshi_bot.dashboard.server import TradingRuleBody
+
+    values = rules(coin="SOL", require_llm_allow=True)["rules"][0]
+    rule = EntryRule.parse(TradingRuleBody(**values).model_dump())
+    assert rule.require_llm_allow is True
+    assert EntryRule.parse(rule.to_json()) == rule
+    assert "require_llm_allow" not in EntryRule.parse(rules()["rules"][0]).to_json()
+    with pytest.raises(ValueError, match="require_llm_allow"):
+        EntryRule.parse({**values, "require_llm_allow": "yes"})
+
+
 @pytest.mark.parametrize("bad", [
     {"min_price": "0.90", "max_price": "0.60"}, {"budget": "25.01"}, {"side": "maybe"},
     {"min_seconds_left": 500, "max_seconds_left": 400}, {"coin": "B-T"}, {"stop_loss": "1.00"},

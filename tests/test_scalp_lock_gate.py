@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from kalshi_bot.auto_trader import locked_gate_reason
@@ -25,6 +27,39 @@ def test_gate_requires_three_checks_and_the_locked_direction():
     assert "conflicts" in locked_gate_reason(decision, "no")
     assert "1/4" in locked_gate_reason({**decision, "confirmation_agree": 1}, "yes")
     assert "0/0" in locked_gate_reason({**decision, "confirmation_agree": None, "confirmation_total": None}, "yes")
+
+
+def llm_detail(verdict):
+    return json.dumps([{"name": "OLS momentum (full window)", "agree": True, "value": 1e-6},
+                       {"name": "6:30 LLM risk review", "agree": verdict == "ALLOW", "value": verdict}])
+
+
+def test_llm_gate_only_applies_when_the_rule_requires_it():
+    decision = {"ticker": TICKER, "ts_ms": 1, "model_p_yes": 0.7, "recommendation": "BUY_YES",
+                "confirmation_agree": 3, "confirmation_total": 4, "confirmation_detail": llm_detail("REDUCE_CONFIDENCE")}
+    assert locked_gate_reason(decision, "yes") is None
+    assert "REDUCE_CONFIDENCE" in locked_gate_reason(decision, "yes", require_llm_allow=True)
+    assert locked_gate_reason({**decision, "confirmation_detail": llm_detail("ALLOW")}, "yes", True) is None
+    for missing in ("[]", None, "not json"):
+        assert "UNAVAILABLE" in locked_gate_reason({**decision, "confirmation_detail": missing}, "yes", True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("verdict", "trades"), [("REDUCE_CONFIDENCE", False), ("BLOCK", False), ("ALLOW", True)])
+async def test_rule_requiring_llm_allow_skips_unless_the_review_allowed(tmp_path, clock, verdict, trades):  # noqa: F811
+    store = Store(str(tmp_path / "gate.db"))
+    rest = entry_rest()
+    rest.get_market_orderbook.return_value = book("0.49", "0.50")
+    feed = [live_market(TICKER, model_p_yes=0.8, yes_bid=0.49, yes_ask=0.50, seconds_left=800)]
+    trader = await enabled(paper_trader(store, rest, feed), scalp_rules(require_llm_allow=True))
+    await trader.cycle()
+    lock_call(store, TICKER, agree=3, total=4, detail=llm_detail(verdict))
+    clock[0] += 3
+    await trader.cycle()
+    assert bool(trader.positions()) is trades
+    if not trades:
+        assert "needs ALLOW" in trader.watch[0]["status"]
+    store.close()
 
 
 @pytest.mark.asyncio

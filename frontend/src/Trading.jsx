@@ -7,7 +7,7 @@ import ScalpControls, { scalpForm, scalpSettings, validateScalp } from "./ScalpC
 const MODES = [["paper", "Bot Simulation trading"], ["live", "Bot Real Trading"]];
 export const MAX_BUDGET = 25;
 export const MAX_RULES = 10;
-const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss", "max_entries", "reentry_gap_sec", "scalping", "max_cycles", "cycle_cooldown_sec", "market_spend_limit", "market_loss_limit"];
+const UI_KEYS = ["name", "enabled", "coin", "side", "min_price", "max_price", "min_confidence", "min_edge", "min_seconds_left", "max_seconds_left", "budget", "take_profit", "stop_loss", "max_entries", "reentry_gap_sec", "scalping", "max_cycles", "cycle_cooldown_sec", "market_spend_limit", "market_loss_limit", "require_llm_allow"];
 const RISK_DEFAULTS = { daily_loss_limit: "0.00", max_open_cost: "0.00", max_open_positions: "0", min_edge: "0", uncertainty_buffer: "0", max_spread: "0", max_signal_age_ms: "10000", max_book_age_ms: "2000", require_reference_agreement: false, require_fair_value: false };
 const WHOLE = /^\d+$/;
 const SIGNED_WHOLE = /^-?\d+$/;
@@ -56,6 +56,7 @@ export function toUi(settings) {
     cycle_cooldown_sec: String(rule.cycle_cooldown_sec ?? 30),
     market_spend_limit: num(rule.market_spend_limit ?? 3).toFixed(2),
     market_loss_limit: num(rule.market_loss_limit ?? 0.5).toFixed(2),
+    require_llm_allow: Boolean(rule.require_llm_allow),
   })) };
 }
 
@@ -76,6 +77,7 @@ export function fromUi(form) {
       cycle_cooldown_sec: num(rule.cycle_cooldown_sec),
       market_spend_limit: num(rule.market_spend_limit).toFixed(2),
       market_loss_limit: num(rule.market_loss_limit).toFixed(2) } : {}),
+    ...(rule.require_llm_allow ? { require_llm_allow: true } : {}),
   })) };
 }
 
@@ -137,7 +139,11 @@ function repeats(rule) {
 }
 
 function ruleSummary(rule) {
-  if (rule.side === "momentum") return `Follow rising UP or DOWN quotes with matching short-term coin movement and at least ${rule.min_confidence}% market confidence. Spend up to ${money(rule.budget)}${repeats(rule)}. ${exitPlan(rule)}.`;
+  if (rule.side === "momentum") {
+    const coin = rule.coin === "ANY" ? "any coin" : rule.coin;
+    const llm = rule.require_llm_allow ? " Only when the 6:30 LLM risk review says ALLOW." : "";
+    return `On ${coin}, follow rising UP or DOWN quotes with matching short-term coin movement and at least ${rule.min_confidence}% market confidence, paying at most ${rule.max_price}¢, from ${clock(rule.max_seconds_left)} left.${llm} Spend up to ${money(rule.budget)}${repeats(rule)}. ${exitPlan(rule)}.`;
+  }
   const coin = rule.coin === "ANY" ? "any coin" : rule.coin;
   const side = rule.side === "model" ? "whichever way the bot guesses" : direction(rule.side);
   const edge = String(rule.min_edge ?? "") === "" ? "" : ` and expects at least ${rule.min_edge}¢ profit`;
@@ -521,7 +527,7 @@ export default function Trading() {
         {snap.error && <p className="negative" role="alert">{snap.error}</p>}
       </section>
       <section className="trading-section" aria-label="Scalping controls"><h3>Scalp market movement</h3>
-        {!strategySaved && <p className="trading-muted">Your previous strategy is still saved. Turn the bot off and save here to replace it with momentum scalping. Existing trades keep their original exit plan.</p>}
+        {!strategySaved && <p className="trading-muted">Your previous strategy is still saved. Turn the bot off and save here to replace it with per-coin momentum scalping. Existing trades keep their original exit plan.</p>}
         <form onSubmit={(event) => { event.preventDefault(); if (!validation && dirty && !snap.enabled && !busy && !stale) void mutate("settings", { mode, ...scalpSettings(form) }); }}>
           <ScalpControls form={form} disabled={snap.enabled || busy} onChange={(next) => { setForms({ ...forms, [mode]: next }); setSuccess(""); setError(""); }} />
           {validation && <p className="negative" role="alert">{validation}</p>}

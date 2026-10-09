@@ -9,9 +9,10 @@ const RULE = { name: "Edge", enabled: true, coin: "ANY", side: "model", min_pric
 const SETTINGS = { rules: [RULE] };
 const withRule = (overrides) => ({ rules: [{ ...RULE, ...overrides }] });
 const uiWith = (overrides) => ({ rules: [{ ...toUi(SETTINGS).rules[0], ...overrides }] });
-const CURRENT = scalpSettings({ confidence: "65", budget: "1.00", stop_loss: "0.20" });
+const both = (form) => ({ BTC: { enabled: true, ...form }, SOL: { enabled: true, ...form } });
+const CURRENT = scalpSettings(both({ confidence: "65", budget: "1.00", stop_loss: "0.20" }));
 const rule = () => within(screen.getByRole("group", { name: "Scalping settings" }));
-const SPEND = "Amount per trade ($)";
+const SPEND = "BTC Amount per trade ($)";
 const makeSnapshot = (mode, overrides = {}) => ({ mode, settings: structuredClone(CURRENT), watch: [], enabled: false, environment: "demo", blockers: [], last_cycle_ms: null, error: null, positions: [], events: [], decisions: [], ...overrides });
 let state;
 let fail;
@@ -41,7 +42,7 @@ const goLive = (user) => user.click(screen.getByRole("radio", { name: "Bot Real 
 describe("Trading tab", () => {
   it("saves a custom per-market trade limit and preserves it across reloads and modes", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    const limit = await screen.findByLabelText("Trades per 15-minute market");
+    const limit = await screen.findByLabelText("BTC Trades per 15-minute market");
     expect(limit.value).toBe("3");
     await user.clear(limit); await user.type(limit, "5");
     await user.click(screen.getByRole("button", { name: "Save settings" }));
@@ -52,28 +53,30 @@ describe("Trading tab", () => {
     await user.click(screen.getByRole("button", { name: "Refresh" }));
     expect(limit.value).toBe("5");
     await goLive(user);
-    expect(screen.getByLabelText("Trades per 15-minute market").value).toBe("3");
+    expect(screen.getByLabelText("BTC Trades per 15-minute market").value).toBe("3");
     await user.click(screen.getByRole("radio", { name: "Bot Simulation trading" }));
-    expect(screen.getByLabelText("Trades per 15-minute market").value).toBe("5");
-    expect(scalpForm(state.paper.settings).max_cycles).toBe("5");
-    expect(scalpSettings({ ...scalpForm(state.paper.settings), budget: "10.00" }).rules[0].market_spend_limit).toBe("25.00");
+    expect(screen.getByLabelText("BTC Trades per 15-minute market").value).toBe("5");
+    expect(scalpForm(state.paper.settings).BTC.max_cycles).toBe("5");
+    expect(scalpForm(state.paper.settings).SOL.max_cycles).toBe("3");
+    const loaded = scalpForm(state.paper.settings);
+    expect(scalpSettings({ ...loaded, BTC: { ...loaded.BTC, budget: "10.00" } }).rules[0].market_spend_limit).toBe("25.00");
   });
   it("maps the start-after-seconds setting to the entry window", () => {
     const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
-    expect(scalpSettings(form).rules[0].max_seconds_left).toBe(840);
-    expect(scalpForm(scalpSettings(form)).start_after).toBe("60");
-    const sixMinutes = scalpSettings({ ...form, start_after: "360" });
+    expect(scalpSettings(both(form)).rules[0].max_seconds_left).toBe(840);
+    expect(scalpForm(scalpSettings(both(form))).BTC.start_after).toBe("60");
+    const sixMinutes = scalpSettings(both({ ...form, start_after: "360" }));
     expect(sixMinutes.rules[0].max_seconds_left).toBe(540);
-    expect(scalpForm(sixMinutes).start_after).toBe("360");
-    for (const value of ["0", "810"]) expect(validateScalp({ ...form, start_after: value })).toBe("");
-    for (const value of ["", "811", "-1", "1.5", "six"]) expect(validateScalp({ ...form, start_after: value })).toContain("whole seconds into the market");
+    expect(scalpForm(sixMinutes).BTC.start_after).toBe("360");
+    for (const value of ["0", "810"]) expect(validateScalp(both({ ...form, start_after: value }))).toBe("");
+    for (const value of ["", "811", "-1", "1.5", "six"]) expect(validateScalp(both({ ...form, start_after: value }))).toContain("whole seconds into the market");
   });
   it("validates trade counts from 1 to 10 and retains the default for older forms", () => {
     const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
-    expect(scalpSettings(form).rules[0].max_cycles).toBe(3);
-    for (const value of ["1", "10"]) expect(validateScalp({ ...form, max_cycles: value })).toBe("");
+    expect(scalpSettings(both(form)).rules[0].max_cycles).toBe(3);
+    for (const value of ["1", "10"]) expect(validateScalp(both({ ...form, max_cycles: value }))).toBe("");
     for (const value of ["", "0", "11", "-1", "1.5", "NaN"]) {
-      expect(validateScalp({ ...form, max_cycles: value })).toContain("whole number from 1 to 10");
+      expect(validateScalp(both({ ...form, max_cycles: value }))).toContain("whole number from 1 to 10");
     }
   });
   it("omits execution costs and the last-check paragraph even when telemetry exists", async () => {
@@ -122,7 +125,7 @@ describe("Trading tab", () => {
     const user = userEvent.setup(); render(<Trading />);
     await screen.findByRole("group", { name: "Scalping settings" });
     expect(rule().getByLabelText(SPEND).value).toBe("1.00");
-    expect(rule().getAllByRole("textbox")).toHaveLength(6);
+    expect(rule().getAllByRole("textbox")).toHaveLength(14);
     expect(screen.queryByRole("button", { name: "Add a rule" })).toBeNull();
     expect(screen.queryByLabelText("Minimum expected profit (¢)")).toBeNull();
     expect(screen.getByRole("switch").disabled).toBe(true);
@@ -132,27 +135,55 @@ describe("Trading tab", () => {
     await screen.findByText("Scalping settings saved.");
     const saved = JSON.parse(lastWrite("PUT")[1].body);
     expect(saved.mode).toBe("paper");
-    expect(saved.rules).toHaveLength(1);
-    expect(saved.rules[0]).toMatchObject({ side: "momentum", min_confidence: "0.65", min_edge: null,
+    expect(saved.rules).toHaveLength(2);
+    for (const [index, coin] of [[0, "BTC"], [1, "SOL"]]) expect(saved.rules[index]).toMatchObject({ coin, enabled: true, side: "momentum", min_confidence: "0.65", min_edge: null,
       budget: "1.00", stop_loss: "0.10", take_profit: "0.03", scalping: true });
     expect(state.live.settings).toEqual(CURRENT);
     expect(state.live.enabled).toBe(false);
     expect(state.paper.enabled).toBe(false);
     expect(screen.getByRole("switch").disabled).toBe(false);
   });
+  it("saves separate BTC and SOL rules, including the SOL price cap, window and LLM gate", async () => {
+    const legacy = scalpSettings(both({ confidence: "85", budget: "10.00", stop_loss: "2.25", take_profit: "0.30" }));
+    state.paper.settings = { ...legacy, rules: [{ ...legacy.rules[0], name: "Momentum scalp", coin: "ANY" }] };
+    expect(scalpForm(state.paper.settings).SOL).toEqual(scalpForm(state.paper.settings).BTC);
+    const user = userEvent.setup(); render(<Trading />);
+    const solPrice = await screen.findByLabelText("SOL Highest entry price (cents)");
+    expect(solPrice.value).toBe("95");
+    await user.clear(solPrice); await user.type(solPrice, "90");
+    const solStart = screen.getByLabelText("SOL Start trading after (seconds into market)");
+    await user.clear(solStart); await user.type(solStart, "600");
+    await user.click(screen.getByLabelText("SOL LLM must approve"));
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Scalping settings saved.");
+    const [btc, sol] = state.paper.settings.rules;
+    expect(btc).toMatchObject({ name: "BTC scalp", coin: "BTC", enabled: true, max_price: "0.95", max_seconds_left: 840, budget: "10.00", stop_loss: "2.25", take_profit: "0.30" });
+    expect(btc.require_llm_allow).toBeUndefined();
+    expect(sol).toMatchObject({ name: "SOL scalp", coin: "SOL", enabled: true, max_price: "0.90", max_seconds_left: 300, require_llm_allow: true, budget: "10.00" });
+    expect(screen.getByLabelText("SOL LLM must approve").checked).toBe(true);
+    expect(screen.getByText("All changes saved")).toBeTruthy();
+    await user.click(screen.getByLabelText("Trade SOL"));
+    expect(screen.getByLabelText("SOL Highest entry price (cents)").disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+    await screen.findByText("Scalping settings saved.");
+    expect(state.paper.settings.rules[1]).toMatchObject({ coin: "SOL", enabled: false });
+    expect(scalpForm({ rules: [btc] }).SOL.enabled).toBe(false);
+  });
   it("validates the trading controls and blocks saving invalid values", async () => {
     const user = userEvent.setup(); render(<Trading />);
-    const field = await screen.findByLabelText("Stop loss amount ($)");
+    const field = await screen.findByLabelText("BTC Stop loss amount ($)");
     await user.clear(field); await user.type(field, "1.00");
     expect(screen.getByRole("button", { name: "Save settings" }).disabled).toBe(true);
     expect(screen.getByRole("alert").textContent).toContain("less than");
     const form = { confidence: "65", budget: "1.00", stop_loss: "0.20" };
-    expect(validateScalp(form)).toBe("");
+    expect(validateScalp(both(form))).toBe("");
     for (const bad of [{ confidence: "49" }, { confidence: "100" }, { confidence: "65.5" },
       { budget: "25.01" }, { budget: "NaN" }, { budget: "0" }, { stop_loss: "0" },
-      { stop_loss: "1.00" }, { stop_loss: "0.001" }]) {
-      expect(validateScalp({ ...form, ...bad })).not.toBe("");
+      { stop_loss: "1.00" }, { stop_loss: "0.001" }, { max_price: "49" }, { max_price: "100" }, { max_price: "9.5" }]) {
+      expect(validateScalp(both({ ...form, ...bad }))).not.toBe("");
+      expect(validateScalp({ ...both(form), SOL: { enabled: true, ...form, ...bad } })).toMatch(/^SOL: /);
     }
+    expect(validateScalp({ BTC: { ...form, enabled: false }, SOL: { ...form, enabled: false } })).toBe("Turn on at least one coin.");
   });
   it("automatically derives protected exits and spending caps from the controls", async () => {
     const user = userEvent.setup(); render(<Trading />);
@@ -243,14 +274,15 @@ describe("Trading tab", () => {
     expect(within(watch).getByText("BTC")).toBeTruthy();
     expect(within(watch).getByText("UP at 80¢")).toBeTruthy();
     expect(within(watch).getByText('Preview only — matches "Edge"')).toBeTruthy();
-    expect(rule().getByLabelText("Confidence level (%)").value).toBe("65");
+    expect(rule().getByLabelText("BTC Confidence level (%)").value).toBe("65");
     await user.clear(rule().getByLabelText(SPEND)); await user.type(rule().getByLabelText(SPEND), "20");
     await user.click(screen.getByRole("button", { name: "Save settings" }));
     await screen.findByText("Scalping settings saved.");
     const body = JSON.parse(lastWrite("PUT")[1].body);
     expect(body.mode).toBe("paper");
-    expect(body.rules).toHaveLength(1);
-    expect(body.rules[0]).toMatchObject({ coin: "ANY", side: "momentum", budget: "20.00",
+    expect(body.rules).toHaveLength(2);
+    expect(body.rules[1]).toMatchObject({ coin: "SOL", budget: "1.00" });
+    expect(body.rules[0]).toMatchObject({ coin: "BTC", side: "momentum", budget: "20.00",
       min_edge: null, take_profit: "0.02", stop_loss: "0.20" });
   });
   it("keeps rules and unsaved changes separate per mode and resets after save", async () => {
@@ -273,7 +305,7 @@ describe("Trading tab", () => {
     await user.click(screen.getByRole("button", { name: "Save settings" }));
     await screen.findByText("Scalping settings saved.");
     const [, put] = lastWrite("PUT");
-    expect(JSON.parse(put.body)).toEqual({ mode: "live", ...scalpSettings({ confidence: "65", budget: "1.75", stop_loss: "0.20" }) });
+    expect(JSON.parse(put.body)).toEqual({ mode: "live", ...scalpSettings({ ...both({ confidence: "65", budget: "1.00", stop_loss: "0.20" }), BTC: { ...scalpForm(CURRENT).BTC, budget: "1.75" } }) });
     expect(put.headers.Authorization).toBeUndefined();
     expect(state.live.settings.rules[0].budget).toBe("1.75");
     expect(state.paper.settings.rules[0].budget).toBe("1.00");
@@ -308,8 +340,9 @@ describe("Trading tab", () => {
     await user.click(screen.getByRole("switch"));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Turn on the real-money bot?")).toBeTruthy();
-    expect(within(dialog).getByText(/Spend up to \$1\.00/)).toBeTruthy();
-    expect(within(dialog).getByText("Momentum scalp")).toBeTruthy();
+    expect(within(dialog).getAllByText(/Spend up to \$1\.00/)).toHaveLength(2);
+    expect(within(dialog).getByText("BTC scalp")).toBeTruthy();
+    expect(within(dialog).getByText("SOL scalp")).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Yes, turn it on" }).disabled).toBe(true);
     await user.click(within(dialog).getByRole("checkbox"));
     await user.click(within(dialog).getByRole("button", { name: "Yes, turn it on" }));

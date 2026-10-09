@@ -38,6 +38,7 @@ class TradingRuleBody(BaseModel):
     cycle_cooldown_sec: int = Field(default=30, ge=5, le=900)
     market_spend_limit: str = Field(default="3.00", min_length=1, max_length=24)
     market_loss_limit: str = Field(default="0.50", min_length=1, max_length=24)
+    require_llm_allow: StrictBool = False
 
 
 class TradingRiskBody(BaseModel):

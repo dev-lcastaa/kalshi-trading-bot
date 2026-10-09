@@ -29,13 +29,13 @@ def clock(monkeypatch):
     return now
 
 
-def lock_call(store, ticker, up=True, agree=4, total=4):
+def lock_call(store, ticker, up=True, agree=4, total=4, detail="[]"):
     """Record the model's one-shot locked decision, as the prediction loop does at T-6:30."""
     store.record_decision(
         ticker=ticker, ts_ms=int(time.time() * 1000), seconds_to_expiry=390.0, index_price=100.0,
         strike=99.0, model_p_yes=0.8 if up else 0.2, market_p_yes=0.5, edge=0.3,
         recommendation="BUY_YES" if up else "BUY_NO", confidence=0.8,
-        confirmation_agree=agree, confirmation_total=total, confirmation_detail="[]",
+        confirmation_agree=agree, confirmation_total=total, confirmation_detail=detail,
     )
 
 

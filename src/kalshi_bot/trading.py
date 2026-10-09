@@ -180,6 +180,8 @@ class EntryRule:
     max_entries: int = 1
     reentry_gap_sec: int = 60
     scalp: ScalpPolicy | None = None
+    # Skip entries unless the locked call's LLM risk review said ALLOW.
+    require_llm_allow: bool = False
 
     def __post_init__(self) -> None:
         if not self.name or len(self.name) > 40:
@@ -230,7 +232,10 @@ class EntryRule:
         scalping = values.get("scalping", False)
         if not isinstance(scalping, bool):
             raise ValueError("scalping must be true or false")
-        scalp = ScalpPolicy(
+        require_llm_allow = values.get("require_llm_allow", False)
+        if not isinstance(require_llm_allow, bool):
+            raise ValueError("require_llm_allow must be true or false")
+        scalp =  ScalpPolicy(
             max_cycles=_int(values, "max_cycles", 3),
             cycle_cooldown_sec=_int(values, "cycle_cooldown_sec", 30),
             market_spend_limit=dollars(values.get("market_spend_limit", "3.00")),
@@ -255,6 +260,7 @@ class EntryRule:
             max_entries=_int(values, "max_entries", 1),
             reentry_gap_sec=_int(values, "reentry_gap_sec", 60),
             scalp=scalp,
+            require_llm_allow=require_llm_allow,
         )
 
     def to_json(self) -> dict:
@@ -270,6 +276,8 @@ class EntryRule:
         }
         if self.scalp is not None:
             result.update(scalping=True, **self.scalp.to_json())
+        if self.require_llm_allow:
+            result["require_llm_allow"] = True
         return result
 
     def coin_matches(self, ticker: str) -> bool:

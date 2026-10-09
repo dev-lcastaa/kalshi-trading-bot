@@ -1,10 +1,11 @@
 import { expect, test } from "@playwright/test";
 
-const rule = { name: "Momentum scalp", enabled: true, coin: "ANY", side: "momentum", min_price: "0.05", max_price: "0.95", min_confidence: "0.65", min_edge: null, min_seconds_left: 90, max_seconds_left: 840, budget: "1.00", take_profit: "0.02", stop_loss: "0.20", max_entries: 1, reentry_gap_sec: 60, scalping: true, max_cycles: 3, cycle_cooldown_sec: 30, market_spend_limit: "3.00", market_loss_limit: "0.20" };
+const rule = { name: "BTC scalp", enabled: true, coin: "BTC", side: "momentum", min_price: "0.05", max_price: "0.95", min_confidence: "0.65", min_edge: null, min_seconds_left: 90, max_seconds_left: 840, budget: "1.00", take_profit: "0.02", stop_loss: "0.20", max_entries: 1, reentry_gap_sec: 60, scalping: true, max_cycles: 3, cycle_cooldown_sec: 30, market_spend_limit: "3.00", market_loss_limit: "0.20" };
 const risk = { daily_loss_limit: "3.00", max_open_cost: "2.00", max_open_positions: 2, min_edge: "0.00", uncertainty_buffer: "0.00", max_spread: "0.03", max_signal_age_ms: 5000, max_book_age_ms: 2000, require_reference_agreement: false, require_fair_value: false };
-const settings = { rules: [rule], risk };
+const solRule = { ...rule, name: "SOL scalp", coin: "SOL" };
+const settings = { rules: [rule, solRule], risk };
 const policy = { budget: "1.00", take_profit: "0.50", stop_loss: "0.10" };
-const SPEND = "Amount per trade ($)";
+const SPEND = "BTC Amount per trade ($)";
 const ruleGroup = (page) => page.getByRole("group", { name: "Scalping settings" });
 
 function makeSnapshot(mode, { populated = false, environment = "demo" } = {}) {
@@ -87,12 +88,12 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await page.setViewportSize(size);
     const api = await mockTrading(page, { populated: false, environment: "prod" });
     await page.goto("/trading");
-    await expect(ruleGroup(page).getByRole("textbox")).toHaveCount(6);
+    await expect(ruleGroup(page).getByRole("textbox")).toHaveCount(14);
     await expect(page.getByRole("button", { name: "Add a rule" })).toHaveCount(0);
     await ruleGroup(page).getByLabel(SPEND).fill("1.50");
-    await ruleGroup(page).getByLabel("Trades per 15-minute market").fill("11");
+    await ruleGroup(page).getByLabel("BTC Trades per 15-minute market").fill("11");
     await expect(page.getByRole("button", { name: "Save settings" })).toBeDisabled();
-    await ruleGroup(page).getByLabel("Trades per 15-minute market").fill("5");
+    await ruleGroup(page).getByLabel("BTC Trades per 15-minute market").fill("5");
     expect(api.writes).toHaveLength(0);
     await noOverflow(page);
     await page.getByRole("button", { name: "Save settings" }).click();
@@ -101,13 +102,13 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     expect(api.writes[0].body).toMatchObject({ mode: "paper", risk: { max_open_cost: "3.00",
       min_edge: "0.00", uncertainty_buffer: "0.00", max_spread: "0.03" } });
     expect(api.writes[0].body.rules[0]).toMatchObject({ max_cycles: 5, market_spend_limit: "7.50" });
-    await expect(ruleGroup(page).getByLabel("Trades per 15-minute market")).toHaveValue("5");
+    await expect(ruleGroup(page).getByLabel("BTC Trades per 15-minute market")).toHaveValue("5");
     expect(api.state.live.settings).toEqual(settings);
     expect(api.state.paper.enabled).toBe(false);
     expect(api.state.live.enabled).toBe(false);
     await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     await expect(ruleGroup(page).getByLabel(SPEND)).toHaveValue("1.00");
-    await expect(ruleGroup(page).getByLabel("Trades per 15-minute market")).toHaveValue("3");
+    await expect(ruleGroup(page).getByLabel("BTC Trades per 15-minute market")).toHaveValue("3");
     await noOverflow(page);
   });
   test(`${name}: opt-in scalping controls, confirmation, cycle history and limits`, async ({ page }) => {
@@ -116,9 +117,9 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await page.goto("/trading");
     await page.getByRole("radio", { name: "Bot Real Trading" }).check();
     const scalp = ruleGroup(page);
-    await scalp.getByLabel("Stop loss amount ($)", { exact: true }).fill("0");
+    await scalp.getByLabel("BTC Stop loss amount ($)", { exact: true }).fill("0");
     await expect(page.getByRole("button", { name: "Save settings" })).toBeDisabled();
-    await scalp.getByLabel("Stop loss amount ($)", { exact: true }).fill("0.25");
+    await scalp.getByLabel("BTC Stop loss amount ($)", { exact: true }).fill("0.25");
     expect(api.writes).toHaveLength(0);
     await noOverflow(page);
     await page.getByRole("button", { name: "Save settings" }).click();
@@ -128,8 +129,8 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
       take_profit: "0.02", stop_loss: "0.25", max_entries: 1 });
     await page.getByRole("switch").click();
     const dialog = page.getByRole("dialog");
-    await expect(dialog.getByText(/up to 3 cycles in one market, waiting 30s/)).toBeVisible();
-    await expect(dialog.getByText(/Total spending including entry fees is capped at \$3\.00/)).toBeVisible();
+    await expect(dialog.getByText(/On BTC, .*up to 3 cycles in one market, waiting 30s/)).toBeVisible();
+    await expect(dialog.getByText(/On BTC, .*Total spending including entry fees is capped at \$3\.00/)).toBeVisible();
     await expect(dialog.getByRole("button", { name: "Yes, turn it on" })).toBeDisabled();
     await dialog.getByRole("checkbox").check();
     await dialog.getByRole("button", { name: "Yes, turn it on" }).click();
@@ -167,7 +168,7 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await watch.screenshot({ path: `test-results/scalping-watch-${name}.png` });
     await page.getByRole("radio", { name: "Bot Simulation trading" }).check();
     await expect(page.getByRole("switch")).not.toBeChecked();
-    await expect(ruleGroup(page).getByLabel("Stop loss amount ($)")).toHaveValue("0.20");
+    await expect(ruleGroup(page).getByLabel("BTC Stop loss amount ($)")).toHaveValue("0.20");
   });
 
   test(`${name}: watched-market cards stay compact without hiding reasons`, async ({ page }) => {
@@ -297,14 +298,14 @@ for (const [name, size] of [["desktop", { width: 1440, height: 900 }], ["mobile"
     await expect(watch.getByText("UP at 80¢")).toBeVisible();
     await expect(watch.getByText("Not yet: Edge: waits for 6:30 to 5:30")).toBeVisible();
     await ruleGroup(page).getByLabel(SPEND, { exact: true }).fill("1.75");
-    await ruleGroup(page).getByLabel("Stop loss amount ($)", { exact: true }).fill("0.25");
+    await ruleGroup(page).getByLabel("BTC Stop loss amount ($)", { exact: true }).fill("0.25");
     await expect(page.getByRole("switch")).toBeDisabled();
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(ruleGroup(page).getByLabel(SPEND, { exact: true })).toHaveValue("1.75");
     await page.getByRole("button", { name: "Save settings" }).click();
     await expect(page.getByText("Scalping settings saved.", { exact: true })).toBeVisible();
     const saved = { rules: [{ ...rule, budget: "1.75", stop_loss: "0.25",
-      market_spend_limit: "5.25", market_loss_limit: "0.25" }],
+      market_spend_limit: "5.25", market_loss_limit: "0.25" }, solRule],
       risk: { ...risk, daily_loss_limit: "5.25", max_open_cost: "3.50" } };
     expect(api.writes[0]).toEqual({ path: "/api/trading/settings", body: { mode: "live", ...saved }, auth: undefined });
     await page.getByRole("switch").click();
