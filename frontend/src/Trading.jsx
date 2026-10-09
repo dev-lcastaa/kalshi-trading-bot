@@ -218,7 +218,7 @@ const EVENT_NAMES = {
   buy_submitted: "Placed a bet", sell_submitted: "Tried to sell", filled: "Order went through", unfilled: "Order didn't go through",
   rejected: "Kalshi refused the order", settled: "Market ended", waiting_for_liquidity: "Wants to sell, but nobody is buying yet",
   skipped: "Skipped a market", enabled: "Bot turned on", paused: "Bot turned off", started_paused: "Bot restarted (left off for safety)",
-  settings_saved: "Rules saved", error: "Something went wrong",
+  settings_saved: "Rules saved", error: "Something went wrong", waiting_for_confirmation: "Waiting for Kalshi to confirm",
 };
 
 function Diary({ events }) {

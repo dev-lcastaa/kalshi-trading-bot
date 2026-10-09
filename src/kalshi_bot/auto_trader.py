@@ -33,6 +33,14 @@ _MIN_SLEEP_SEC = 0.1
 # How much of the profit target a take-profit sell may give up to get filled when the book moves.
 TAKE_PROFIT_SLIPPAGE = Decimal("0.10")
 ENTRY_SLIPPAGE = Decimal("0.02")
+# Kalshi can take a moment to show a just-placed order and its fills; re-read before giving up.
+CONFIRM_RETRY_DELAYS_SEC = (0.25, 0.5, 1.0, 1.5)
+# A placed order Kalshi still has not confirmed after this long turns the bot off for a human to check.
+CONFIRM_GIVE_UP_MS = 60_000
+
+
+class OrderNotConfirmed(Exception):
+    """Kalshi accepted the order, but its order/fill reads have not caught up yet."""
 
 
 def series_of(ticker: str) -> str:
@@ -482,9 +490,10 @@ class AutoTrader:
                     await self.monitor(position)
 
         results = await asyncio.gather(*(service(group) for group in by_ticker.values()), return_exceptions=True)
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
+        failures = [result for result in results if isinstance(result, BaseException)]
+        # A real failure in one market must not be hidden behind another market's slow confirmation.
+        for failure in sorted(failures, key=lambda failure: isinstance(failure, OrderNotConfirmed)):
+            raise failure
 
     def has_running_position(self) -> bool:
         return any(p["status"] in ("pending", "open") for p in self.positions())
@@ -506,7 +515,16 @@ class AutoTrader:
                     if self.enabled and not self.blockers():
                         await self.enter_by_rules(candidates)
                 self.error = None
+            except OrderNotConfirmed as exc:
+                # The order is placed and journaled; keep the bot on, but the error blocks new buys until confirmed.
+                logger.warning("Waiting for Kalshi to confirm an order (%s): %s", self.mode, exc)
+                message = "Order placed; waiting for Kalshi to confirm it. New buys wait until it is confirmed."
+                if self.error != message:
+                    self.store.record_trading_event("waiting_for_confirmation", f"{message} ({exc})",
+                                                    environment=self.environment, mode=self.mode)
+                self.error = message
             except Exception as exc:
+                logger.exception("Trading cycle failed (%s); entries paused", self.mode)
                 self.enabled = False
                 self.control_revision += 1
                 message = (str(exc) if isinstance(exc, ValueError) else
@@ -1042,15 +1060,43 @@ class AutoTrader:
         position["pending"]["order_id"] = response["order_id"]
         position["pending"]["ack_fill_count"] = str(dollars(response["fill_count"]))
         self.save_position(position)
-        await self.reconcile(position)
+        for delay in (*CONFIRM_RETRY_DELAYS_SEC, None):
+            try:
+                await self.reconcile(position)
+                return
+            except OrderNotConfirmed:
+                if delay is None:
+                    raise
+                await asyncio.sleep(delay)
 
     async def reconcile(self, position: dict) -> None:
+        try:
+            await self._reconcile(position)
+        except OrderNotConfirmed as exc:
+            submitted = position["pending"].get("submitted_ms") if position.get("pending") else None
+            if submitted is None or int(time.time() * 1000) - submitted > CONFIRM_GIVE_UP_MS:
+                raise ValueError(f"Kalshi has not confirmed a placed order ({exc}); check Kalshi before intervening") from exc
+            raise
+
+    async def _read(self, call: Awaitable[dict]) -> dict:
+        """Order/fill reads that fail transiently mean 'not confirmed yet', not a broken order."""
+        try:
+            return await call
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (404, 429) or status >= 500:
+                raise OrderNotConfirmed(f"Kalshi order read returned HTTP {status}") from exc
+            raise
+        except httpx.TransportError as exc:
+            raise OrderNotConfirmed(f"Kalshi order read failed: {type(exc).__name__}") from exc
+
+    async def _reconcile(self, position: dict) -> None:
         pending = position["pending"]
         order_id = pending.get("order_id")
         if order_id is None:
             cursor = ""
             while True:
-                data = await self.rest.get_orders(position["ticker"], cursor)
+                data = await self._read(self.rest.get_orders(position["ticker"], cursor))
                 found = next((order for order in data["orders"] if order["client_order_id"] == pending["client_order_id"]), None)
                 if found:
                     order_id = found["order_id"]
@@ -1060,26 +1106,26 @@ class AutoTrader:
                 cursor = data.get("cursor", "")
                 if not cursor:
                     raise ValueError("Order outcome unknown; never resubmit automatically")
-        order = (await self.rest.get_order(order_id))["order"]
+        order = (await self._read(self.rest.get_order(order_id)))["order"]
         if order["client_order_id"] != pending["client_order_id"] or order["ticker"] != position["ticker"]:
             raise ValueError("Mismatched order response")
         if order["status"] == "resting":
             await self.rest.cancel_event_order(order_id, position["ticker"])
             return
         if order["status"] not in ("executed", "canceled"):
-            raise ValueError("Nonterminal order")
+            raise OrderNotConfirmed(f"Kalshi still shows the order as {order['status']}")
         expected = dollars(order["fill_count_fp"])
         if "ack_fill_count" not in pending and expected == 0:
             raise ValueError("Submission acknowledgment was lost; zero fills cannot safely resolve this order yet")
         if expected < dollars(pending.get("ack_fill_count", "0")):
-            raise ValueError("Order read is behind the submission acknowledgment; waiting for reconciliation")
+            raise OrderNotConfirmed("Order read is behind the submission acknowledgment")
         filled = Decimal("0")
         gross = Decimal("0")
         fees = Decimal("0")
         cursor = ""
         seen = set()
         while True:
-            data = await self.rest.get_fills(order_id, cursor)
+            data = await self._read(self.rest.get_fills(order_id, cursor))
             for fill in data["fills"]:
                 if fill["fill_id"] in seen:
                     continue
@@ -1097,6 +1143,8 @@ class AutoTrader:
             cursor = data.get("cursor", "")
             if not cursor:
                 break
+        if filled < expected:
+            raise OrderNotConfirmed("Fill history is behind the order")
         if filled != expected or filled > dollars(pending["quantity"]) or filled < 0:
             raise ValueError("Fill history is incomplete or inconsistent")
         if pending["action"] == "buy":
