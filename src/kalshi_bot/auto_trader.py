@@ -169,6 +169,21 @@ def locked_gate_snapshot(decision: dict) -> dict:
     }
 
 
+def rejection_detail(response: httpx.Response) -> str:
+    """Kalshi's own reason for refusing an order, e.g. ': insufficient_balance - ...'."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        body = body["error"]
+    if isinstance(body, dict):
+        text = " - ".join(str(body[key]) for key in ("code", "message", "details") if body.get(key))
+    else:
+        text = response.text.strip()
+    return f": {text[:300]}" if text else ""
+
+
 def order_payload(ticker: str, side: str, action: str, quantity: Decimal, price: Decimal, client_id: str) -> dict:
     if side not in ("yes", "no") or action not in ("buy", "sell"):
         raise ValueError("Invalid order direction")
@@ -217,6 +232,7 @@ class AutoTrader:
         self.retry_after_ms: dict[str, int] = {}
         self.last_skip_reason: dict[str, str] = {}
         self.eligible_markets: set[str] = set()
+        self.market_shard: dict[str, int | None] = {}
         self.quote_history: dict[str, list[tuple[int, Decimal, Decimal]]] = {}
         self.settings_key = f"settings:{mode}"
         self.position_kind = "position:paper" if mode == "paper" else f"position:{environment}"
@@ -756,7 +772,19 @@ class AutoTrader:
         )
         if supported:
             self.eligible_markets.add(ticker)
+            self.market_shard[ticker] = market.get("exchange_index")
         return supported
+
+    async def shard_balance(self, ticker: str) -> Decimal | None:
+        """Cash Kalshi can use for this market; None in paper mode, where there is no real account."""
+        if self.mode == "paper":
+            return None
+        # Kalshi checks collateral per exchange shard (crypto markets use their own), and API orders are
+        # not funded from other shards automatically.
+        balance = await self.rest.get_balance(self.market_shard.get(ticker))
+        if "balance_dollars" in balance:
+            return dollars(balance["balance_dollars"])
+        return Decimal(balance.get("balance", 0)) / 100
 
     async def enter_by_rules(self, candidates: list[dict]) -> None:
         current = {p["ticker"]: p for p in self.positions() if p["status"] in ("pending", "open")}
@@ -819,6 +847,7 @@ class AutoTrader:
             if orders.get("cursor") or any(order["status"] == "resting" for order in orders["orders"]):
                 self.skip(ticker, "Existing or incompletely checked account orders in this market")
                 continue
+            cash = await self.shard_balance(ticker)
             opposite = "no" if side == "yes" else "yes"
             book_started_ms = int(time.time() * 1000)
             book = (await self.rest.get_market_orderbook(ticker))["orderbook_fp"]
@@ -844,6 +873,15 @@ class AutoTrader:
                 available_budget = scalp_limits(rule, self.market_history(ticker)).market_spend_limit - spent
                 while count and limit * count + fee_reserve(count) > available_budget:
                     count -= 1
+            if cash is not None and count:
+                while count and limit * count + fee_reserve(count) > cash:
+                    count -= 1
+                if count == 0:
+                    shard = self.market_shard.get(ticker)
+                    where = f" (exchange index {shard})" if shard is not None else ""
+                    self.skip(ticker, f"Not enough cash on Kalshi for this market{where}: ${cash} available. "
+                                      f"Move funds to this exchange index on Kalshi.")
+                    continue
             if count == 0:
                 reason = f"Not enough contracts offered at or below {limit}"
                 if risk.affordable_count(1, limit, self.open_cost(), self.today_pnl(), self.daily_loss_limit) == 0:
@@ -985,7 +1023,8 @@ class AutoTrader:
                 position["pending"] = None
                 position["status"] = "open" if action == "sell" or was_open else "skipped"
                 self.save_position(position)
-                self.event("rejected", f"Kalshi rejected {action} (HTTP {exc.response.status_code})", position)
+                self.event("rejected", f"Kalshi rejected {action} (HTTP {exc.response.status_code})"
+                                       f"{rejection_detail(exc.response)}", position)
             raise
         position["pending"]["order_id"] = response["order_id"]
         position["pending"]["ack_fill_count"] = str(dollars(response["fill_count"]))

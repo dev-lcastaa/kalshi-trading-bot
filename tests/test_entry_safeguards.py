@@ -210,7 +210,8 @@ async def test_rejected_order_keeps_journal_consistent_and_pauses(tmp_path):
     rest = entry_rest()
     request = httpx.Request("POST", "https://example.test/orders")
     rest.create_event_order.side_effect = httpx.HTTPStatusError(
-        "rejected", request=request, response=httpx.Response(400, request=request),
+        "rejected", request=request, response=httpx.Response(
+            400, request=request, json={"error": {"code": "insufficient_balance", "message": "Insufficient balance"}}),
     )
     trader = feed_trader(store, rest)
     await trader.cycle()
@@ -221,7 +222,37 @@ async def test_rejected_order_keeps_journal_consistent_and_pauses(tmp_path):
     assert held["status"] == "skipped" and held["pending"] is None
     assert not held.get("execution_history")
     assert not trader.enabled and trader.error
-    assert any(event["action"] == "rejected" for event in trader.snapshot()["events"])
+    # Kalshi's own reason is kept so a rejection can be diagnosed from the trading page.
+    assert any(event["action"] == "rejected" and event["reason"] ==
+               "Kalshi rejected buy (HTTP 400): insufficient_balance - Insufficient balance"
+               for event in trader.snapshot()["events"])
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("cash", "count"), [("0.00", None), ("0.60", "1"), ("1000.00", "2")])
+async def test_real_buy_is_sized_to_cash_on_the_markets_exchange_shard(tmp_path, cash, count):
+    store = Store(str(tmp_path / "shard.db"))
+    rest = entry_rest()
+    rest.get_market.return_value["market"]["exchange_index"] = 2
+    rest.get_balance.return_value = {"balance_dollars": cash}
+    rest.create_event_order.return_value = {"order_id": "buy", "fill_count": "0"}
+    rest.get_order.return_value = {"order": {"ticker": "BTC", "order_id": "buy", "status": "canceled",
+                                             "fill_count_fp": "0"}}
+    rest.get_fills.return_value = {"fills": [], "cursor": ""}
+    trader = feed_trader(store, rest)
+    await trader.cycle()
+    await trader.save_settings(rules())
+    await trader.control(True, True)
+    await trader.cycle()
+    rest.get_balance.assert_awaited_with(2)
+    if count is None:
+        rest.create_event_order.assert_not_called()
+        assert trader.last_skip_reason["BTC"].startswith(
+            "Not enough cash on Kalshi for this market (exchange index 2): $0.00 available")
+        assert trader.enabled
+    else:
+        assert rest.create_event_order.call_args.args[0]["count"] == count
     store.close()
 
 

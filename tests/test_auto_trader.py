@@ -214,6 +214,7 @@ def entry_rest():
     rest.get_series.return_value = {"series": {"fee_type": "quadratic", "fee_multiplier": 1}}
     rest.get_positions.return_value = {"market_positions": []}
     rest.get_orders.return_value = {"orders": [], "cursor": ""}
+    rest.get_balance.return_value = {"balance_dollars": "1000.00"}
     rest.get_market_orderbook.return_value = {"orderbook_fp": {"yes_dollars": [["0.45", "10"]], "no_dollars": [["0.55", "10"]]}}
     return rest
 

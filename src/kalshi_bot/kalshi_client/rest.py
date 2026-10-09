@@ -110,6 +110,10 @@ class KalshiRestClient:
     async def get_positions(self, ticker: str) -> dict[str, Any]:
         return await self._get("/portfolio/positions", {"ticker": ticker, "limit": 100})
 
+    async def get_balance(self, exchange_index: int | None = None) -> dict[str, Any]:
+        params = {} if exchange_index is None else {"exchange_index": exchange_index}
+        return await self._get("/portfolio/balance", params)
+
     async def cancel_event_order(self, order_id: str, ticker: str) -> dict[str, Any]:
         if self._auth is None:
             raise ValueError("Order cancellation requires authentication")
