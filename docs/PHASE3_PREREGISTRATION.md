@@ -351,3 +351,53 @@ Findings:
 
 Decision: **stop loss $5.00** replaces $9.00 for P1, chosen by the training rule. Every other setting and the decision rule
 are unchanged. The expectation stays "about break-even or slightly negative", and a stop is risk control, not an edge.
+
+---
+
+# Addendum 4, 2026-10-10 02:10 UTC: H9, early-window jump continuation
+
+Written and committed **before** any data used to test H9 was collected. Unlike H1 to H8, H9 **was found by searching
+the development data**, so it gets no credit for its development results and stands or falls on new data only.
+
+## How it was found (reported so the search is not hidden)
+
+After every Phase 3 hypothesis and every scalp, market-making and favorite variant had failed, a broad exploratory
+search was run on BTC and SOL markets with closes up to Oct 10 01:36 UTC (train, val, test and part of `fwd`). The search had
+3,635 rules, each one or two thresholds on nine features. Rules were ranked on `train` only, and no rule had t > 2.
+Of the top 25, one was positive on `val`, `test` and `fwd`: buy the side whose Kalshi mid rose sharply early in the
+window. A follow-up stress test of that rule gave the results below. All of these are **in-sample** and are context, not evidence.
+
+| Jump over 180 s, 10 to 14 min left | Trades | Win rate | Net per contract | Day-clustered 90% CI | train / val / test / fwd |
+|---|---|---|---|---|---|
+| >= 25c | 1,724 | 79% | +2.4c | +0.3 to +4.4 | +3.0 / +2.3 / +2.0 / +0.3 |
+| >= 30c (frozen below) | 1,071 | 82% | +3.2c | +0.7 to +5.6 | +3.9 / +3.7 / +3.1 / +0.1 |
+
+Supporting results: the effect rises with jump size (10c: -0.3c; 20c: +0.9c; 35c: +3.3c), the opposite side loses about 6c,
+a random side loses, and a 5 or 10 s delay does not change it. Against it: it was found by search, the latest data
+(`fwd` up to Oct 10) is about zero, and the same rule with 8 minutes or less left is negative.
+
+## The frozen rule
+
+- **Universe:** BTC (`KXBTC15M`) and SOL (`KXSOL15M`) only.
+- **Trigger:** the first second `t` with 600 to 840 seconds left (10:00 to 14:00) at which the replay engine's quotes
+  are valid at `t` and `t - 180` and `|mid(t) - mid(t - 180)| >= 0.30`. The side is the direction of the move (YES if
+  the mid rose, NO if it fell). No model, no Coinbase input.
+- **Execution:** 10 contracts, taker fill 2 s after `t` at the ask (YES) or `1 - bid` (NO), only if the top of book
+  then shows at least 10 contracts (otherwise the next qualifying second is tried). The price must be at most 0.97. The
+  per-order fee is `ceil(0.07 * 10 * P * (1 - P) * 100) / 100`. Hold to settlement, one trade per market.
+- **Code:** the `run(jump=0.30)` function of the exploratory script, moved into the repository unchanged before stage 2 is run.
+  The common rule "YES only when the model probability is above 0.5" does not apply, because H9 uses no model.
+
+## Stages
+
+- **Stage 1:** none. The development data was used to find the rule and cannot also test it.
+- **Stage 2:** markets closing from **Oct 10 02:15 UTC to Oct 19 23:59 UTC**, data not collected when this was
+  written. The pass rule is the common stage 2 rule: net mean > 0, day-clustered 90% CI lower bound > 0, at least 300 trades,
+  positive in both halves (Oct 10 to 14 and Oct 15 to 19), random-side placebo mean (5 seeds) below zero, still
+  positive with a 5 s delay. **If fewer than 300 trades exist, H9 fails stage 2**; the window is not extended
+  into the holdout. Expected count: about 40 a day, about 390 in total.
+- **Stage 3:** `holdout` (Oct 20 on), the stage 2 rule, evaluated once and logged. A pass leads to paper trading,
+  not live money.
+
+**Reported, not gated:** each coin, each price band (below 0.75, 0.75 to 0.85, above 0.85), the 25c and 35c jump
+thresholds, and the opposite side.
